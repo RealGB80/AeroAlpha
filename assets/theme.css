@@ -120,9 +120,29 @@ input[type=number], .sb-field input {
 input[type=number]:focus { outline: none; border-color: var(--mint); box-shadow: 0 0 0 3px rgba(24,227,160,.15); }
 .sb-out { font-size: 34px; font-weight: 800; font-family: 'JetBrains Mono', monospace; }
 
-/* DataTable polish */
-.dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner table { border-collapse: collapse; }
-.dash-table-container .dash-cell, .dash-table-container .dash-header { font-family: 'Inter', sans-serif !important; }
+/* ---- pro-table: custom investor-grade HTML table (NOT a spreadsheet grid) ---- */
+.pt-wrap { width: 100%; overflow-x: auto; margin: 2px 0 0; }
+.pro-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pro-table .pt-th {
+  color: var(--dim); font-weight: 700; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .7px; padding: 7px 16px 9px; white-space: nowrap;
+  border-bottom: 1px solid var(--border); background: transparent;
+}
+.pro-table tbody tr { transition: background .12s ease; }
+.pro-table tbody tr:nth-child(even) { background: rgba(255,255,255,.014); }
+.pro-table tbody tr:hover { background: rgba(24,227,160,.07); }
+.pro-table tbody tr + tr .pt-td { border-top: 1px solid rgba(64,92,120,.10); }
+.pro-table .pt-td {
+  color: var(--ink); padding: 9px 16px; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.pro-table .pt-l { text-align: left; }
+.pro-table .pt-r { text-align: right; }
+.pro-table .pt-td.pt-l { color: var(--ink); font-weight: 500; }
+.pro-table .pt-td.pt-r { color: var(--ink); }
+/* let long text label cells wrap instead of forcing horizontal scroll */
+.pro-table .pt-td.pt-l { white-space: normal; line-height: 1.45; max-width: 640px; }
+.pro-table .pt-th.pt-l { white-space: normal; }
+.pt-foot { margin-top: 8px; font-size: 11px; }
 
 /* Dash default focus rings off */
 ._dash-undo-redo { display: none; }

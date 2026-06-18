@@ -42,20 +42,30 @@ NAV = [("overview", "◉", "Overview"), ("forecasts", "☉", "Forecasts"),
 
 def _tpl(fig, h=300, legend=True):
     fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                      font=dict(color=INK, family="Inter, system-ui", size=12), colorway=PALETTE,
-                      margin=dict(l=58, r=20, t=52, b=44), height=h,
+                      font=dict(color=INK, family="Inter, system-ui", size=12.5), colorway=PALETTE,
+                      margin=dict(l=62, r=24, t=58, b=48), height=h,
                       showlegend=legend,
-                      legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=11), orientation="h",
-                                  yanchor="bottom", y=1.02, xanchor="left", x=0, title_text=""),
-                      title=dict(font=dict(size=14), x=0, xanchor="left", y=0.97),
-                      hoverlabel=dict(bgcolor="rgba(10,16,26,.95)", bordercolor=GRIDCOL,
-                                      font=dict(family="Inter, system-ui", size=12)),
-                      bargap=0.32)
-    fig.update_xaxes(gridcolor=GRIDCOL, zerolinecolor="rgba(126,147,168,.35)", linecolor=GRIDCOL,
-                     showline=True, ticks="outside", ticklen=4, tickcolor=GRIDCOL,
-                     title_font=dict(size=12, color=DIM))
-    fig.update_yaxes(gridcolor=GRIDCOL, zerolinecolor="rgba(126,147,168,.35)", linecolor=GRIDCOL,
-                     ticks="outside", ticklen=4, tickcolor=GRIDCOL, title_font=dict(size=12, color=DIM))
+                      legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=11, color=DIM), orientation="h",
+                                  yanchor="bottom", y=1.04, xanchor="left", x=0, title_text="",
+                                  itemsizing="constant"),
+                      title=dict(font=dict(size=14.5, color=INK, family="Inter, system-ui"),
+                                 x=0, xanchor="left", y=0.98, pad=dict(b=6)),
+                      hoverlabel=dict(bgcolor="rgba(8,13,22,.96)", bordercolor="rgba(24,227,160,.35)",
+                                      font=dict(family="Inter, system-ui", size=12.5, color=INK),
+                                      align="left"),
+                      bargap=0.42, bargroupgap=0.16, uniformtext=dict(mode="hide", minsize=9))
+    fig.update_xaxes(gridcolor="rgba(0,0,0,0)", zerolinecolor="rgba(126,147,168,.30)",
+                     linecolor=GRIDCOL, showline=True, ticks="outside", ticklen=5, tickcolor=GRIDCOL,
+                     tickfont=dict(size=12, color=DIM),
+                     title_font=dict(size=11.5, color=DIM), automargin=True)
+    fig.update_yaxes(gridcolor=GRIDCOL, griddash="dot", zerolinecolor="rgba(126,147,168,.30)",
+                     linecolor="rgba(0,0,0,0)", showline=False, ticks="", ticklen=0,
+                     tickfont=dict(size=12, color=DIM),
+                     title_font=dict(size=11.5, color=DIM), automargin=True)
+    # rounded bar corners + crisp outline on every bar trace (investor-grade, not raw plotly)
+    fig.update_traces(selector=dict(type="bar"),
+                      marker=dict(cornerradius=6, line=dict(width=0)),
+                      textfont=dict(family="JetBrains Mono, monospace", size=11.5))
     return fig
 
 
@@ -201,24 +211,68 @@ def present(df, drop=(), rename=None, fmt=None, order=None):
     return df.rename(columns=headers)
 
 
-def dt(df, present_df=True, **kw):
+# Header names that are LABELS (left-aligned, regular weight). Everything else is treated as a
+# numeric/metric column -> right-aligned, mono tabular-nums. (Headers are post-present() Title-Case.)
+_LABEL_HEADERS = {"City", "Stream", "Source", "Status", "Item", "Detail", "Metric", "Gate Status",
+                  "Changepoint", "Target Date", "Unit", "Beats Market"}
+
+
+def _is_label_col(header, series):
+    if header in _LABEL_HEADERS:
+        return True
+    # any column whose cells are non-numeric strings (e.g. "—" only is still numeric-ish) -> label
+    for v in series:
+        s = str(v).strip()
+        if s in ("", "—", "-"):
+            continue
+        # strip the formatting glyphs present() adds, then test numeric
+        t = s.replace(",", "").replace("$", "").replace("%", "").replace("°F", "").replace("c", "")
+        t = t.replace("+", "").replace(" min", "").replace("F", "").strip()
+        try:
+            float(t)
+        except ValueError:
+            return True
+    return False
+
+
+def pro_table(df, present_df=True, max_rows=None, align_left=None, **_ignore):
+    """Investor-grade custom HTML table (NOT a DataTable). Neon glass theme, no spreadsheet grid:
+    uppercase dim header w/ a single bottom rule, thin zebra rows + hover, right-aligned mono numerics,
+    left-aligned labels. Keeps present()/COLUMN_FMT formatting. `max_rows` truncates (footer note)."""
     if present_df:
         df = present(df)
-    align = kw.pop("align_left", ("City", "Stream", "Source", "Status", "Item", "Detail",
-                                  "Metric", "Gate Status", "Changepoint", "Target Date"))
-    return dash_table.DataTable(
-        data=df.to_dict("records"), columns=[{"name": c, "id": c} for c in df.columns],
-        style_as_list_view=True, page_size=kw.pop("page_size", 12), sort_action="native",
-        style_header={"backgroundColor": "rgba(24,227,160,.06)", "color": DIM, "fontWeight": "700",
-                      "border": "none", "textTransform": "uppercase", "fontSize": "11px",
-                      "letterSpacing": ".5px", "textAlign": "right", "padding": "8px 12px"},
-        style_cell={"backgroundColor": "rgba(0,0,0,0)", "color": INK, "border": "none",
-                    "borderBottom": "1px solid rgba(64,92,120,.15)", "padding": "8px 12px",
-                    "fontSize": "13px", "fontFamily": "Inter, system-ui", "textAlign": "right"},
-        style_cell_conditional=[{"if": {"column_id": c}, "textAlign": "left"} for c in align],
-        style_header_conditional=[{"if": {"column_id": c}, "textAlign": "left"} for c in align],
-        style_data_conditional=[{"if": {"state": "active"}, "backgroundColor": "rgba(24,227,160,.08)",
-                                 "border": "none"}], **kw)
+    if df is None or df.empty:
+        return html.Div("—", className="sub")
+    cols = list(df.columns)
+    forced_left = set(align_left or ())
+    left = {c: (c in forced_left or _is_label_col(c, df[c])) for c in cols}
+
+    def th(c):
+        cls = "pt-th " + ("pt-l" if left[c] else "pt-r")
+        return html.Th(c, className=cls)
+
+    def td(c, v):
+        s = "—" if (v is None or (isinstance(v, float) and v != v)) else str(v)
+        cls = "pt-td " + ("pt-l" if left[c] else "pt-r mono")
+        return html.Td(s, className=cls)
+
+    rows = df.to_dict("records")
+    truncated = max_rows is not None and len(rows) > max_rows
+    if truncated:
+        rows = rows[:max_rows]
+    body = [html.Tr([td(c, r.get(c)) for c in cols]) for r in rows]
+    table_el = html.Table([html.Thead(html.Tr([th(c) for c in cols])), html.Tbody(body)],
+                          className="pro-table")
+    wrap = [html.Div(table_el, className="pt-wrap")]
+    if truncated:
+        wrap.append(html.Div(f"Showing {max_rows} of {len(df)} rows.", className="sub pt-foot"))
+    return html.Div(wrap)
+
+
+# back-compat alias: every old call site used dt(...); map page_size -> max_rows.
+def dt(df, present_df=True, **kw):
+    return pro_table(df, present_df=present_df, max_rows=kw.pop("page_size", None),
+                     align_left=kw.pop("align_left", None))
 
 
 # ============================== PAGES ==============================
@@ -234,12 +288,13 @@ def render_overview():
                               className="sub")])
     else:
         fig = go.Figure()
-        fig.add_scatter(x=br["date"], y=br["bankroll"], name="Paper bankroll",
-                        line=dict(color=MINT, width=3), fill="tozeroy", fillcolor="rgba(24,227,160,.08)",
+        fig.add_scatter(x=br["date"], y=br["bankroll"], name="Paper bankroll", mode="lines",
+                        line=dict(color=MINT, width=2.6, shape="spline", smoothing=0.5),
+                        fill="tozeroy", fillcolor="rgba(24,227,160,.07)",
                         hovertemplate="%{x}<br>%{y:$,.0f}<extra></extra>")
         if "expected_bankroll" in br:
-            fig.add_scatter(x=br["date"], y=br["expected_bankroll"], name="Backtest-expected",
-                            line=dict(color=DIM, dash="dash"),
+            fig.add_scatter(x=br["date"], y=br["expected_bankroll"], name="Backtest-expected", mode="lines",
+                            line=dict(color=DIM, width=1.6, dash="dash", shape="spline", smoothing=0.5),
                             hovertemplate="%{x}<br>%{y:$,.0f}<extra></extra>")
         fig.update_yaxes(title="paper bankroll ($)", tickprefix="$", tickformat=",.0f")
         fig.update_xaxes(title="")
@@ -689,11 +744,13 @@ def _sandbox(rmse, lock_c, cities, low_c, low_cities, low_trades, bankroll, s1a,
     fig = go.Figure()
     labels = ["S1 day-ahead high", "Daily-low S1", "Lock-in", "TOTAL"]
     vals = [s1_monthly, low_monthly, lock_monthly, total]
-    fig.add_bar(x=labels, y=vals, marker_color=[MINT, VIOLET, CYAN, AMBER], width=0.6,
-                text=[f"${v:,.0f}" for v in vals], textposition="outside",
+    fig.add_bar(x=labels, y=vals, marker_color=[MINT, VIOLET, CYAN, AMBER], width=0.62,
+                text=[f"${v:,.0f}" for v in vals], textposition="outside", cliponaxis=False,
                 hovertemplate="%{x}<br>%{y:$,.0f} / month<extra></extra>")
     fig.update_layout(title="Estimated Monthly Profit by Stream")
-    fig.update_yaxes(title="paper profit ($ / month)", tickprefix="$", tickformat=",.0f")
+    _vmax = max(vals + [1])
+    fig.update_yaxes(title="paper profit ($ / month)", tickprefix="$", tickformat=",.0f",
+                     range=[0, _vmax * 1.18])
     note = (f"Transparent paper model. High S1 edge ≈ max(0, {S1_EDGE_K}·({MKT_SD}−RMSE)−slip) "
             f"= {s1_edge_c:.1f}c; {S1_TRADES_PM} trades/mo × {cities} cities × {s1_ct:.0f} ct "
             f"(depth-capped {DEPTH_CAP}). Daily-low S1: measured net {low_c:.2f}c − slip = "
