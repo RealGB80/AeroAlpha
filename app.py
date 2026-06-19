@@ -1120,24 +1120,49 @@ def panel_open_positions():
         fig.update_layout(title=None)
         fig.update_yaxes(title="model edge at scan (c / contract)", ticksuffix="c", tickformat="+,.0f")
         fig.update_xaxes(title="target settle date", nticks=8)
-    show = present(d.drop(columns=["_dt"]),
-                   rename={"edge_c": "Model Edge", "entry": "Entry", "age_h": "Age",
-                           "target_date": "Target Settle"},
-                   fmt={"edge_c": _cents1, "entry": lambda v: "—" if _isnull(v) else f"{v:.2f}",
-                        "age_h": lambda v: "—" if _isnull(v) else f"{v:.0f}h"},
-                   order=["target_date", "city", "market", "stream", "ticker", "side",
-                          "edge_c", "entry", "age_h"])
+    # FIX 5 (2026-06-19): mark-to-market column "entry -> current" with a green up / red down chip on the
+    # side held. PAPER MARK, UNREALIZED -- not realized P&L, not a real position.
+    has_mark = "current_price" in d.columns
+    def _entry_to_current(row):
+        ep = row.get("entry_price"); cp = row.get("current_price"); md = row.get("mark_delta")
+        dirn = row.get("direction")
+        ep_s = "—" if _isnull(ep) else f"{ep:.0f}c"
+        if _isnull(cp):
+            return html.Span([html.Span(ep_s, className="mono"),
+                              html.Span(" → —", className="sub")], title="live quote unavailable")
+        arrow = "▲" if dirn == "up" else ("▼" if dirn == "down" else "▬")
+        chip_cls = "pos" if dirn == "up" else ("neg" if dirn == "down" else "")
+        dtxt = "" if _isnull(md) else f" {md:+.0f}c"
+        return html.Span([html.Span(f"{ep_s} → ", className="mono sub"),
+                          html.Span(f"{cp:.0f}c", className="mono"),
+                          html.Span(f"  {arrow}{dtxt}", className=f"mono qb-edge {chip_cls}",
+                                    style={"marginLeft": "4px", "fontSize": "11px"})])
+    if has_mark:
+        d = d.copy()
+        d["mark"] = d.apply(_entry_to_current, axis=1)
+    cols = ["target_date", "city", "market", "stream", "ticker", "side", "edge_c", "age_h"]
+    rename = {"edge_c": "Model Edge", "age_h": "Age", "target_date": "Target Settle"}
+    fmtmap = {"edge_c": _cents1, "age_h": lambda v: "—" if _isnull(v) else f"{v:.0f}h"}
+    if has_mark:
+        cols = cols + ["mark"]
+        rename["mark"] = "Entry → Current (paper mark)"
+        fmtmap["mark"] = lambda v: v          # already an html element
+    show = present(d.drop(columns=["_dt"] + ([] if has_mark else []), errors="ignore"),
+                   rename=rename, fmt=fmtmap, order=cols)
     n = len(d)
     return card([html.H3(["Pending Paper Trades — Open, Unsettled Signals  ", info_dot(
-                    "Paper signals the monitors have LOGGED but that have NOT yet settled. No real orders, "
-                    "no real money — these are forward paper scans awaiting their settlement outcome.")]),
+                    "Paper signals the monitors have LOGGED but that have NOT yet settled. The Entry → Current "
+                    "column is a PAPER MARK, UNREALIZED — not real money, not realized P&L, not a real "
+                    "position. No orders, no account. Current = live public YES-mid for the side held.")]),
                  _cap(f"{n} paper signals logged across the forward monitors but NOT yet settled, plotted by "
-                      f"target settle date and model edge (circle = YES side, diamond = NO). These are PAPER "
-                      f"signals awaiting settlement — no real orders, no real money. Once they settle they "
-                      f"feed the gate-progress counters above."),
+                      f"target settle date and model edge (circle = YES side, diamond = NO). The "
+                      f"Entry → Current column marks each paper signal to the live public quote with a green "
+                      f"up / red down chip — a PAPER, UNREALIZED mark, NOT real money or realized P&L. Once "
+                      f"they settle they feed the gate-progress counters above."),
                  graph(_tpl(fig, h=300)) if not scat.empty else html.Div(),
                  pro_table(show, present_df=False, max_rows=16,
-                           align_left=("Side", "Market", "Stream", "Ticker"))],
+                           align_left=("Side", "Market", "Stream", "Ticker",
+                                       "Entry → Current (paper mark)"))],
                 id="open-positions-card")
 
 
@@ -1369,9 +1394,13 @@ def pro_table(df, present_df=True, max_rows=None, align_left=None, **_ignore):
         cls = "pt-th " + ("pt-l" if left[c] else "pt-r")
         return html.Th(c, className=cls)
 
+    from dash.development.base_component import Component as _Comp
     def td(c, v):
-        s = "—" if (v is None or (isinstance(v, float) and v != v)) else str(v)
         cls = "pt-td " + ("pt-l" if left[c] else "pt-r mono")
+        # pass Dash components (e.g. the mark-to-market chip) through as-is, never stringify them
+        if isinstance(v, _Comp):
+            return html.Td(v, className=cls)
+        s = "—" if (v is None or (isinstance(v, float) and v != v)) else str(v)
         # desaturated sign-aware numeric color (only on signed numeric cells like +/-c)
         if not left[c] and s not in ("—", "-", ""):
             if s.lstrip().startswith("+"):
@@ -1750,23 +1779,44 @@ def render_accuracy():
 
 
 def render_forward():
-    g = table("forward_gate")
+    # FIX 3 (2026-06-19): read the SAME run_gates table the $1,000 Run gate board uses, so the two pages
+    # AGREE by construction and the NEW pre-registered gate set (A4 daily-low multi-city) is reflected here.
+    g = table("run_gates")
     if g.empty:
-        return html.Div([section("Forward Validation"), card("No forward-gate data yet.")])
+        return html.Div([section("Forward Validation"),
+                         card([html.H3("Pre-registered forward gates"),
+                               empty_state("Fills from the $1,000 staged-harness ledger + monitor logs.")])])
     bars = []
     for _, r in g.iterrows():
-        pct = min(100, int(100 * (r["n_settled"] or 0) / max(r["n_required"] or 1, 1)))
-        cp = f" · since {r['changepoint_date']}" if r.get("changepoint_date") else ""
+        nset = int(r["n_settled"] or 0); nreq = int(r["n_required"] or 1)
+        pct = min(100, int(100 * nset / max(nreq, 1)))
+        kind, col, lbl = _GATE_STATUS_STYLE.get(r["status"], ("neut", NEUTRAL, str(r["status"]).upper()))
+        bar_col = "var(--accent)" if kind == "good" else ("var(--amber)" if kind == "warn" else "var(--neutral)")
+        cp = f" · changepoint {r['changepoint']}" if r.get("changepoint") else ""
+        edge = "—" if _isnull(r["edge_c"]) else f"{r['edge_c']:+.2f}c"
+        cil = "—" if _isnull(r["ci_lo"]) else f"{r['ci_lo']:+.1f}"
+        cih = "—" if _isnull(r["ci_hi"]) else f"{r['ci_hi']:+.1f}"
         bars.append(html.Div([
-            html.Div([html.B(r["stream"]), html.Span(f"  {r['n_settled']}/{r['n_required']} settled{cp}",
-                      className="sub")], style={"display": "flex", "justifyContent": "space-between"}),
-            html.Div(html.Div(className="bar-fill", style={"width": f"{pct}%"}),
+            html.Div([html.B(r["edge_label"]), badge(lbl, kind)],
+                     style={"display": "flex", "justifyContent": "space-between", "alignItems": "center"}),
+            html.Div(r["gate_desc"], className="sub", style={"fontSize": "11.5px", "margin": "3px 0 2px"}),
+            html.Div([html.Span(f"edge {edge}  CI [{cil}, {cih}]c", className="sub",
+                                style={"fontSize": "11px"}),
+                      html.Span(f"   {nset}/{nreq} settled{cp}", className="sub",
+                                style={"fontSize": "11px", "color": DIM})]),
+            html.Div(html.Div(className="bar-fill", style={"width": f"{pct}%", "background": bar_col}),
                      className="bar-track", style={"margin": "5px 0 14px"})]))
     return html.Div([section("Forward Validation"),
                      card([html.H3("Pre-registered forward gates"),
-                           html.Div("Thresholds fixed in advance (docs/FORWARD_PROTOCOL.md). Day-ahead streams "
-                                    "reset at the 2026-06-14 S2X changepoint. All ACCUMULATING — not yet a "
-                                    "proven live edge.", className="sub"), html.Div(bars, style={"marginTop": "12px"})])])
+                           html.Div(["Thresholds fixed in advance (docs/FORWARD_PROTOCOL.md, gates A2/A3/A4). "
+                                     "Current pre-registered set: LOCK-IN (latency, deprioritized), S1-high "
+                                     "(NY deployed), multi-city S1-high (LAX/CHI), S1_LOW_NYC (A3, MIN_N=150), "
+                                     "and the A4 daily-low multi-city cold sub-gates — PHIL/AUS/MIA (cold n≥110 "
+                                     "+ non-degradation + fresh forward CI-excludes-0 + fills clause) with "
+                                     "DEN/LAX WATCH (no tradable path). Same gate table as the $1,000 Run board, "
+                                     "so the two pages agree. All ACCUMULATING — not yet a proven live edge."],
+                                    className="sub"),
+                           html.Div(bars, style={"marginTop": "12px"})])])
 
 
 def render_sandbox():
@@ -1810,10 +1860,10 @@ def render_sandbox():
                  "climbs steeply. No ROI cap; the warnings escalate honestly.", className="sub",
                  style={"margin": "8px 0 2px", "fontSize": "11px"}),
         html.Div(style={"height": "10px"}),
-        field("sb-winrate", "Win rate (%)", 55, 1, 1, 99),
         field("sb-slip", "Slippage assumption (c/contract)", 1.0, 0.5, 0, 3),
-        html.Div("Win rate + slippage tune the per-trade economics; the Kelly fraction governs "
-                 "stake size and therefore the risk band below.", className="sub",
+        html.Div("Slippage shaves each stream's net c/contract. Win rate is NOT a user lever — it is a "
+                 "fixed constant from our backtest already embedded in each stream's net c/contract; the "
+                 "Kelly fraction governs stake size and therefore the risk band below.", className="sub",
                  style={"marginTop": "8px", "fontSize": "11px"})],
         style={"flex": "1", "minWidth": "270px"})
 
@@ -2056,6 +2106,11 @@ MKT_SD = 1.95          # market prices ~this implied SD; edge ~ overconfidence v
 S1_EDGE_K = 12.0       # c/contract per F of (MKT_SD - RMSE); calibrated to ~+4c at RMSE 1.66
 DEPTH_CAP = 250        # contracts fillable within slippage (measured median)
 S1_PRICE, LOCK_PRICE, LOW_PRICE = 0.5, 0.9, 0.5
+# Calibrated contracts-per-trade at the DEFAULT sandbox scenario (high 3 cities*84tr*~2.5c + low 1*82*~6c +
+# lock 3*14*11c) on $1,000 at 0.25x Kelly, so the headline equals the validated $1k sweep median ~7.08%/m
+# (data/processed/kelly_1k_stake_sweep_20260619_000854.json). Keeps the transparent per-stream model GROUNDED
+# to the real backtest number while letting every input move the output. ~70.8$ target / 15.76$-per-1ct = 4.49.
+SANDBOX_CT_CAL = 4.49
 
 # Kelly stake-sweep — TRANSPARENT EMBEDDED CONSTANT, sourced verbatim from
 # data/processed/kelly_1k_stake_sweep_20260619_000854.json ($1,000 correlation-aware MC, every edge
@@ -2134,10 +2189,10 @@ def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
     Input("sb-rmse", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
     Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
     Input("sb-lock", "value"), Input("sb-lockpm", "value"),
-    Input("sb-bankroll", "value"), Input("sb-kelly", "value"), Input("sb-winrate", "value"),
+    Input("sb-bankroll", "value"), Input("sb-kelly", "value"),
     Input("sb-slip", "value"))
 def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
-             bankroll, kelly, winrate, slip):
+             bankroll, kelly, slip):
     import numpy as _np
     blank = _tpl(go.Figure(), h=300)
     try:
@@ -2145,30 +2200,42 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         low_c = float(low_c); low_cities = max(0, int(low_cities)); low_trades = max(0.0, float(low_trades))
         lock_c = float(lock_c); lockpm = max(0.0, float(lockpm))
         bankroll = max(0.0, float(bankroll)); kelly = float(kelly)
-        winrate = min(99.0, max(1.0, float(winrate))) / 100.0; slip = max(0.0, float(slip))
+        slip = max(0.0, float(slip))
     except (TypeError, ValueError):
         return ("—", "—", {"color": DIM}, "", "Enter valid numbers in every field.", "",
                 blank, blank, blank, blank, blank, "")
     kelly = min(KELLY_MAX, max(0.25, kelly))
 
-    # ---- risk band from the embedded Kelly sweep (interpolated) ----
-    # The HEADLINE return is ANCHORED to the validated $1k Kelly sweep median %/m (NOT a free-running
-    # contracts*trades product, which double-counts and badly overstates the edge). The per-stream
-    # breakdown below shows the COMPOSITION of that anchored total, weighted by each stream's modeled
-    # gross monthly contribution -- so inputs reshape the mix without inventing an inflated dollar figure.
+    # ---- TRANSPARENT PER-STREAM PROFIT MODEL (FIX 1, 2026-06-19). Profit is now a DIRECT function of the
+    # ACTIVE streams -- every input (edges, city counts, trades/mo, locks/mo, slippage, Kelly, bankroll)
+    # MOVES the output. The old code anchored the dollar TOTAL to the Kelly-sweep median and only re-split
+    # it, so lock-in edge / city counts never changed profit -> that was the bug.
+    #   profit_per_stream($/mo) = (net_edge_c/100) * trades/mo * active_markets * contracts_per_trade
+    # contracts_per_trade = Kelly-fraction-scaled stake at the stream's reference price, capped by DEPTH_CAP
+    # (250ct/market within ~1c slip). The Kelly sweep is STILL the source of the per-trade risk fraction so
+    # the numbers stay grounded; it just no longer overrides the per-stream economics. Win rate is NOT a
+    # lever (FIX 2): each stream's net c/contract ALREADY embeds win/loss from the backtest -> dropped.
     k = kelly_interp(kelly)
-    # per-stream gross monthly contribution (relative weights only)
+    # per-stream NET edge after slippage (the backtest net c/contract already embeds the win rate)
     s1_edge_c = max(0.0, S1_EDGE_K * (MKT_SD - rmse) - slip)
     low_edge_c = max(0.0, low_c - slip)
     lock_edge_c = max(0.0, lock_c - slip)
-    wr_scale = winrate / 0.55   # win-rate tilts realized edge vs the 55% baseline calibration
-    s1_gross = max(0.0, s1tr * cities * s1_edge_c)
-    low_gross = max(0.0, low_trades * low_cities * low_edge_c)
-    lock_gross = max(0.0, lockpm * cities * lock_edge_c)
-    gross_sum = s1_gross + low_gross + lock_gross
-    # headline monthly ROI = sweep median %/m, tilted by win-rate vs baseline (kept modest, capped)
-    roi = k["med"] * min(2.0, max(0.0, wr_scale))
-    total_uncapped = roi / 100.0 * bankroll if bankroll > 0 else 0.0
+    # contracts per trade: CALIBRATED so the DEFAULT scenario at 0.25x Kelly on $1,000 reproduces the
+    # validated $1k Kelly-sweep median (~7.08%/m) -- the headline stays GROUNDED to the real backtest number,
+    # it does NOT run away. From that anchor it scales LINEARLY with Kelly fraction and bankroll, and is
+    # CAPPED at the measured fillable depth (DEPTH_CAP/market). Every per-stream input (edge, trades, cities)
+    # still multiplies through, so all inputs MOVE the output (FIX 1) while the magnitude stays honest.
+    active_books = max(1, cities + low_cities)        # used only for the note/labeling
+    def contracts_per_trade():
+        ct = SANDBOX_CT_CAL * (kelly / 0.25) * (bankroll / 1000.0)
+        return max(0.0, min(DEPTH_CAP, ct))           # depth cap binds the per-market size
+    cpt = contracts_per_trade()
+    s1_ct = low_ct = lock_ct = cpt                    # same calibrated stake unit per market
+    # monthly $ per stream = edge($) * trades/mo * markets * contracts/trade  (every factor is a live input)
+    s1_monthly = (s1_edge_c / 100.0) * s1tr * cities * s1_ct
+    low_monthly = (low_edge_c / 100.0) * low_trades * low_cities * low_ct
+    lock_monthly = (lock_edge_c / 100.0) * lockpm * cities * lock_ct
+    total_uncapped = s1_monthly + low_monthly + lock_monthly
     # ---- DEPTH-CAPACITY CAP (deliverable #3): absolute-$ profit cannot exceed what real market depth
     # fills. ceiling = DEPTH_CAP ct * edge * trades/mo * markets -> bankroll-INDEPENDENT plateau. Past the
     # ceiling, more capital earns the SAME dollars (lower %). This is the "$100M -> same as ~$5k" reality.
@@ -2176,16 +2243,13 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
                                             s1_edge_c, low_edge_c, lock_edge_c)
     capacity_bound = bankroll > 0 and cap_ceiling > 0 and total_uncapped > cap_ceiling
     total = min(total_uncapped, cap_ceiling) if cap_ceiling > 0 else total_uncapped
-    # effective realized ROI reflects the cap (so % falls once capacity binds)
+    # if the cap binds, shrink each stream proportionally so the breakdown still sums to the capped total
+    if capacity_bound and total_uncapped > 0:
+        _scale = total / total_uncapped
+        s1_monthly *= _scale; low_monthly *= _scale; lock_monthly *= _scale
+    # realized ROI on bankroll (falls once capacity binds)
     roi = (total / bankroll * 100.0) if bankroll > 0 else 0.0
     roi_color = MINT if total >= 0 else RED
-    # split the anchored $ total across streams by gross weight (composition, not independent sums)
-    if gross_sum > 0:
-        s1_monthly = total * s1_gross / gross_sum
-        low_monthly = total * low_gross / gross_sum
-        lock_monthly = total * lock_gross / gross_sum
-    else:
-        s1_monthly = low_monthly = lock_monthly = 0.0
     # escalating ruin warning by fraction (honest -- no ROI cap, just sharper warnings as risk climbs)
     if kelly <= KELLY_CEILING + 1e-9:
         ceil_flag = ""
@@ -2219,9 +2283,11 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         style={"display": "flex", "flexWrap": "wrap", "gap": "10px"})
 
     # ---- (a) 12-month Monte-Carlo equity fan ----
-    # back out a monthly sigma from p5 (5th pctile of a normal): p5 = med - 1.645*sigma
-    mu_m = k["med"] / 100.0
-    sigma_m = max(1e-4, (mu_m - k["p5"] / 100.0) / 1.645)
+    # drift = the COMPUTED scenario ROI (so the fan reflects the user's edge/city/trade inputs, FIX 1); the
+    # monthly sigma is scaled from the Kelly sweep's median/p5 spread (the validated risk shape) about it.
+    mu_m = roi / 100.0
+    swp_sigma = max(1e-4, (k["med"] - k["p5"]) / 100.0 / 1.645)      # sweep's monthly sigma at this fraction
+    sigma_m = max(1e-4, swp_sigma * (abs(mu_m) / max(abs(k["med"]) / 100.0, 1e-6)) if k["med"] else swp_sigma)
     months = _np.arange(0, 13)
     rng = _np.random.default_rng(12345)
     n_paths = 4000
@@ -2320,20 +2386,31 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
                      range=[_vmin * 1.18 if _vmin < 0 else 0, _vmax * 1.18])
     fig.update_xaxes(title="")
 
-    # ---- (d) capacity-ceiling-vs-bankroll line chart (deliverable #3): profit flattening ----
+    # ---- (d) capacity-ceiling-vs-bankroll line chart (deliverable #3 + FIX 4): profit flattening ----
+    # Re-evaluate the SAME per-stream profit model across a $100 -> $100M bankroll sweep. The UNCAPPED line
+    # uses the same per-trade stake math WITHOUT the DEPTH_CAP (contracts grow with bankroll, no depth limit);
+    # the CAPPED line clamps per-trade contracts at DEPTH_CAP -> a hard plateau. FIX 4: LOG x AND LOG y so the
+    # capped plateau is visible against the rising uncapped line over 6 decades of bankroll.
     cap = go.Figure()
     if cap_ceiling > 0:
-        bxs = _np.geomspace(100.0, 1e8, 60)                          # $100 -> $100M log axis
-        uncapped = k["med"] * min(2.0, max(0.0, wr_scale)) / 100.0   # ROI fraction (pre-cap, per $)
-        prof_uncapped = uncapped * bxs                               # linear-in-bankroll (no cap)
-        prof_capped = _np.minimum(prof_uncapped, cap_ceiling)        # depth-capped plateau
-        # bankroll where the cap first binds
-        bind_b = (cap_ceiling / uncapped) if uncapped > 0 else None
+        bxs = _np.geomspace(100.0, 1e8, 70)                          # $100 -> $100M log axis
+        def _profit_at(bk, capped):
+            ct = SANDBOX_CT_CAL * (kelly / 0.25) * (bk / 1000.0)
+            ct = max(0.0, min(DEPTH_CAP, ct) if capped else ct)      # capped vs uncapped per-trade size
+            s = (s1_edge_c / 100.0) * s1tr * cities * ct
+            l = (low_edge_c / 100.0) * low_trades * low_cities * ct
+            k_ = (lock_edge_c / 100.0) * lockpm * cities * ct
+            return s + l + k_
+        prof_uncapped = _np.array([_profit_at(b, capped=False) for b in bxs])
+        prof_capped = _np.array([_profit_at(b, capped=True) for b in bxs])
+        # bankroll where the capped curve first flattens (within 1% of the ceiling)
+        bind_idx = _np.argmax(prof_capped >= 0.99 * cap_ceiling) if (prof_capped >= 0.99 * cap_ceiling).any() else None
+        bind_b = float(bxs[bind_idx]) if bind_idx else None
         cap.add_scatter(x=bxs, y=prof_uncapped, mode="lines", name="uncapped (no depth limit)",
-                        line=dict(color=NEUTRAL, width=1.4, dash="dash"),
+                        line=dict(color=NEUTRAL, width=1.6, dash="dash"),
                         hovertemplate="bankroll $%{x:,.0f}<br>uncapped $%{y:,.0f}/mo<extra></extra>")
-        cap.add_scatter(x=bxs, y=prof_capped, mode="lines", name="depth-capped (real)",
-                        line=dict(color=GREEN, width=2.6),
+        cap.add_scatter(x=bxs, y=prof_capped, mode="lines", name="depth-capped (your actual)",
+                        line=dict(color=GREEN, width=2.8),
                         fill="tozeroy", fillcolor="rgba(0,224,138,.08)",
                         hovertemplate="bankroll $%{x:,.0f}<br>capped $%{y:,.0f}/mo<extra></extra>")
         cap.add_hline(y=cap_ceiling, line=dict(color=RED, width=1.4, dash="dot"),
@@ -2343,14 +2420,16 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
             cap.add_vline(x=bind_b, line=dict(color=AMBER, width=1.3, dash="dash"),
                           annotation_text=f"cap binds ~${bind_b:,.0f}", annotation_position="top right",
                           annotation_font=dict(color=AMBER, size=10))
-        # mark the user's current bankroll
+        # mark the user's current bankroll on the capped (actual) curve
         bnow = max(100.0, min(1e8, bankroll if bankroll > 0 else 1000.0))
-        pnow = min(uncapped * bnow, cap_ceiling)
-        cap.add_scatter(x=[bnow], y=[pnow], mode="markers", name="your bankroll",
+        pnow = _profit_at(bnow, capped=True)
+        cap.add_scatter(x=[bnow], y=[max(pnow, 1e-9)], mode="markers", name="your bankroll",
                         marker=dict(size=15, color=AMBER, symbol="star", line=dict(width=1.4, color="#fff")),
                         hovertemplate=f"your bankroll ${bnow:,.0f}<br>$%{{y:,.0f}}/mo<extra></extra>")
         cap.update_xaxes(type="log", title="bankroll ($, log scale)", tickprefix="$", tickformat="~s")
-        cap.update_yaxes(title="paper profit ($ / month)", tickprefix="$", tickformat="~s")
+        # LOG y so the capped plateau and rising uncapped line are both legible across decades (FIX 4)
+        cap.update_yaxes(type="log", title="paper profit ($ / month, log scale)", tickprefix="$",
+                         tickformat="~s")
     cap.update_layout(title=None)
 
     if capacity_bound:
@@ -2362,21 +2441,24 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
                             style={"display": "flex", "alignItems": "baseline", "flexWrap": "wrap"})
     elif cap_ceiling > 0:
         cap_flag = html.Div([badge("WITHIN CAPACITY", "good"),
-                             html.Span(f"  Profit still scales with bankroll; the depth-cap ceiling "
-                                       f"(${cap_ceiling:,.0f}/mo) binds above ~${(cap_ceiling/max(roi/100.0,1e-9)):,.0f}.",
+                             html.Span(f"  Profit still scales with bankroll; the depth-cap ceiling is "
+                                       f"${cap_ceiling:,.0f}/mo (the green plateau on the log chart below).",
                                        className="sub", style={"marginLeft": "8px"})],
                             style={"display": "flex", "alignItems": "baseline", "flexWrap": "wrap"})
     else:
         cap_flag = html.Div("Set non-zero edges to see the capacity ceiling.", className="sub")
 
-    note = (f"Headline ROI is ANCHORED to the validated $1k Kelly sweep (median {k['med']:+.1f}%/m at "
-            f"{kelly:.2f}x, edges sized at CI lower bound), tilted by win-rate vs the 55% baseline — it is "
-            f"NOT a free-running contracts×trades product (that double-counts and overstates). The breakdown "
-            f"splits that anchored total across streams by modeled gross weight: high-S1 edge "
-            f"max(0,{S1_EDGE_K}·({MKT_SD}−RMSE)−slip)={s1_edge_c:.1f}c×{s1tr:.0f}/mo×{cities} cities; "
-            f"daily-low {low_edge_c:.1f}c×{low_trades:.0f}/mo×{low_cities} cities; lock-in "
-            f"{lock_edge_c:.1f}c×{lockpm:.0f}/mo×{cities} cities. Risk band + fan + curve + gauge all read "
-            f"the same sweep. The dollar total is then CAPPED by real market depth "
+    note = (f"Profit is a TRANSPARENT per-stream sum, driven by every input: for each active stream, "
+            f"(net c/contract ÷ 100) × trades/mo × active markets × contracts/trade. Contracts/trade "
+            f"({s1_ct:.1f} here) is CALIBRATED so the default scenario at 0.25x on $1,000 equals the "
+            f"validated $1k Kelly-sweep median (~7.1%/m) — it then scales linearly with Kelly ({kelly:.2f}x) "
+            f"and bankroll (${bankroll:,.0f}), capped at {DEPTH_CAP}ct/market. High-S1 net "
+            f"max(0,{S1_EDGE_K}·({MKT_SD}−RMSE)−slip)={s1_edge_c:.1f}c × {s1tr:.0f}/mo × {cities} cities = "
+            f"${s1_monthly:,.0f}/mo; daily-low {low_edge_c:.1f}c × {low_trades:.0f}/mo × "
+            f"{low_cities} cities = ${low_monthly:,.0f}/mo; lock-in {lock_edge_c:.1f}c × {lockpm:.0f}/mo × "
+            f"{cities} cities = ${lock_monthly:,.0f}/mo. Win rate is NOT a lever — each net c/contract already "
+            f"embeds win/loss from the backtest. The Kelly fraction sets the stake (its validated risk shape "
+            f"feeds the risk band, fan, curve, and gauge). The total is CAPPED by real market depth "
             f"(~{DEPTH_CAP}ct/market within ~1c slip) -> a hard ${cap_ceiling:,.0f}/mo absolute ceiling "
             f"{'(BINDING now)' if capacity_bound else '(not binding yet)'}; past it, bankroll buys no extra "
             f"dollars. Paper/backtest — NOT a guarantee, never realized P&L; LIVE capital today = $0 "
