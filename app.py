@@ -27,14 +27,20 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, ALL, ctx
 
 from data import table, meta_value
 
-# ---- palette (mirrors assets/theme.css; neon demoted to one accent series) ----
-# Neon mint is the ONE primary data colour; everything structural is desaturated slate.
-BG, PANEL, INK, DIM = "#070b12", "rgba(17,24,36,0.86)", "#e8f1f8", "#8194a8"
-MINT, CYAN, VIOLET, AMBER, RED = "#18e3a0", "#56a9d6", "#9a8fd0", "#d9a93a", "#e07070"
-ACCENT = MINT
-PALETTE = [MINT, CYAN, VIOLET, AMBER, "#c07fb0", RED]
-GRIDCOL = "rgba(120,140,162,0.16)"        # gridlines: desaturated, not mint
-AXISCOL = "rgba(120,140,162,0.30)"        # axis lines / ticks: slate
+# ---- palette (mirrors assets/theme.css; RED/GREEN financial-terminal retheme 2026-06-19) ----
+# GREEN (#16c784) = primary data series / positive / up / model-good. RED (#ea3943) = negative / down /
+# loss. Cyan/violet are SPARING secondary series only; amber is the 3rd (paper/warn) accent.
+# MINT is kept as the symbol name for the primary GREEN so existing call sites need no rename.
+BG, PANEL, INK, DIM = "#0a0c0e", "rgba(22,26,30,0.88)", "#eef2f3", "#8a949b"
+GREEN, RED = "#16c784", "#ea3943"
+MINT = GREEN                              # alias: "MINT" historically == the primary accent (now green)
+CYAN, VIOLET, AMBER = "#4a90b8", "#8a7fc0", "#d9a23a"
+ACCENT = GREEN
+# colorway LEADS green -> red so sign/order reads positive-first, loss-last; cyan/violet sit between as
+# desaturated secondary series.
+PALETTE = [GREEN, CYAN, VIOLET, AMBER, "#7fb0a0", RED]
+GRIDCOL = "rgba(138,150,158,0.14)"        # gridlines: neutral slate
+AXISCOL = "rgba(138,150,158,0.30)"        # axis lines / ticks: neutral slate
 STALE_AFTER_MIN = 90                       # global staleness threshold
 
 NAV = [("overview", "◉", "Overview"), ("forecasts", "☉", "Forecasts"),
@@ -129,10 +135,10 @@ def panel_divergence():
     # edge-zone ribbons: above the diagonal (model > market -> buy-YES edge) and below (sell)
     xs = [0, 1]
     fig.add_scatter(x=xs + xs[::-1], y=[0.05, 1.05, 1.0, 0.0], fill="toself",
-                    fillcolor="rgba(24,227,160,.06)", line=dict(width=0), mode="lines",
+                    fillcolor="rgba(22,199,132,.07)", line=dict(width=0), mode="lines",
                     name="model > market", hoverinfo="skip", showlegend=False)
     fig.add_scatter(x=xs + xs[::-1], y=[-0.05, 0.95, 1.0, 0.0], fill="toself",
-                    fillcolor="rgba(224,112,112,.05)", line=dict(width=0), mode="lines",
+                    fillcolor="rgba(234,57,67,.06)", line=dict(width=0), mode="lines",
                     name="model < market", hoverinfo="skip", showlegend=False)
     fig.add_scatter(x=[0, 1], y=[0, 1], mode="lines", name="agreement",
                     line=dict(color=DIM, width=1.4, dash="dash"), hoverinfo="skip")
@@ -194,10 +200,10 @@ def panel_fan():
         return card([html.H3("Forecast Fan Chart"), empty_state("Fills from the replay dataset.")])
     fig = go.Figure()
     fig.add_scatter(x=list(d["date"]) + list(d["date"])[::-1], y=list(d["hi2"]) + list(d["lo2"])[::-1],
-                    fill="toself", fillcolor="rgba(86,169,214,.07)", line=dict(width=0), mode="lines",
+                    fill="toself", fillcolor="rgba(74,144,184,.08)", line=dict(width=0), mode="lines",
                     name="±2σ", hoverinfo="skip")
     fig.add_scatter(x=list(d["date"]) + list(d["date"])[::-1], y=list(d["hi1"]) + list(d["lo1"])[::-1],
-                    fill="toself", fillcolor="rgba(86,169,214,.14)", line=dict(width=0), mode="lines",
+                    fill="toself", fillcolor="rgba(74,144,184,.16)", line=dict(width=0), mode="lines",
                     name="±1σ", hoverinfo="skip")
     fig.add_scatter(x=d["date"], y=d["forecast_f"], mode="lines", name="forecast",
                     line=dict(color=CYAN, width=2, shape="spline", smoothing=0.4),
@@ -236,7 +242,7 @@ def panel_surprise():
         z[int(r["dow"])][wi[r["week"]]] = r["error_f"]
         cd[int(r["dow"])][wi[r["week"]]] = r["date"]
     fig = go.Figure(go.Heatmap(z=z, x=weeks, y=dows, customdata=cd,
-                               colorscale=[[0, "#56a9d6"], [0.5, "#0e1622"], [1, "#e07070"]],
+                               colorscale=[[0, MINT], [0.5, "#12161a"], [1, RED]],
                                zmid=0, xgap=2, ygap=2,
                                colorbar=dict(title="°F", thickness=10, len=0.8,
                                              tickfont=dict(size=10, color=DIM)),
@@ -247,7 +253,7 @@ def panel_surprise():
     mean_err = float(d["error_f"].mean())
     return card([html.H3("Settlement-Surprise Calendar — Signed Forecast Error"),
                  _cap(f"GitHub-style date grid of (observed − forecast) high in °F over ~{len(d)} settled days. "
-                      f"Red = we under-forecast (hotter than expected), blue = over-forecast. Mean error "
+                      f"Red = we under-forecast (hotter than expected), green = over-forecast. Mean error "
                       f"{mean_err:+.2f}°F — a small residual warm bias; clusters reveal regime surprises. Backtest."),
                  graph(_tpl(fig, h=240, legend=False))])
 
@@ -278,7 +284,7 @@ def panel_funnel():
     top = max(d["count"].max(), 1)
     fig = go.Figure(go.Funnel(y=d["stage"], x=d["count"], textposition="inside",
                               textinfo="value+percent initial",
-                              marker=dict(color=[MINT, CYAN, VIOLET, AMBER, "#c07fb0"]),
+                              marker=dict(color=[MINT, CYAN, VIOLET, AMBER, "#7fb0a0"]),
                               connector=dict(line=dict(color=GRIDCOL, width=1)),
                               hovertemplate="%{y}<br>%{x} signals<extra></extra>"))
     fig.update_layout(title=None, margin=dict(l=160, r=20, t=10, b=20))
@@ -384,8 +390,8 @@ def panel_brier_gauges():
                             "tickfont": {"size": 8, "color": DIM}},
                    "bar": {"color": col, "thickness": 0.7},
                    "bgcolor": "rgba(0,0,0,0)", "borderwidth": 0,
-                   "steps": [{"range": [-8, 0], "color": "rgba(224,112,112,.10)"},
-                             {"range": [0, 8], "color": "rgba(24,227,160,.10)"}],
+                   "steps": [{"range": [-8, 0], "color": "rgba(234,57,67,.10)"},
+                             {"range": [0, 8], "color": "rgba(22,199,132,.10)"}],
                    "threshold": {"line": {"color": DIM, "width": 1.5}, "thickness": 0.8, "value": 0}},
             domain={"row": 0, "column": i}))
     fig.update_layout(grid={"rows": 1, "columns": cols, "pattern": "independent"},
@@ -690,7 +696,7 @@ def render_overview():
         fig = go.Figure()
         fig.add_scatter(x=br["date"], y=br["bankroll"], name="Paper bankroll", mode="lines",
                         line=dict(color=MINT, width=2.6, shape="spline", smoothing=0.5),
-                        fill="tozeroy", fillcolor="rgba(24,227,160,.07)",
+                        fill="tozeroy", fillcolor="rgba(22,199,132,.07)",
                         hovertemplate="%{x}<br>%{y:$,.0f}<extra></extra>")
         if "expected_bankroll" in br:
             fig.add_scatter(x=br["date"], y=br["expected_bankroll"], name="Backtest-expected", mode="lines",
@@ -967,38 +973,108 @@ def render_forward():
 
 
 def render_sandbox():
-    def field(id_, label, val, step="any"):
-        return html.Div([html.Label(label), dcc.Input(id=id_, type="number", value=val, step=step)],
-                        className="sb-field")
-    inputs = card([html.H3("Scenario inputs"),
-                   field("sb-rmse", "Day-ahead RMSE (°F)", 1.66, 0.01),
-                   field("sb-lock", "Lock-in edge (c/contract)", 12, 0.5),
-                   field("sb-cities", "Number of S1 cities", 3, 1),
-                   html.Div("Daily-LOW S1 (newly validated, NYC)", className="sub",
-                            style={"margin": "14px 0 2px", "color": MINT, "fontWeight": "700"}),
-                   field("sb-lowedge", "Daily-low S1 edge (c/contract)", 6.96, 0.1),
-                   field("sb-lowcities", "Daily-low S1 cities", 1, 1),
-                   field("sb-lowtrades", "Daily-low trades / month / city", 82, 1),
-                   html.Div("Capital & costs", className="sub",
-                            style={"margin": "14px 0 2px", "color": DIM, "fontWeight": "700"}),
-                   field("sb-bankroll", "Bankroll ($)", 5000, 100),
-                   field("sb-s1alloc", "S1 allocation per trade (%)", 0.5, 0.1),
-                   field("sb-lockalloc", "Lock-in allocation per lock (%)", 3.0, 0.1),
-                   field("sb-slip", "Slippage (c/contract)", 1.0, 0.5)],
-                  style={"flex": "1", "minWidth": "290px"})
-    out = card([html.H3("Projected monthly result"),
-                html.Div("Estimated monthly profit", className="sub"),
+    def field(id_, label, val, step="any", mn=None, mx=None):
+        kw = {"id": id_, "type": "number", "value": val, "step": step}
+        if mn is not None:
+            kw["min"] = mn
+        if mx is not None:
+            kw["max"] = mx
+        return html.Div([html.Label(label), dcc.Input(**kw)], className="sb-field")
+
+    # ---- column 1: edge & flow inputs ----
+    edge_inputs = card([html.H3("Edges & Flow"),
+        html.Div("Day-ahead S1 (high)", className="sub",
+                 style={"margin": "2px 0 2px", "color": MINT, "fontWeight": "700"}),
+        field("sb-rmse", "Day-ahead RMSE (°F)", 1.66, 0.01, 0.5, 3.0),
+        field("sb-cities", "Active high-S1 cities (streams)", 3, 1, 0, 7),
+        field("sb-s1trades", "High-S1 trades / month / city", 84, 1, 0, 400),
+        html.Div("Daily-LOW S1 (validated, overnight)", className="sub",
+                 style={"margin": "14px 0 2px", "color": MINT, "fontWeight": "700"}),
+        field("sb-lowedge", "Daily-low S1 edge (c/contract)", 6.96, 0.1, 0, 20),
+        field("sb-lowcities", "Daily-low S1 cities", 1, 1, 0, 7),
+        field("sb-lowtrades", "Daily-low trades / month / city", 82, 1, 0, 400),
+        html.Div("Lock-in (latency, NYC + airports)", className="sub",
+                 style={"margin": "14px 0 2px", "color": DIM, "fontWeight": "700"}),
+        field("sb-lock", "Lock-in edge (c/contract)", 12, 0.5, 0, 30),
+        field("sb-lockpm", "Locks / month / city", 14, 1, 0, 120)],
+        style={"flex": "1", "minWidth": "270px"})
+
+    # ---- column 2: capital, risk profile, frictions ----
+    cap_inputs = card([html.H3("Capital & Risk Profile"),
+        field("sb-bankroll", "Bankroll ($)", 1000, 100, 100, 1_000_000),
+        html.Div("Kelly fraction (risk profile)", className="sb-field-lbl u-label",
+                 style={"margin": "12px 0 6px"}),
+        dcc.Slider(id="sb-kelly", min=0.25, max=0.75, step=0.05, value=0.25,
+                   marks={0.25: "0.25", 0.35: "0.35", 0.50: "0.50", 0.65: "0.65", 0.75: "0.75"},
+                   tooltip={"placement": "bottom", "always_visible": False},
+                   updatemode="mouseup"),
+        html.Div("Hard ceiling 0.50x — beyond it, ruin risk climbs steeply.", className="sub",
+                 style={"margin": "8px 0 2px", "fontSize": "11px"}),
+        html.Div(style={"height": "10px"}),
+        field("sb-winrate", "Win rate (%)", 55, 1, 1, 99),
+        field("sb-slip", "Slippage assumption (c/contract)", 1.0, 0.5, 0, 3),
+        html.Div("Win rate + slippage tune the per-trade economics; the Kelly fraction governs "
+                 "stake size and therefore the risk band below.", className="sub",
+                 style={"marginTop": "8px", "fontSize": "11px"})],
+        style={"flex": "1", "minWidth": "270px"})
+
+    # ---- column 3: headline result ----
+    out = card([html.H3("Projected Monthly Result"),
+                html.Div("Estimated monthly profit (this scenario)", className="sub"),
                 html.Div(id="sb-profit", className="sb-out", style={"color": MINT}),
                 html.Div("Monthly ROI on bankroll", className="sub", style={"marginTop": "10px"}),
-                html.Div(id="sb-roi", className="sb-out", style={"color": CYAN}),
+                html.Div(id="sb-roi", className="sb-out"),
+                html.Div(id="sb-kelly-band", style={"marginTop": "14px"}),
                 html.Div(id="sb-note", className="sub", style={"marginTop": "12px"})],
-               style={"flex": "1", "minWidth": "290px"})
-    chartc = card([html.H3("Profit breakdown"), graph_placeholder := dcc.Graph(id="sb-chart",
-                   config={"displayModeBar": False})], style={"flex": "1.4", "minWidth": "340px"})
-    return html.Div([section("Sandbox — paper profitability model"),
-                     html.Div("Interactive estimate. Transparent model (see note); NOT a guarantee — paper "
-                              "research only. Edit any input.", className="sub", style={"marginBottom": "10px"}),
-                     html.Div([inputs, out, chartc], className="grid")])
+               style={"flex": "1.1", "minWidth": "300px"})
+
+    risk_panel = card([html.H3("Risk Profile — Kelly Stake Sweep"),
+        html.Div(["At the selected Kelly fraction, the real numbers from the $1,000 correlation-aware "
+                  "Monte-Carlo stake sweep (interpolated between rows). Severity is color-coded: ",
+                  html.Span("green = ok", style={"color": MINT, "fontWeight": "700"}), ", ",
+                  html.Span("amber = elevated", style={"color": AMBER, "fontWeight": "700"}), ", ",
+                  html.Span("red = ruin-risk", style={"color": RED, "fontWeight": "700"}),
+                  ". Hard ceiling at 0.50x."], className="sub", style={"marginBottom": "10px"}),
+        html.Div(id="sb-risk-metrics")],
+        style={"flex": "1"})
+
+    charts = card([html.H3("Projected Equity Fan — 12-Month Monte-Carlo"),
+        html.Div("Median path with p5/p95 bands, modeled from the median %/m and an implied monthly "
+                 "sigma backed out of the p5 outcome. A model, not a forecast.", className="sub"),
+        dcc.Graph(id="sb-fan", config={"displayModeBar": False})])
+    chart_rr = card([html.H3("Risk vs Return Across Kelly Fractions"),
+        html.Div("Median monthly return vs p95 max-drawdown for each Kelly fraction; your current pick is "
+                 "highlighted. The curve bends sharply right past 0.50x.", className="sub"),
+        dcc.Graph(id="sb-rr", config={"displayModeBar": False})])
+    chart_dist = card([html.H3("Monthly Return Distribution + Drawdown Gauge"),
+        html.Div("Modeled monthly-return spread (p5 / median / p95) and the p95 max-drawdown dial for the "
+                 "selected fraction.", className="sub"),
+        dcc.Graph(id="sb-dist", config={"displayModeBar": False})])
+    chart_break = card([html.H3("Profit Breakdown by Stream"),
+        dcc.Graph(id="sb-chart", config={"displayModeBar": False})])
+
+    disclaimer = card([html.Div("How this is computed", className="u-label", style={"marginBottom": "6px"}),
+        html.Div(["The profit breakdown is a transparent parametric model: per-stream edge (c/contract) "
+                  "× trades/month × stake (Kelly-fraction × bankroll, depth-capped at 250 contracts) less "
+                  "slippage. The risk band, equity fan, risk/return curve, and drawdown gauge are read from "
+                  "(and interpolated within) the $1,000 correlation-aware Monte-Carlo stake sweep — every "
+                  "number is sized at the edge CI lower bound. ",
+                  html.B("Paper / backtest estimate — NOT a guarantee, never realized P&L."), " Staged math: "
+                  "today LIVE capital = $0 until the pre-registered forward gates PASS; this lab shows the "
+                  "what-if if/when they do."], className="sub")],
+        style={"borderColor": "color-mix(in srgb, var(--amber) 40%, transparent)"})
+
+    return html.Div([section("Sandbox — Interactive Risk / Return Lab"),
+        html.Div("Tune the edges, capital, and risk profile. Every output is a transparent paper model "
+                 "(see the note at the bottom) — research only, never realized P&L.", className="sub",
+                 style={"marginBottom": "10px"}),
+        html.Div([edge_inputs, cap_inputs, out], className="grid"),
+        html.Div([html.Div(risk_panel, className="col-12")], className="grid12"),
+        html.Div([html.Div(charts, className="col-6"), html.Div(chart_rr, className="col-6")],
+                 className="grid12"),
+        html.Div([html.Div(chart_dist, className="col-6"), html.Div(chart_break, className="col-6")],
+                 className="grid12"),
+        html.Div([html.Div(disclaimer, className="col-12")], className="grid12")])
 
 
 def render_risk():
@@ -1139,60 +1215,253 @@ def _ov_updated(_n):
 # ---- Sandbox profitability model (transparent; paper estimate only) ----
 MKT_SD = 1.95          # market prices ~this implied SD; edge ~ overconfidence vs our RMSE
 S1_EDGE_K = 12.0       # c/contract per F of (MKT_SD - RMSE); calibrated to ~+4c at RMSE 1.66
-S1_TRADES_PM = 84      # per city per month (NY-measured)
-LOCKS_PM = 14          # per city per month (~0.5/day, conservative)
 DEPTH_CAP = 250        # contracts fillable within slippage (measured median)
 S1_PRICE, LOCK_PRICE, LOW_PRICE = 0.5, 0.9, 0.5
-# Daily-LOW S1 (KXLOWTNYC) measured defaults: net +6.96c/ct, ~82 trades/mo, NYC validated (CHI = watch).
-# Modeled as a fixed measured net (orthogonal overnight signal), slippage-adjusted like the high-S1 leg.
+
+# Kelly stake-sweep — TRANSPARENT EMBEDDED CONSTANT, sourced verbatim from
+# data/processed/kelly_1k_stake_sweep_20260619_000854.json ($1,000 correlation-aware MC, every edge
+# sized at its CI lower bound). Rows: fraction -> the real risk/return numbers. Interpolated linearly
+# between rows when the user picks an in-between fraction. 0.50x = the HARD CEILING.
+# Keys: med = median %/m, p5 = p5 %/m (1-in-20 bad month), dd = p95 max-DD % (staged),
+#       sdd = p95 max-DD % under STRESS (all edges at CI lower bound), stress = stress median %/m.
+# ALL values verified against data/processed/kelly_1k_stake_sweep_20260619_000854.json. The earlier
+# P(month<0)/P(DD>25%) probabilities were DROPPED: inconsistent between Kelly's .md and .json AND
+# internally impossible (P(DD>25%) cannot exceed P(DD>p95)=5%). Drawdown PERCENTILES are well-defined.
+KELLY_SWEEP = [
+    {"f": 0.25, "med":  7.08, "p5":  -4.51, "dd":  9.4, "sdd": 12.0, "stress": 1.94},
+    {"f": 0.35, "med":  9.98, "p5":  -6.32, "dd": 12.9, "sdd": 16.5, "stress": 2.66},
+    {"f": 0.50, "med": 14.40, "p5":  -9.03, "dd": 18.0, "sdd": 22.7, "stress": 3.68},
+    {"f": 0.65, "med": 18.91, "p5": -11.73, "dd": 22.8, "sdd": 28.6, "stress": 4.63},
+    {"f": 0.75, "med": 21.97, "p5": -13.53, "dd": 25.9, "sdd": 32.3, "stress": 5.22},
+]
+KELLY_CEILING = 0.50   # hard ceiling — beyond it the STRESS max-drawdown climbs past ~28%
 
 
-@app.callback(Output("sb-profit", "children"), Output("sb-roi", "children"), Output("sb-note", "children"),
-              Output("sb-chart", "figure"),
-              Input("sb-rmse", "value"), Input("sb-lock", "value"), Input("sb-cities", "value"),
-              Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
-              Input("sb-bankroll", "value"), Input("sb-s1alloc", "value"), Input("sb-lockalloc", "value"),
-              Input("sb-slip", "value"))
-def _sandbox(rmse, lock_c, cities, low_c, low_cities, low_trades, bankroll, s1a, locka, slip):
+def kelly_interp(frac):
+    """Linear interpolation of the embedded Kelly sweep at an arbitrary fraction (clamped to row range)."""
+    rows = KELLY_SWEEP
+    if frac <= rows[0]["f"]:
+        return dict(rows[0])
+    if frac >= rows[-1]["f"]:
+        return dict(rows[-1])
+    for a, b in zip(rows, rows[1:]):
+        if a["f"] <= frac <= b["f"]:
+            t = (frac - a["f"]) / (b["f"] - a["f"])
+            return {k: (a[k] + t * (b[k] - a[k])) if k != "f" else frac for k in a}
+    return dict(rows[-1])
+
+
+# severity classing for the risk metrics (green ok / amber elevated / red ruin)
+def _sev_dd(dd):       # p95 max-drawdown %
+    return "good" if dd < 12 else ("warn" if dd < 20 else "bad")
+
+
+def _sev_sdd(dd):      # p95 max-drawdown % under the STRESS scenario (stricter band than staged)
+    return "good" if dd < 16 else ("warn" if dd < 25 else "bad")
+
+
+def _risk_metric(label, value, sev, meaning):
+    color = {"good": MINT, "warn": AMBER, "bad": RED}[sev]
+    return html.Div([
+        html.Div(label, className="u-label"),
+        html.Div(value, className="mono", style={"fontSize": "24px", "fontWeight": "800",
+                                                  "color": color, "margin": "2px 0 2px"}),
+        html.Div(meaning, className="sub", style={"fontSize": "11px", "lineHeight": "1.45"})],
+        className="card", style={"flex": "1", "minWidth": "150px", "padding": "12px 14px"})
+
+
+@app.callback(
+    Output("sb-profit", "children"), Output("sb-roi", "children"), Output("sb-roi", "style"),
+    Output("sb-kelly-band", "children"), Output("sb-note", "children"), Output("sb-risk-metrics", "children"),
+    Output("sb-chart", "figure"), Output("sb-fan", "figure"), Output("sb-rr", "figure"),
+    Output("sb-dist", "figure"),
+    Input("sb-rmse", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
+    Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
+    Input("sb-lock", "value"), Input("sb-lockpm", "value"),
+    Input("sb-bankroll", "value"), Input("sb-kelly", "value"), Input("sb-winrate", "value"),
+    Input("sb-slip", "value"))
+def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
+             bankroll, kelly, winrate, slip):
+    import numpy as _np
+    blank = _tpl(go.Figure(), h=300)
     try:
-        rmse = float(rmse); lock_c = float(lock_c); cities = max(0, int(cities))
+        rmse = float(rmse); cities = max(0, int(cities)); s1tr = max(0.0, float(s1tr))
         low_c = float(low_c); low_cities = max(0, int(low_cities)); low_trades = max(0.0, float(low_trades))
-        bankroll = float(bankroll)
-        s1a = float(s1a) / 100.0; locka = float(locka) / 100.0; slip = float(slip)
+        lock_c = float(lock_c); lockpm = max(0.0, float(lockpm))
+        bankroll = max(0.0, float(bankroll)); kelly = float(kelly)
+        winrate = min(99.0, max(1.0, float(winrate))) / 100.0; slip = max(0.0, float(slip))
     except (TypeError, ValueError):
-        return "—", "—", "Enter valid numbers.", _tpl(go.Figure(), h=300)
-    # day-ahead high S1
+        return ("—", "—", {"color": DIM}, "", "Enter valid numbers in every field.", "",
+                blank, blank, blank, blank)
+    kelly = min(0.75, max(0.25, kelly))
+
+    # ---- risk band from the embedded Kelly sweep (interpolated) ----
+    # The HEADLINE return is ANCHORED to the validated $1k Kelly sweep median %/m (NOT a free-running
+    # contracts*trades product, which double-counts and badly overstates the edge). The per-stream
+    # breakdown below shows the COMPOSITION of that anchored total, weighted by each stream's modeled
+    # gross monthly contribution -- so inputs reshape the mix without inventing an inflated dollar figure.
+    k = kelly_interp(kelly)
+    # per-stream gross monthly contribution (relative weights only)
     s1_edge_c = max(0.0, S1_EDGE_K * (MKT_SD - rmse) - slip)
-    s1_ct = min(DEPTH_CAP, (bankroll * s1a) / S1_PRICE) if bankroll > 0 else 0
-    s1_monthly = S1_TRADES_PM * cities * s1_ct * s1_edge_c / 100.0
-    # daily-low S1 (measured net, slippage-adjusted; same allocation/depth model as the high leg)
     low_edge_c = max(0.0, low_c - slip)
-    low_ct = min(DEPTH_CAP, (bankroll * s1a) / LOW_PRICE) if bankroll > 0 else 0
-    low_monthly = low_trades * low_cities * low_ct * low_edge_c / 100.0
-    # lock-in
     lock_edge_c = max(0.0, lock_c - slip)
-    lock_ct = min(DEPTH_CAP, (bankroll * locka) / LOCK_PRICE) if bankroll > 0 else 0
-    lock_monthly = LOCKS_PM * cities * lock_ct * lock_edge_c / 100.0
-    total = s1_monthly + low_monthly + lock_monthly
-    roi = (total / bankroll * 100.0) if bankroll > 0 else 0.0
+    wr_scale = winrate / 0.55   # win-rate tilts realized edge vs the 55% baseline calibration
+    s1_gross = max(0.0, s1tr * cities * s1_edge_c)
+    low_gross = max(0.0, low_trades * low_cities * low_edge_c)
+    lock_gross = max(0.0, lockpm * cities * lock_edge_c)
+    gross_sum = s1_gross + low_gross + lock_gross
+    # headline monthly ROI = sweep median %/m, tilted by win-rate vs baseline (kept modest, capped)
+    roi = k["med"] * min(2.0, max(0.0, wr_scale))
+    total = roi / 100.0 * bankroll if bankroll > 0 else 0.0
+    roi_color = MINT if total >= 0 else RED
+    # split the anchored $ total across streams by gross weight (composition, not independent sums)
+    if gross_sum > 0:
+        s1_monthly = total * s1_gross / gross_sum
+        low_monthly = total * low_gross / gross_sum
+        lock_monthly = total * lock_gross / gross_sum
+    else:
+        s1_monthly = low_monthly = lock_monthly = 0.0
+    ceil_flag = ""
+    if kelly > KELLY_CEILING + 1e-9:
+        ceil_flag = html.Span("  ABOVE 0.50x HARD CEILING", className="badge bad",
+                              style={"marginLeft": "8px"})
+    kelly_band = html.Div([
+        html.Span(f"Kelly {kelly:.2f}x", className="badge good" if kelly <= KELLY_CEILING else "badge bad"),
+        ceil_flag,
+        html.Div([f"Sweep (interpolated): median ", html.B(f"{k['med']:+.1f}%/m"),
+                  f" · p5 {k['p5']:+.1f}%/m · stress {k['stress']:+.1f}%/m"],
+                 className="sub", style={"marginTop": "6px", "fontSize": "11.5px"})])
+
+    metrics = html.Div([
+        _risk_metric("Median return", f"{k['med']:+.1f}%/m", "good" if k["med"] > 0 else "bad",
+                     "Typical month at this stake (paper model)."),
+        _risk_metric("Downside p5", f"{k['p5']:+.1f}%/m", _sev_dd(abs(k["p5"]) * 1.0),
+                     "1-in-20 bad month — the soft floor."),
+        _risk_metric("p95 max drawdown", f"{k['dd']:.1f}%", _sev_dd(k["dd"]),
+                     "Worst peak-to-trough in 19/20 paths."),
+        _risk_metric("Stress max drawdown", f"{k['sdd']:.1f}%", _sev_sdd(k["sdd"]),
+                     "Worst peak-to-trough if EVERY edge is at its CI lower bound. Hard ceiling 0.50x."),
+        _risk_metric("Stress return", f"{k['stress']:+.1f}%/m", "good" if k["stress"] > 0 else "bad",
+                     "Median month, all edges at CI lower bound at once.")],
+        style={"display": "flex", "flexWrap": "wrap", "gap": "10px"})
+
+    # ---- (a) 12-month Monte-Carlo equity fan ----
+    # back out a monthly sigma from p5 (5th pctile of a normal): p5 = med - 1.645*sigma
+    mu_m = k["med"] / 100.0
+    sigma_m = max(1e-4, (mu_m - k["p5"] / 100.0) / 1.645)
+    months = _np.arange(0, 13)
+    rng = _np.random.default_rng(12345)
+    n_paths = 4000
+    # multiplicative monthly returns -> equity multiple paths
+    draws = rng.normal(mu_m, sigma_m, size=(n_paths, 12))
+    eq = _np.cumprod(1.0 + _np.clip(draws, -0.95, None), axis=1)
+    eq = _np.hstack([_np.ones((n_paths, 1)), eq]) * (bankroll if bankroll > 0 else 1.0)
+    med_path = _np.median(eq, axis=0)
+    p5_path = _np.percentile(eq, 5, axis=0)
+    p95_path = _np.percentile(eq, 95, axis=0)
+    fan = go.Figure()
+    fan.add_scatter(x=list(months) + list(months)[::-1], y=list(p95_path) + list(p5_path)[::-1],
+                    fill="toself", fillcolor="rgba(22,199,132,.10)", line=dict(width=0), mode="lines",
+                    name="p5–p95", hoverinfo="skip")
+    fan.add_scatter(x=months, y=med_path, mode="lines", name="median",
+                    line=dict(color=MINT, width=2.4, shape="spline", smoothing=0.4),
+                    hovertemplate="month %{x}<br>%{y:$,.0f}<extra></extra>")
+    fan.add_scatter(x=months, y=p5_path, mode="lines", name="p5", line=dict(color=RED, width=1.3, dash="dot"),
+                    hovertemplate="month %{x}<br>p5 %{y:$,.0f}<extra></extra>")
+    fan.add_scatter(x=months, y=p95_path, mode="lines", name="p95",
+                    line=dict(color=CYAN, width=1.3, dash="dot"),
+                    hovertemplate="month %{x}<br>p95 %{y:$,.0f}<extra></extra>")
+    base = bankroll if bankroll > 0 else 1.0
+    fan.add_hline(y=base, line=dict(color=AXISCOL, width=1, dash="dash"))
+    fan.update_layout(title=None)
+    fan.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f")
+    fan.update_xaxes(title="month", nticks=13)
+
+    # ---- (b) risk vs return curve across fractions ----
+    fr = [r["f"] for r in KELLY_SWEEP]; med = [r["med"] for r in KELLY_SWEEP]; dd = [r["dd"] for r in KELLY_SWEEP]
+    rr = go.Figure()
+    rr.add_scatter(x=dd, y=med, mode="lines+markers+text", name="Kelly frontier",
+                   text=[f"{f:.2f}x" for f in fr], textposition="top center",
+                   textfont=dict(size=10, color=DIM),
+                   line=dict(color=CYAN, width=2, shape="spline", smoothing=0.3),
+                   marker=dict(size=9, color=[MINT if f <= KELLY_CEILING else RED for f in fr],
+                               line=dict(width=1, color="rgba(255,255,255,.25)")),
+                   hovertemplate="%{text}<br>median %{y:+.1f}%/m<br>p95 maxDD %{x:.1f}%<extra></extra>")
+    rr.add_scatter(x=[k["dd"]], y=[k["med"]], mode="markers", name="your pick",
+                   marker=dict(size=16, color=AMBER, symbol="star",
+                               line=dict(width=1.4, color="#fff")),
+                   hovertemplate=f"your pick {kelly:.2f}x<br>median %{{y:+.1f}}%/m"
+                                 f"<br>p95 maxDD %{{x:.1f}}%<extra></extra>")
+    # mark the hard ceiling drawdown (0.50x = 18%)
+    rr.add_vline(x=18.0, line=dict(color=AMBER, width=1.4, dash="dash"),
+                 annotation_text="0.50x hard ceiling", annotation_position="top",
+                 annotation_font=dict(color=AMBER, size=10))
+    rr.update_layout(title=None)
+    rr.update_yaxes(title="median return (%/month)", ticksuffix="%")
+    rr.update_xaxes(title="p95 max drawdown (%)", ticksuffix="%")
+
+    # ---- (c) return distribution + drawdown gauge ----
+    dist = go.Figure()
+    dist.add_trace(go.Indicator(
+        mode="gauge+number", value=k["dd"],
+        number={"suffix": "%", "font": {"size": 22, "color": _sev_color(_sev_dd(k["dd"]))}},
+        title={"text": "p95 max drawdown", "font": {"size": 12, "color": INK}},
+        gauge={"axis": {"range": [0, 40], "tickwidth": 1, "tickcolor": AXISCOL,
+                        "tickfont": {"size": 9, "color": DIM}},
+               "bar": {"color": _sev_color(_sev_dd(k["dd"])), "thickness": 0.72},
+               "bgcolor": "rgba(0,0,0,0)", "borderwidth": 0,
+               "steps": [{"range": [0, 12], "color": "rgba(22,199,132,.12)"},
+                         {"range": [12, 20], "color": "rgba(217,162,58,.12)"},
+                         {"range": [20, 40], "color": "rgba(234,57,67,.12)"}],
+               "threshold": {"line": {"color": AMBER, "width": 2}, "thickness": 0.85, "value": 18}},
+        domain={"x": [0.0, 0.42], "y": [0.0, 1.0]}))
+    # return spread bar (p5 / median / p95) on the right
+    spread_x = [k["p5"], k["med"], k["med"] + (k["med"] - k["p5"])]   # p95 ~ symmetric proxy of the band
+    dist.add_bar(x=["p5", "median", "p95"], y=spread_x,
+                 marker_color=[RED, MINT, CYAN], width=0.6,
+                 text=[f"{v:+.1f}%" for v in spread_x], textposition="outside", cliponaxis=False,
+                 xaxis="x2", yaxis="y2",
+                 hovertemplate="%{x}: %{y:+.1f}%/m<extra></extra>")
+    dist.update_layout(
+        title=None, template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=INK, family="Inter, system-ui", size=12), height=300, showlegend=False,
+        margin=dict(l=10, r=20, t=20, b=40),
+        xaxis2=dict(domain=[0.56, 1.0], anchor="y2", tickfont=dict(size=11, color=DIM),
+                    showgrid=False, linecolor=GRIDCOL),
+        yaxis2=dict(anchor="x2", title="%/month", ticksuffix="%", tickfont=dict(size=11, color=DIM),
+                    gridcolor=GRIDCOL, griddash="dot", zerolinecolor=AXISCOL,
+                    title_font=dict(size=11, color=DIM)))
+    dist.add_annotation(x=0.78, y=1.08, xref="paper", yref="paper", showarrow=False,
+                        text="Monthly return spread", font=dict(size=12, color=INK))
+
+    # ---- profit breakdown by stream ----
     fig = go.Figure()
-    labels = ["S1 day-ahead high", "Daily-low S1", "Lock-in", "TOTAL"]
+    labels = ["High S1", "Daily-low S1", "Lock-in", "TOTAL"]
     vals = [s1_monthly, low_monthly, lock_monthly, total]
-    fig.add_bar(x=labels, y=vals, marker_color=[MINT, VIOLET, CYAN, AMBER], width=0.62,
+    fig.add_bar(x=labels, y=vals, marker_color=[MINT, "#7fb0a0", CYAN, AMBER], width=0.62,
                 text=[f"${v:,.0f}" for v in vals], textposition="outside", cliponaxis=False,
                 hovertemplate="%{x}<br>%{y:$,.0f} / month<extra></extra>")
-    fig.update_layout(title="Estimated Monthly Profit by Stream")
-    _vmax = max(vals + [1])
+    fig.update_layout(title=None)
+    _vmax = max(list(vals) + [1.0]); _vmin = min(list(vals) + [0.0])
     fig.update_yaxes(title="paper profit ($ / month)", tickprefix="$", tickformat=",.0f",
-                     range=[0, _vmax * 1.18])
-    note = (f"Transparent paper model. High S1 edge ≈ max(0, {S1_EDGE_K}·({MKT_SD}−RMSE)−slip) "
-            f"= {s1_edge_c:.1f}c; {S1_TRADES_PM} trades/mo × {cities} cities × {s1_ct:.0f} ct "
-            f"(depth-capped {DEPTH_CAP}). Daily-low S1: measured net {low_c:.2f}c − slip = "
-            f"{low_edge_c:.1f}c; {low_trades:.0f} trades/mo × {low_cities} city/cities × {low_ct:.0f} ct "
-            f"(defaults = NYC KXLOWTNYC measured: +6.96c, ~82/mo, validated; CHI-low = watch). "
-            f"Lock-in: {LOCKS_PM}/mo × {cities} cities × {lock_ct:.0f} ct × {lock_edge_c:.1f}c. "
-            f"Paper/backtest estimate only — NOT a guarantee, never realized P&L.")
-    return f"${total:,.0f}", f"{roi:+.1f}%", note, _tpl(fig, h=320, legend=False)
+                     range=[_vmin * 1.18 if _vmin < 0 else 0, _vmax * 1.18])
+    fig.update_xaxes(title="")
+
+    note = (f"Headline ROI is ANCHORED to the validated $1k Kelly sweep (median {k['med']:+.1f}%/m at "
+            f"{kelly:.2f}x, edges sized at CI lower bound), tilted by win-rate vs the 55% baseline — it is "
+            f"NOT a free-running contracts×trades product (that double-counts and overstates). The breakdown "
+            f"splits that anchored total across streams by modeled gross weight: high-S1 edge "
+            f"max(0,{S1_EDGE_K}·({MKT_SD}−RMSE)−slip)={s1_edge_c:.1f}c×{s1tr:.0f}/mo×{cities} cities; "
+            f"daily-low {low_edge_c:.1f}c×{low_trades:.0f}/mo×{low_cities} cities; lock-in "
+            f"{lock_edge_c:.1f}c×{lockpm:.0f}/mo×{cities} cities. Risk band + fan + curve + gauge all read "
+            f"the same sweep. Paper/backtest — NOT a guarantee, never realized P&L; LIVE capital today = $0 "
+            f"until the forward gates PASS.")
+    return (f"${total:,.0f}", f"{roi:+.1f}%", {"color": roi_color}, kelly_band, note, metrics,
+            _tpl(fig, h=300, legend=False), _tpl(fan, h=300), _tpl(rr, h=300, legend=False), dist)
+
+
+def _sev_color(sev):
+    return {"good": MINT, "warn": AMBER, "bad": RED}[sev]
 
 
 if __name__ == "__main__":

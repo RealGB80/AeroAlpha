@@ -1,7 +1,8 @@
 /* ============================================================
-   AeroAlpha — investor dashboard theme (overhaul 2026-06-19, Iris)
-   De-neonised: neon is now an ACCENT only (one primary series + active nav
-   + focus rings). Structure (borders/gridlines/axis text) -> desaturated slate.
+   AeroAlpha — investor dashboard theme (RED/GREEN retheme 2026-06-19, Iris)
+   Hypermodern financial-terminal palette: GREEN (#16c784) = primary / positive /
+   up / model-good; RED (#ea3943) = negative / down / loss. Cyan/violet demoted to
+   SPARING secondary-series use only. Premium warm near-black base; light = clean paper.
    Token-based dark/light. Two motions only: 120ms hover + 200ms route fade.
    ============================================================ */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
@@ -17,44 +18,44 @@
   --track:   .4px;     /* the ONE uppercase-label tracking */
   --gutter:  16px;     /* the ONE grid gutter token */
 
-  /* dark surfaces */
-  --bg:        #070b12;
-  --bg2:       #0a0f18;
-  --panel:     rgba(17, 24, 36, 0.86);
-  --panel-2:   rgba(26, 35, 50, 0.55);
-  --border:    rgba(96, 116, 140, 0.22);   /* desaturated slate structure */
-  --border-hi: rgba(96, 116, 140, 0.40);
-  --ink:       #e8f1f8;
-  --dim:       #8194a8;
-  --grid:      rgba(120, 140, 162, 0.16);  /* gridlines: desaturated, not mint */
+  /* dark surfaces (premium warm near-black terminal base) */
+  --bg:        #0a0c0e;
+  --bg2:       #0e1113;
+  --panel:     rgba(22, 26, 30, 0.88);
+  --panel-2:   rgba(32, 38, 43, 0.55);
+  --border:    rgba(120, 132, 140, 0.20);   /* neutral slate structure */
+  --border-hi: rgba(120, 132, 140, 0.38);
+  --ink:       #eef2f3;
+  --dim:       #8a949b;
+  --grid:      rgba(138, 150, 158, 0.14);   /* gridlines: neutral slate */
 
-  /* accent (the ONE primary data colour) + semantic */
-  --accent:    #18e3a0;   /* primary data series + active nav + focus */
-  --accent-mut:#3a9d80;   /* muted sign-positive in tables */
-  --cyan:      #56a9d6;   /* secondary series (desaturated) */
-  --violet:    #9a8fd0;
-  --amber:     #d9a93a;
-  --red:       #e07070;
-  --red-mut:   #b05c5c;   /* muted sign-negative in tables */
+  /* GREEN primary (gains/up/model-good) + RED negative (losses/down) + sparing accents */
+  --accent:    #16c784;   /* crisp financial emerald: primary series + active nav + focus + positive */
+  --accent-mut:#2f9d72;   /* muted sign-positive in tables */
+  --red:       #ea3943;   /* clean financial red: negative / down / loss */
+  --red-mut:   #b8434a;   /* muted sign-negative in tables */
+  --cyan:      #4a90b8;   /* SECONDARY series only (desaturated, sparing) */
+  --violet:    #8a7fc0;   /* SECONDARY series only (sparing) */
+  --amber:     #d9a23a;   /* 3rd accent: paper/warn/neutral structural highlight */
 }
 
 [data-theme="light"] {
-  --bg:        #f4f6f9;
-  --bg2:       #eef1f5;
-  --panel:     rgba(255, 255, 255, 0.92);
-  --panel-2:   rgba(236, 240, 245, 0.85);
-  --border:    rgba(40, 60, 84, 0.16);
-  --border-hi: rgba(40, 60, 84, 0.30);
-  --ink:       #1b2733;
-  --dim:       #5a6b7e;
-  --grid:      rgba(40, 60, 84, 0.14);
-  --accent:    #0b9c73;
-  --accent-mut:#0f8765;
-  --cyan:      #2d7fb0;
-  --violet:    #6f63b8;
+  --bg:        #f6f7f8;
+  --bg2:       #eef0f2;
+  --panel:     rgba(255, 255, 255, 0.94);
+  --panel-2:   rgba(238, 241, 243, 0.85);
+  --border:    rgba(40, 50, 60, 0.14);
+  --border-hi: rgba(40, 50, 60, 0.28);
+  --ink:       #161b1f;
+  --dim:       #5a646c;
+  --grid:      rgba(40, 50, 60, 0.12);
+  --accent:    #0d9d63;   /* emerald, darker for white paper */
+  --accent-mut:#0c8757;
+  --red:       #cf2f3a;   /* financial red on paper */
+  --red-mut:   #b02a33;
+  --cyan:      #2c7397;
+  --violet:    #5f55a0;
   --amber:     #b8860b;
-  --red:       #c1483f;
-  --red-mut:   #a23a32;
 }
 
 * { box-sizing: border-box; }
