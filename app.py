@@ -27,11 +27,15 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, ALL, ctx
 
 from data import table, meta_value
 
-# ---- palette (mirrors assets/theme.css) ----
-BG, PANEL, INK, DIM = "#05080d", "rgba(15,23,34,0.72)", "#e8f1f8", "#7e93a8"
-MINT, CYAN, VIOLET, AMBER, RED = "#18e3a0", "#38bdf8", "#a78bfa", "#fbbf24", "#fb6a6a"
-PALETTE = [MINT, CYAN, VIOLET, AMBER, "#f472b6", RED]
-GRIDCOL = "rgba(64,92,120,0.18)"
+# ---- palette (mirrors assets/theme.css; neon demoted to one accent series) ----
+# Neon mint is the ONE primary data colour; everything structural is desaturated slate.
+BG, PANEL, INK, DIM = "#070b12", "rgba(17,24,36,0.86)", "#e8f1f8", "#8194a8"
+MINT, CYAN, VIOLET, AMBER, RED = "#18e3a0", "#56a9d6", "#9a8fd0", "#d9a93a", "#e07070"
+ACCENT = MINT
+PALETTE = [MINT, CYAN, VIOLET, AMBER, "#c07fb0", RED]
+GRIDCOL = "rgba(120,140,162,0.16)"        # gridlines: desaturated, not mint
+AXISCOL = "rgba(120,140,162,0.30)"        # axis lines / ticks: slate
+STALE_AFTER_MIN = 90                       # global staleness threshold
 
 NAV = [("overview", "◉", "Overview"), ("forecasts", "☉", "Forecasts"),
        ("edges", "↑", "Edges"), ("multicity", "▦", "Multi-City"),
@@ -40,29 +44,31 @@ NAV = [("overview", "◉", "Overview"), ("forecasts", "☉", "Forecasts"),
        ("methodology", "≡", "Methodology")]
 
 
-def _tpl(fig, h=300, legend=True):
+def _tpl(fig, h=300, legend=None):
+    """Chart-styling pass. Titles live in the card H3 (NOT in Plotly) -> reclaim top margin.
+    Capped ticks (x ~7, y ~5), one gridline style (y dotted / x off), legend ONLY when >1 series.
+    Pass legend=True/False to force; default (None) auto-shows only for multi-trace figures."""
+    if legend is None:
+        legend = sum(1 for t in fig.data if getattr(t, "showlegend", None) is not False) > 1
     fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                       font=dict(color=INK, family="Inter, system-ui", size=12.5), colorway=PALETTE,
-                      margin=dict(l=62, r=24, t=58, b=48), height=h,
-                      showlegend=legend,
+                      margin=dict(l=58, r=20, t=18, b=44), height=h,
+                      title=None, showlegend=legend,
                       legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=11, color=DIM), orientation="h",
-                                  yanchor="bottom", y=1.04, xanchor="left", x=0, title_text="",
+                                  yanchor="bottom", y=1.02, xanchor="left", x=0, title_text="",
                                   itemsizing="constant"),
-                      title=dict(font=dict(size=14.5, color=INK, family="Inter, system-ui"),
-                                 x=0, xanchor="left", y=0.98, pad=dict(b=6)),
-                      hoverlabel=dict(bgcolor="rgba(8,13,22,.96)", bordercolor="rgba(24,227,160,.35)",
+                      hoverlabel=dict(bgcolor=PANEL, bordercolor=GRIDCOL,
                                       font=dict(family="Inter, system-ui", size=12.5, color=INK),
                                       align="left"),
                       bargap=0.42, bargroupgap=0.16, uniformtext=dict(mode="hide", minsize=9))
-    fig.update_xaxes(gridcolor="rgba(0,0,0,0)", zerolinecolor="rgba(126,147,168,.30)",
+    fig.update_xaxes(gridcolor="rgba(0,0,0,0)", zerolinecolor=AXISCOL, nticks=7,
                      linecolor=GRIDCOL, showline=True, ticks="outside", ticklen=5, tickcolor=GRIDCOL,
                      tickfont=dict(size=12, color=DIM),
                      title_font=dict(size=11.5, color=DIM), automargin=True)
-    fig.update_yaxes(gridcolor=GRIDCOL, griddash="dot", zerolinecolor="rgba(126,147,168,.30)",
+    fig.update_yaxes(gridcolor=GRIDCOL, griddash="dot", zerolinecolor=AXISCOL, nticks=5,
                      linecolor="rgba(0,0,0,0)", showline=False, ticks="", ticklen=0,
                      tickfont=dict(size=12, color=DIM),
                      title_font=dict(size=11.5, color=DIM), automargin=True)
-    # rounded bar corners + crisp outline on every bar trace (investor-grade, not raw plotly)
     fig.update_traces(selector=dict(type="bar"),
                       marker=dict(cornerradius=6, line=dict(width=0)),
                       textfont=dict(family="JetBrains Mono, monospace", size=11.5))
@@ -85,23 +91,51 @@ def section(title):
     return html.Div(title, className="page-title")
 
 
+def empty_state(msg, icon="◴"):
+    """Standard empty panel: icon + 'fills when X runs' message."""
+    return html.Div([html.Div(icon, className="es-ic"), html.Div(msg, className="es-msg")],
+                    className="empty-state")
+
+
+# ---- ONE number/unit registry: shared by KPIs, tables, AND hovertemplates ----
+def _isnull(v):
+    return v is None or (isinstance(v, float) and v != v)
+
+
+def fmt(value, unit, dash="—"):
+    """Single source of truth for value formatting. Returns (display_value, suffix).
+    unit one of: $, c/contract, F/°F, cities, pct (0..1), brier, int, min, count, "" (plain).
+    Use fmt_s() for a single joined string (tables/hovertemplates)."""
+    if _isnull(value):
+        return dash, ""
+    if unit == "$":
+        return f"${value:,.0f}", ""
+    if unit in ("c/contract", "c/ct"):
+        return f"{value:+.2f}", " c/ct"
+    if unit in ("F", "°F"):
+        return f"{value:.2f}", "°F"
+    if unit == "cities":
+        return f"{int(round(value))}", " cities"
+    if unit == "pct":
+        return f"{100 * value:.1f}", "%"
+    if unit == "brier":
+        return f"{value:.4f}", ""
+    if unit == "int":
+        return f"{value:,.0f}", ""
+    if unit == "min":
+        return f"{value:.0f}", " min"
+    if isinstance(value, float):
+        return f"{value:.2f}", ""
+    return f"{value}", ""
+
+
+def fmt_s(value, unit, dash="—"):
+    v, s = fmt(value, unit, dash)
+    return f"{v}{s}"
+
+
 def kpi_card(label, value, unit, status):
-    # clean value + unit formatting by unit type; drop redundant unit suffix for $ / cities
-    suffix = f" {unit}"
-    if value is None or (isinstance(value, float) and value != value):
-        val = "—"
-    elif unit == "$":
-        val, suffix = f"${value:,.0f}", ""
-    elif unit == "c/contract":
-        val, suffix = f"{value:+.2f}", " c/ct"
-    elif unit in ("F", "°F"):
-        val, suffix = f"{value:.2f}", " °F"
-    elif unit == "cities":
-        val, suffix = f"{int(round(value))}", " cities"
-    elif isinstance(value, float):
-        val = f"{value:.2f}"
-    else:
-        val = f"{value}"
+    val, suffix = fmt(value, unit)
     kind = {"BACKTEST": "good", "WALK-FORWARD": "good"}.get(status, "warn" if status != "NOT STARTED" else "neut")
     return html.Div([html.Div(label, className="label"),
                      html.Div([html.Span(val, className="val mono"),
@@ -109,42 +143,42 @@ def kpi_card(label, value, unit, status):
                      badge(status, kind)], className="card kpi")
 
 
-# ---- presentation helpers (clean number formatting + human-readable headers) ----
+# ---- presentation helpers (column formatters all delegate to the fmt() registry) ----
 # raw store column -> (Title-Case header, formatter). Unmapped columns fall back to Title Case + str.
 def _f2(v):    # 2-decimal float
-    return "—" if v is None or (isinstance(v, float) and v != v) else f"{v:.2f}"
+    return "—" if _isnull(v) else f"{v:.2f}"
 
 
 def _f1(v):
-    return "—" if v is None or (isinstance(v, float) and v != v) else f"{v:.1f}"
+    return "—" if _isnull(v) else f"{v:.1f}"
 
 
-def _cents(v):   # signed cents
-    return "—" if v is None or (isinstance(v, float) and v != v) else f"{v:+.2f}c"
+def _cents(v):   # signed cents -> "+1.23c"
+    return "—" if _isnull(v) else fmt(v, "c/contract")[0] + "c"
 
 
 def _cents1(v):
-    return "—" if v is None or (isinstance(v, float) and v != v) else f"{v:+.1f}c"
+    return "—" if _isnull(v) else f"{v:+.1f}c"
 
 
 def _degf(v):
-    return "—" if v is None or (isinstance(v, float) and v != v) else f"{v:.2f}°F"
+    return fmt_s(v, "°F")
 
 
 def _pct01(v):   # 0..1 -> %
-    return "—" if v is None or (isinstance(v, float) and v != v) else f"{100 * v:.1f}%"
+    return fmt_s(v, "pct")
 
 
 def _brier(v):
-    return "—" if v is None or (isinstance(v, float) and v != v) else f"{v:.4f}"
+    return fmt_s(v, "brier")
 
 
 def _intf(v):
-    return "—" if v is None or (isinstance(v, float) and v != v) else f"{v:,.0f}"
+    return fmt_s(v, "int")
 
 
 def _minf(v):
-    return "—" if v is None or (isinstance(v, float) and v != v) else f"{v:.0f} min"
+    return fmt_s(v, "min")
 
 
 COLUMN_FMT = {
@@ -254,6 +288,12 @@ def pro_table(df, present_df=True, max_rows=None, align_left=None, **_ignore):
     def td(c, v):
         s = "—" if (v is None or (isinstance(v, float) and v != v)) else str(v)
         cls = "pt-td " + ("pt-l" if left[c] else "pt-r mono")
+        # desaturated sign-aware numeric color (only on signed numeric cells like +/-c)
+        if not left[c] and s not in ("—", "-", ""):
+            if s.lstrip().startswith("+"):
+                cls += " pos"
+            elif s.lstrip().startswith("-") and any(ch.isdigit() for ch in s):
+                cls += " neg"
         return html.Td(s, className=cls)
 
     rows = df.to_dict("records")
@@ -275,6 +315,30 @@ def dt(df, present_df=True, **kw):
                      align_left=kw.pop("align_left", None))
 
 
+# ---- global staleness (from generated_at_utc) ----
+def _data_age_min():
+    """Minutes since the store was generated, or None if unparseable."""
+    raw = meta_value("generated_at_utc", "")
+    if not raw or raw == "—":
+        return None
+    for f in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%fZ"):
+        try:
+            t = datetime.strptime(raw.strip(), f).replace(tzinfo=timezone.utc)
+            return max(0.0, (datetime.now(timezone.utc) - t).total_seconds() / 60.0)
+        except ValueError:
+            continue
+    return None
+
+
+def staleness_chip():
+    age = _data_age_min()
+    if age is None:
+        return html.Span("DATA AGE UNKNOWN", className="stale-chip stale", id="stale-chip")
+    if age >= STALE_AFTER_MIN:
+        return html.Span(f"DATA {age:.0f} MIN OLD", className="stale-chip stale", id="stale-chip")
+    return html.Span(f"DATA {age:.0f} MIN OLD", className="stale-chip fresh", id="stale-chip")
+
+
 # ============================== PAGES ==============================
 def render_overview():
     kpi = table("kpi"); br = table("bankroll_run"); cs1 = table("city_s1")
@@ -282,10 +346,9 @@ def render_overview():
         if not kpi.empty else [card("no KPIs yet")]
     # bankroll
     if br.empty:
-        bank = card([html.H3("$1,000 paper run"),
-                     html.Div("NOT STARTED — wired and ready. The bankroll curve vs the backtest-expected "
-                              "path appears here automatically once the run logs its first settled day.",
-                              className="sub")])
+        bank = card([html.H3("$1,000 Paper Run"),
+                     empty_state("Wired and ready. The bankroll curve vs the backtest-expected path "
+                                 "fills here automatically once the run logs its first settled day.")])
     else:
         fig = go.Figure()
         fig.add_scatter(x=br["date"], y=br["bankroll"], name="Paper bankroll", mode="lines",
@@ -640,6 +703,8 @@ def topbar():
         html.Span("PAPER ONLY — no orders, no real money", className="pill paper"),
         html.Div(style={"flex": "1"}),
         html.Div(id="tb-tickers", style={"display": "flex", "gap": "20px"}),
+        html.Span("Dark", id="theme-toggle", className="pill theme-toggle", n_clicks=0,
+                  title="Toggle light / dark", style={"cursor": "pointer"}),
         html.Span(id="tb-clock", className="mono", style={"color": DIM, "fontSize": "13px"})])
 
 
@@ -655,10 +720,31 @@ def sidebar():
 
 app.layout = html.Div([
     dcc.Store(id="active", data="overview"),
+    dcc.Store(id="theme-store", storage_type="local", data="dark"),
     dcc.Interval(id="tick", interval=60_000, n_intervals=0),
     topbar(),
     html.Div(className="shell", children=[sidebar(), html.Div(id="main", className="main")]),
 ])
+
+
+# Light/dark toggle (clientside, persisted in localStorage; applies stored theme on load via the tick).
+# CSS provides [data-theme="light"]; default :root is dark, so data-theme="dark" simply falls through.
+app.clientside_callback(
+    """
+    function(nclicks, ntick, current) {
+        var theme = current || 'dark';
+        var trig = (dash_clientside.callback_context.triggered || []).map(function(t){return t.prop_id;});
+        if (trig.some(function(p){return p.indexOf('theme-toggle') === 0;})) {
+            theme = (theme === 'light') ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+        return [theme, theme === 'light' ? 'Light' : 'Dark'];
+    }
+    """,
+    [Output("theme-store", "data"), Output("theme-toggle", "children")],
+    [Input("theme-toggle", "n_clicks"), Input("tick", "n_intervals")],
+    State("theme-store", "data"),
+)
 
 
 @app.callback(Output("active", "data"), Input({"type": "nav", "key": ALL}, "n_clicks"),
