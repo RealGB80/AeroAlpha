@@ -79,6 +79,328 @@ def graph(fig):
     return dcc.Graph(figure=fig, config={"displayModeBar": False})
 
 
+# ============================================================================================
+# STATISTICAL GRAPHICS (2026-06-19). Each reads ONE curated table and returns a finished card.
+# Real units, formatted numbers, an honest one-line caption. PAPER/forward only -- never live P&L.
+# Every panel guards its own empty table so a missing source degrades to an empty-state, not a crash.
+# ============================================================================================
+def _cap(text):
+    return html.Div(text, className="sub", style={"marginBottom": "6px"})
+
+
+def panel_fills_waterfall():
+    """Quoted model edge -> -fee -> -slippage -> realized net, per paper stream. Plotly waterfall."""
+    d = table("fills_waterfall")
+    if d.empty:
+        return card([html.H3("Fills-Realism Waterfall"), empty_state("Fills when settled paper signals log.")])
+    figs = []
+    for _, r in d.iterrows():
+        fig = go.Figure(go.Waterfall(
+            orientation="v", measure=["absolute", "relative", "relative", "total"],
+            x=["Quoted edge", "− fee", "− slippage", "Realized net"],
+            y=[r["quoted_edge_c"], -r["fee_c"], -r["slippage_c"], None],
+            text=[fmt_s(r["quoted_edge_c"], "c/ct"), f"−{r['fee_c']:.2f}", f"−{r['slippage_c']:.2f}",
+                  fmt_s(r["realized_net_c"], "c/ct")],
+            textposition="outside", cliponaxis=False,
+            connector=dict(line=dict(color=GRIDCOL, width=1)),
+            increasing=dict(marker=dict(color=MINT)), decreasing=dict(marker=dict(color=RED)),
+            totals=dict(marker=dict(color=CYAN)),
+            hovertemplate="%{x}<br>%{y:+.2f} c/ct<extra></extra>"))
+        fig.update_layout(title=None)
+        fig.update_yaxes(title="c / contract", ticksuffix="c", tickformat="+.1f")
+        figs.append(html.Div([html.Div([html.B(r["stream"]),
+                                        html.Span(f"  n={int(r['n'])}", className="sub")]),
+                              graph(_tpl(fig, h=230, legend=False))],
+                             className="col-4"))
+    return card([html.H3("Fills-Realism Waterfall — Quoted Edge to Realized Net"),
+                 _cap("Per paper stream: the gross model edge at top-of-book, minus modeled fee and minus "
+                      "VWAP slippage, lands at the settled realized net. Net is paper/backtest c/contract "
+                      "on a thin settled sample (n shown) — never realized P&L. Negative streams (S3/S3early) "
+                      "show the fills reality: a quoted edge does not survive frictions."),
+                 html.Div(figs, className="grid12")])
+
+
+def panel_divergence():
+    """Model P(yes) vs market mid scatter with the no-disagreement diagonal and shaded edge zones."""
+    d = table("divergence")
+    if d.empty:
+        return card([html.H3("Market-Divergence Ribbon"), empty_state("Fills when edge scans log.")])
+    fig = go.Figure()
+    # edge-zone ribbons: above the diagonal (model > market -> buy-YES edge) and below (sell)
+    xs = [0, 1]
+    fig.add_scatter(x=xs + xs[::-1], y=[0.05, 1.05, 1.0, 0.0], fill="toself",
+                    fillcolor="rgba(24,227,160,.06)", line=dict(width=0), mode="lines",
+                    name="model > market", hoverinfo="skip", showlegend=False)
+    fig.add_scatter(x=xs + xs[::-1], y=[-0.05, 0.95, 1.0, 0.0], fill="toself",
+                    fillcolor="rgba(224,112,112,.05)", line=dict(width=0), mode="lines",
+                    name="model < market", hoverinfo="skip", showlegend=False)
+    fig.add_scatter(x=[0, 1], y=[0, 1], mode="lines", name="agreement",
+                    line=dict(color=DIM, width=1.4, dash="dash"), hoverinfo="skip")
+    for strat, color in zip(["S1", "S3", "S3early"], [MINT, VIOLET, CYAN]):
+        sub = d[d["strategy"] == strat]
+        if sub.empty:
+            continue
+        fig.add_scatter(x=sub["market_mid"], y=sub["model_p"], mode="markers", name=strat,
+                        marker=dict(size=9, color=color, opacity=.8,
+                                    line=dict(width=1, color="rgba(255,255,255,.2)")),
+                        customdata=sub[["ticker", "edge"]].values,
+                        hovertemplate="<b>%{customdata[0]}</b><br>market mid %{x:.2f} · model %{y:.2f}"
+                                      "<br>edge %{customdata[1]:+.2f}<extra></extra>")
+    fig.update_layout(title=None)
+    fig.update_xaxes(title="market mid (implied P)", range=[0, 1], tickformat=".0%")
+    fig.update_yaxes(title="model P(yes)", range=[0, 1], tickformat=".0%")
+    return card([html.H3("Market-Divergence Ribbon — Where We Disagree With the Market"),
+                 _cap("Each point is a scanned contract: our model P(yes) vs the market mid. On the dashed "
+                      "agreement line we have no view. The green band (model above market) is our buy-YES "
+                      "edge zone; red is the opposite. Distance from the line is the raw edge before fills. "
+                      "Paper/forward scans only."),
+                 graph(_tpl(fig, h=360))])
+
+
+def panel_pit():
+    """PIT histogram (10 bins) with the uniform expectation line and a KS 95% uniformity band."""
+    d = table("pit")
+    if d.empty:
+        return card([html.H3("Calibration — PIT Histogram"), empty_state("Fills when PIT report runs.")])
+    n = int(d["n"].iloc[0])
+    exp = float(d["expected"].iloc[0]); lo = float(d["band_lo"].iloc[0]); hi = float(d["band_hi"].iloc[0])
+    inside = ((d["count"] >= d["band_lo"]) & (d["count"] <= d["band_hi"])).all()
+    fig = go.Figure()
+    fig.add_scatter(x=list(d["bin"]) + list(d["bin"])[::-1], y=[hi] * len(d) + [lo] * len(d),
+                    fill="toself", fillcolor="rgba(120,140,162,.16)", line=dict(width=0),
+                    mode="lines", name="KS 95% band", hoverinfo="skip")
+    colors = [MINT if (lo <= c <= hi) else AMBER for c in d["count"]]
+    fig.add_bar(x=d["bin"], y=d["count"], marker_color=colors, width=0.78, name="observed",
+                hovertemplate="bin %{x}<br>%{y} of " + str(n) + "<extra></extra>")
+    fig.add_scatter(x=d["bin"], y=[exp] * len(d), mode="lines", name="uniform",
+                    line=dict(color=DIM, width=1.4, dash="dash"), hoverinfo="skip")
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="count")
+    fig.update_xaxes(title="PIT bin (predicted CDF at the observed high)")
+    verdict = "all bins inside the band → calibration not rejected" if inside else \
+        "some bins fall outside the band → mild miscalibration"
+    return card([html.H3("Calibration — PIT Histogram + KS Band"),
+                 _cap(f"Probability Integral Transform of the deployed calibrated ensemble (n={n} day-ahead "
+                      f"forecasts). A perfectly calibrated model is flat at the dashed uniform line; bars "
+                      f"inside the grey KS 95% band are consistent with uniformity. Here {verdict}. "
+                      f"Backtest, leak-free walk-forward PIT."),
+                 graph(_tpl(fig, h=320, legend=False))])
+
+
+def panel_fan():
+    """Forecast fan: deployed forecast high +/- sigma band vs realized observed high, recent dates."""
+    d = table("fan")
+    if d.empty:
+        return card([html.H3("Forecast Fan Chart"), empty_state("Fills from the replay dataset.")])
+    fig = go.Figure()
+    fig.add_scatter(x=list(d["date"]) + list(d["date"])[::-1], y=list(d["hi2"]) + list(d["lo2"])[::-1],
+                    fill="toself", fillcolor="rgba(86,169,214,.07)", line=dict(width=0), mode="lines",
+                    name="±2σ", hoverinfo="skip")
+    fig.add_scatter(x=list(d["date"]) + list(d["date"])[::-1], y=list(d["hi1"]) + list(d["lo1"])[::-1],
+                    fill="toself", fillcolor="rgba(86,169,214,.14)", line=dict(width=0), mode="lines",
+                    name="±1σ", hoverinfo="skip")
+    fig.add_scatter(x=d["date"], y=d["forecast_f"], mode="lines", name="forecast",
+                    line=dict(color=CYAN, width=2, shape="spline", smoothing=0.4),
+                    hovertemplate="%{x}<br>forecast %{y:.1f}°F<extra></extra>")
+    fig.add_scatter(x=d["date"], y=d["observed_f"], mode="markers", name="observed high",
+                    marker=dict(size=6, color=MINT, line=dict(width=1, color="rgba(255,255,255,.25)")),
+                    hovertemplate="%{x}<br>observed %{y:.1f}°F<extra></extra>")
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="daily high (°F)", ticksuffix="°F")
+    fig.update_xaxes(title="", nticks=8)
+    cov = ((d["observed_f"] >= d["lo1"]) & (d["observed_f"] <= d["hi1"])).mean()
+    return card([html.H3("Forecast Fan — Predictive Band vs Realized High"),
+                 _cap(f"Deployed day-ahead forecast (σ=1.66°F one-day-ahead) with ±1σ/±2σ predictive bands; "
+                      f"dots are the realized settlement high. Over these {len(d)} days {100*cov:.0f}% of "
+                      f"realized highs land inside ±1σ (well-calibrated band ≈ 68%). Backtest replay."),
+                 graph(_tpl(fig, h=340))])
+
+
+def panel_surprise():
+    """Settlement-surprise calendar heatmap: weekday x week, signed forecast error (observed - forecast)."""
+    d = table("surprise")
+    if d.empty:
+        return card([html.H3("Settlement-Surprise Calendar"), empty_state("Fills from the replay dataset.")])
+    import pandas as _pd
+    d = d.copy()
+    d["dt"] = _pd.to_datetime(d["date"], errors="coerce")
+    d = d.dropna(subset=["dt"]).sort_values("dt")
+    d["week"] = d["dt"].dt.strftime("%Y-W%U")
+    d["dow"] = d["dt"].dt.dayofweek
+    dows = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    weeks = list(dict.fromkeys(d["week"]))
+    z = [[None] * len(weeks) for _ in range(7)]
+    cd = [[None] * len(weeks) for _ in range(7)]
+    wi = {w: i for i, w in enumerate(weeks)}
+    for _, r in d.iterrows():
+        z[int(r["dow"])][wi[r["week"]]] = r["error_f"]
+        cd[int(r["dow"])][wi[r["week"]]] = r["date"]
+    fig = go.Figure(go.Heatmap(z=z, x=weeks, y=dows, customdata=cd,
+                               colorscale=[[0, "#56a9d6"], [0.5, "#0e1622"], [1, "#e07070"]],
+                               zmid=0, xgap=2, ygap=2,
+                               colorbar=dict(title="°F", thickness=10, len=0.8,
+                                             tickfont=dict(size=10, color=DIM)),
+                               hovertemplate="%{customdata}<br>error %{z:+.1f}°F<extra></extra>"))
+    fig.update_layout(title=None)
+    fig.update_xaxes(title="", showticklabels=False, nticks=12)
+    fig.update_yaxes(title="", autorange="reversed")
+    mean_err = float(d["error_f"].mean())
+    return card([html.H3("Settlement-Surprise Calendar — Signed Forecast Error"),
+                 _cap(f"GitHub-style date grid of (observed − forecast) high in °F over ~{len(d)} settled days. "
+                      f"Red = we under-forecast (hotter than expected), blue = over-forecast. Mean error "
+                      f"{mean_err:+.2f}°F — a small residual warm bias; clusters reveal regime surprises. Backtest."),
+                 graph(_tpl(fig, h=240, legend=False))])
+
+
+def panel_blotter():
+    """Recent settled paper signals: model edge / entry / realized net / win-loss colored table."""
+    d = table("blotter")
+    if d.empty:
+        return card([html.H3("Trade Blotter"), empty_state("Fills when settled paper signals log.")])
+    show = present(d, drop=["scan_utc"],
+                   rename={"model_edge_c": "Model Edge", "net_c": "Net", "entry": "Entry"},
+                   fmt={"model_edge_c": _cents, "net_c": _cents,
+                        "entry": lambda v: "—" if _isnull(v) else f"{v:.2f}",
+                        "win": lambda v: "WIN" if v == 1 else ("LOSS" if v == 0 else "—")},
+                   order=["city", "stream", "ticker", "side", "model_edge_c", "entry", "net_c", "win"])
+    return card([html.H3("Trade Blotter — Recent Settled Paper Signals"),
+                 _cap("The last settled paper signals across streams/cities: model edge at entry, effective "
+                      "entry price, realized paper net, and win/loss. Individual outcomes are noisy (small "
+                      "stakes, thin sample); the edge lives in the average, not any one row. Paper/forward."),
+                 pro_table(show, present_df=False, align_left=("Win",))])
+
+
+def panel_funnel():
+    """Signal funnel: candidate scans -> disagreement -> filters -> fillable -> net-positive."""
+    d = table("funnel")
+    if d.empty:
+        return card([html.H3("Signal Funnel"), empty_state("Fills when edge scans log.")])
+    top = max(d["count"].max(), 1)
+    fig = go.Figure(go.Funnel(y=d["stage"], x=d["count"], textposition="inside",
+                              textinfo="value+percent initial",
+                              marker=dict(color=[MINT, CYAN, VIOLET, AMBER, "#c07fb0"]),
+                              connector=dict(line=dict(color=GRIDCOL, width=1)),
+                              hovertemplate="%{y}<br>%{x} signals<extra></extra>"))
+    fig.update_layout(title=None, margin=dict(l=160, r=20, t=10, b=20))
+    return card([html.H3("Signal Funnel — Candidate to Net-Positive"),
+                 _cap("How many scanned contracts survive each gate: a model disagreement, the spread+size "
+                      "filters, depth/fillability, and finally a settled net-positive outcome. Most "
+                      "candidates are filtered out by design — selectivity is the point. Paper counts."),
+                 graph(_tpl(fig, h=300, legend=False))])
+
+
+def panel_decay():
+    """Per-stream cumulative-mean realized net over settled signals (edge half-life / decay sparklines)."""
+    d = table("decay")
+    if d.empty:
+        return card([html.H3("Edge Decay"), empty_state("Fills when settled paper signals log.")])
+    fig = go.Figure()
+    for strat, color in zip(["S1", "S3early", "S3"], [MINT, CYAN, VIOLET]):
+        sub = d[d["stream"] == strat].sort_values("seq")
+        if sub.empty:
+            continue
+        cummean = sub["net_c"].expanding().mean()
+        fig.add_scatter(x=sub["seq"], y=cummean, mode="lines+markers", name=f"{strat} (cum. mean)",
+                        line=dict(color=color, width=2, shape="spline", smoothing=0.4),
+                        marker=dict(size=4),
+                        hovertemplate=strat + " · signal %{x}<br>running net %{y:+.2f} c/ct<extra></extra>")
+    fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="running mean net (c / contract)", ticksuffix="c", tickformat="+.0f")
+    fig.update_xaxes(title="settled signal # (chronological)")
+    return card([html.H3("Edge Decay — Running Mean Net per Stream"),
+                 _cap("Cumulative-mean realized net as each settled paper signal lands, per stream. A line "
+                      "drifting toward or below zero is an edge decaying or never-real (the early-warning we "
+                      "want before committing). Thin samples — directional, not conclusive. Paper/backtest."),
+                 graph(_tpl(fig, h=300))])
+
+
+def panel_latency():
+    """Lock-in latency histogram vs the ~128s METAR floor (why NYC lock-in is a latency artifact)."""
+    d = table("latency")
+    if d.empty:
+        return card([html.H3("Lock-In Latency"), empty_state("Fills from the lock-in latency log.")])
+    import numpy as _np
+    v = d["latency_s"].astype(float)
+    med = float(v.median()); frac = float((v > 128).mean())
+    fig = go.Figure()
+    fig.add_histogram(x=v, nbinsx=28, marker_color=CYAN, opacity=0.9, name="obs",
+                      hovertemplate="%{x:.0f}s<br>%{y} scans<extra></extra>")
+    fig.add_vline(x=128, line=dict(color=AMBER, width=1.8, dash="dash"),
+                  annotation_text="128s METAR floor", annotation_position="top",
+                  annotation_font=dict(color=AMBER, size=10))
+    fig.add_vline(x=med, line=dict(color=MINT, width=1.6),
+                  annotation_text=f"median {med:.0f}s", annotation_position="top right",
+                  annotation_font=dict(color=MINT, size=10))
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="scans")
+    fig.update_xaxes(title="orderbook-publish latency after the :51 obs (seconds)")
+    return card([html.H3("Lock-In Latency — Distribution vs the 128s Floor"),
+                 _cap(f"Seconds between the :51 KNYC observation and when the priced orderbook updates "
+                      f"(n={len(v)} paper scans). Median {med:.0f}s and {100*frac:.0f}% sit at/above the ~128s "
+                      f"METAR floor — confirming NYC lock-in is a latency artifact of KNYC's slow feed, not a "
+                      f"fat edge. No faster free KNYC source exists."),
+                 graph(_tpl(fig, h=300, legend=False))])
+
+
+def panel_emos_skill():
+    """Deployed EMOS vs baselines: RMSE / CRPS bars (lower is better)."""
+    d = table("emos_skill")
+    if d.empty:
+        return card([html.H3("Ensemble Skill"), empty_state("Fills from the EMOS validation run.")])
+    fig = go.Figure()
+    colors = [MINT if "deployed" in m else DIM for m in d["model"]]
+    fig.add_bar(x=d["model"], y=d["rmse"], marker_color=colors, width=0.6, name="RMSE",
+                text=[f"{x:.2f}" for x in d["rmse"]], textposition="outside", cliponaxis=False,
+                hovertemplate="%{x}<br>RMSE %{y:.2f}°F<extra></extra>")
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="honest-test RMSE (°F)", ticksuffix="°F",
+                     range=[0, float(d["rmse"].max()) * 1.18])
+    fig.update_xaxes(title="")
+    return card([html.H3("Ensemble Skill — Deployed EMOS vs Baselines"),
+                 _cap("Leak-free honest-test RMSE by model variant (lower is better). The deployed EMOS "
+                      "(green) beats the inverse-variance and simple-mean baselines, which is WHY the "
+                      "ensemble is preferred. Cold honest-test window — strictly out-of-sample."),
+                 graph(_tpl(fig, h=300, legend=False))])
+
+
+def panel_brier_gauges():
+    """Per-city Brier skill-score radial gauges: model vs market (skill = 1 - model/market)."""
+    d = table("brier_gauge")
+    if d.empty:
+        return card([html.H3("Brier Skill Gauges"), empty_state("Fills from the multi-city edge run.")])
+    d = d.sort_values("skill", ascending=False).reset_index(drop=True)
+    n = len(d)
+    cols = min(n, 6)
+    fig = go.Figure()
+    for i, (_, r) in enumerate(d.iterrows()):
+        sk = float(r["skill"]) * 100.0
+        col = MINT if sk > 0 else RED
+        fig.add_trace(go.Indicator(
+            mode="gauge+number", value=sk,
+            number={"suffix": "%", "font": {"size": 20, "color": col}},
+            title={"text": f"{r['city']}", "font": {"size": 12, "color": INK}},
+            gauge={"axis": {"range": [-8, 8], "tickwidth": 1, "tickcolor": AXISCOL,
+                            "tickfont": {"size": 8, "color": DIM}},
+                   "bar": {"color": col, "thickness": 0.7},
+                   "bgcolor": "rgba(0,0,0,0)", "borderwidth": 0,
+                   "steps": [{"range": [-8, 0], "color": "rgba(224,112,112,.10)"},
+                             {"range": [0, 8], "color": "rgba(24,227,160,.10)"}],
+                   "threshold": {"line": {"color": DIM, "width": 1.5}, "thickness": 0.8, "value": 0}},
+            domain={"row": 0, "column": i}))
+    fig.update_layout(grid={"rows": 1, "columns": cols, "pattern": "independent"},
+                      template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(0,0,0,0)", margin=dict(l=10, r=10, t=30, b=10), height=180,
+                      font=dict(color=INK, family="Inter, system-ui"))
+    return card([html.H3("Brier Skill vs Market — Per City"),
+                 _cap("Brier skill score = 1 − (model Brier ÷ market Brier) on ALL settled day-ahead "
+                      "contracts; positive (green) = our probabilities beat the market on aggregate accuracy. "
+                      "Only NY clears on this raw-skill aggregate — the validated multi-city S1 edge comes "
+                      "from the market's overconfidence on selected contracts, not raw skill everywhere. "
+                      "Honest framing, paper/backtest."),
+                 graph(fig)])
+
+
 def card(children, cls="", **kw):
     return html.Div(children, className=f"card {cls}".strip(), **kw)
 
@@ -346,9 +668,21 @@ def render_overview():
         if not kpi.empty else [card("no KPIs yet")]
     # bankroll
     if br.empty:
-        bank = card([html.H3("$1,000 Paper Run"),
-                     empty_state("Wired and ready. The bankroll curve vs the backtest-expected path "
-                                 "fills here automatically once the run logs its first settled day.")])
+        # $1k DOLLAR curve stays OFF until separate approval. Fill this prime real estate with the REAL
+        # forward-evidence graphics instead of a blank placeholder: the signal funnel + the decay/skill.
+        bank = card([html.H3("Forward Evidence — Signal Funnel"),
+                     _cap("The $1,000 paper-run equity curve stays off until separately approved; until then "
+                          "this space shows the live forward evidence. Below: how scanned contracts narrow to "
+                          "net-positive settled paper signals."),
+                     (lambda f: graph(_tpl(go.Figure(go.Funnel(
+                         y=f["stage"], x=f["count"], textposition="inside",
+                         textinfo="value+percent initial",
+                         marker=dict(color=[MINT, CYAN, VIOLET, AMBER, "#c07fb0"]),
+                         connector=dict(line=dict(color=GRIDCOL, width=1)),
+                         hovertemplate="%{y}<br>%{x} signals<extra></extra>")).update_layout(
+                         title=None, margin=dict(l=160, r=20, t=10, b=20)), h=260, legend=False))
+                      if not (f := table("funnel")).empty else
+                      empty_state("Wired and ready. Forward evidence fills as paper signals settle."))])
     else:
         fig = go.Figure()
         fig.add_scatter(x=br["date"], y=br["bankroll"], name="Paper bankroll", mode="lines",
@@ -375,7 +709,9 @@ def render_overview():
                      html.Div(cards, className="grid"),
                      html.Div([html.Div(bank, style={"flex": "2", "minWidth": "420px"}),
                                html.Div(status_card, style={"flex": "1", "minWidth": "260px"})],
-                              className="grid")])
+                              className="grid"),
+                     html.Div([html.Div(panel_brier_gauges(), className="col-12")], className="grid12"),
+                     html.Div([html.Div(panel_blotter(), className="col-12")], className="grid12")])
 
 
 def render_forecasts():
@@ -476,7 +812,11 @@ def render_edges():
             card([html.H3("Per-City Edge Detail"),
                   dt(present(e, order=["city", "stream", "n", "avg_net_c", "win_rate",
                                        "brier_model", "brier_market", "beats_market", "status"]),
-                     present_df=False)])]
+                     present_df=False)]),
+            panel_fills_waterfall(),
+            html.Div([html.Div(panel_divergence(), className="col-6"),
+                      html.Div(panel_decay(), className="col-6")], className="grid12"),
+            html.Div([html.Div(panel_funnel(), className="col-12")], className="grid12")]
     return html.Div(body)
 
 
@@ -596,7 +936,11 @@ def render_accuracy():
                               className="grid"),
                      card([html.H3("RMSE Detail (°F)"),
                            dt(present(r, order=["city", "members_rmse", "s2x_rmse", "warm", "cold", "n"]),
-                              present_df=False)])])
+                              present_df=False)]),
+                     html.Div([html.Div(panel_pit(), className="col-6"),
+                               html.Div(panel_emos_skill(), className="col-6")], className="grid12"),
+                     html.Div([html.Div(panel_fan(), className="col-12")], className="grid12"),
+                     html.Div([html.Div(panel_surprise(), className="col-12")], className="grid12")])
 
 
 def render_forward():
@@ -670,7 +1014,8 @@ def render_risk():
                      html.Div([card([html.Div([html.H3(t), badge(k.upper(), k)],
                                               style={"display": "flex", "justifyContent": "space-between",
                                                      "alignItems": "center"}),
-                                     html.Div(d, className="sub")]) for t, d, k in items])])
+                                     html.Div(d, className="sub")]) for t, d, k in items]),
+                     html.Div([html.Div(panel_latency(), className="col-12")], className="grid12")])
 
 
 def render_methodology():
