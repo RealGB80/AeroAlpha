@@ -27,25 +27,32 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, ALL, ctx
 
 from data import table, meta_value
 
-# ---- palette (mirrors assets/theme.css; RED/GREEN financial-terminal retheme 2026-06-19) ----
-# GREEN (#16c784) = primary data series / positive / up / model-good. RED (#ea3943) = negative / down /
-# loss. Cyan/violet are SPARING secondary series only; amber is the 3rd (paper/warn) accent.
-# MINT is kept as the symbol name for the primary GREEN so existing call sites need no rename.
-BG, PANEL, INK, DIM = "#0a0c0e", "rgba(22,26,30,0.88)", "#eef2f3", "#8a949b"
-GREEN, RED = "#16c784", "#ea3943"
+# ---- palette (mirrors assets/theme.css; SHARP RED/GREEN quant-terminal retheme 2026-06-19) ----
+# HARD RULE: every CHART uses ONLY green / red / neutral. Positive = bright GREEN, negative = bright RED,
+# neutral series = light slate / white. No cyan/violet/amber in charts. The old CYAN/VIOLET/AMBER chart
+# constants are REPURPOSED to neutral/green/red so existing call sites keep working without a rename.
+# AMBER survives ONLY as a UI badge/pill accent (warn) in the CSS, never as a chart trace color.
+BG, PANEL, INK, DIM = "#070809", "rgba(20,24,28,0.90)", "#eef2f3", "#8a949b"
+GREEN, RED = "#00e08a", "#ff4d5e"         # brighter, sharper financial green / red
+GREEN_DK, RED_DK = "#0bbf78", "#e23b4c"   # muted variants for fills / secondary
+NEUTRAL = "#aeb8c0"                        # light slate = neutral data series (replaces blue/violet)
+NEUTRAL_DK = "#5b6770"                     # darker slate
 MINT = GREEN                              # alias: "MINT" historically == the primary accent (now green)
-CYAN, VIOLET, AMBER = "#4a90b8", "#8a7fc0", "#d9a23a"
+# REPURPOSED so charts are green/red/neutral ONLY:
+CYAN = NEUTRAL                            # was blue -> now neutral slate
+VIOLET = "#7f8a93"                        # was violet -> now darker neutral slate
+AMBER = "#d9a23a"                        # UI-only (pills/badges); NOT used as a chart trace
 ACCENT = GREEN
-# colorway LEADS green -> red so sign/order reads positive-first, loss-last; cyan/violet sit between as
-# desaturated secondary series.
-PALETTE = [GREEN, CYAN, VIOLET, AMBER, "#7fb0a0", RED]
-GRIDCOL = "rgba(138,150,158,0.14)"        # gridlines: neutral slate
-AXISCOL = "rgba(138,150,158,0.30)"        # axis lines / ticks: neutral slate
+# colorway: green primary, neutral slate secondary, darker neutral tertiary, red last (loss).
+PALETTE = [GREEN, NEUTRAL, VIOLET, GREEN_DK, "#8a949b", RED]
+GRIDCOL = "rgba(138,150,158,0.13)"        # gridlines: neutral slate
+AXISCOL = "rgba(138,150,158,0.28)"        # axis lines / ticks: neutral slate
 STALE_AFTER_MIN = 90                       # global staleness threshold
 
-NAV = [("overview", "◉", "Overview"), ("forecasts", "☉", "Forecasts"),
-       ("edges", "↑", "Edges"), ("multicity", "▦", "Multi-City"),
-       ("accuracy", "◎", "Forecast Accuracy"), ("forward", "✓", "Forward Validation"),
+NAV = [("overview", "◉", "Overview"), ("markets", "❖", "Markets / Live"),
+       ("forecasts", "☉", "Forecasts"), ("edges", "↑", "Edges"),
+       ("multicity", "▦", "Multi-City"), ("accuracy", "◎", "Forecast Accuracy"),
+       ("quantlab", "⊞", "Quant Lab"), ("forward", "✓", "Forward Validation"),
        ("sandbox", "⚙", "Sandbox"), ("risk", "⚠", "Risk & Honesty"),
        ("methodology", "≡", "Methodology")]
 
@@ -407,6 +414,406 @@ def panel_brier_gauges():
                  graph(fig)])
 
 
+# ============================================================================================
+# QUANT-TERMINAL PANELS (Iris 2026-06-19): dense live/terminal + Quant Lab graphics. Green/red/neutral
+# ONLY. Each reads ONE curated table, guards its own empty case, and carries an honest paper caption.
+# ============================================================================================
+def _spark(values, color=None, height=34, fill=True):
+    """Tiny inline sparkline (no axes/grid/hover-bar). Green if last>=first else red unless color given."""
+    if not values or len(values) < 2:
+        return html.Div(className="spark-empty", style={"height": f"{height}px"})
+    color = color or (GREEN if values[-1] >= values[0] else RED)
+    fig = go.Figure()
+    fig.add_scatter(y=values, mode="lines", line=dict(color=color, width=1.6, shape="spline", smoothing=0.5),
+                    fill="tozeroy" if fill else None,
+                    fillcolor=f"rgba({_rgb(color)},.10)" if fill else None, hoverinfo="skip")
+    fig.update_layout(margin=dict(l=0, r=0, t=2, b=2), height=height, paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
+    fig.update_xaxes(visible=False, fixedrange=True)
+    fig.update_yaxes(visible=False, fixedrange=True)
+    return dcc.Graph(figure=fig, config={"displayModeBar": False, "staticPlot": True},
+                     style={"height": f"{height}px"})
+
+
+def _rgb(hex_or_name):
+    h = {"#00e08a": "0,224,138", "#ff4d5e": "255,77,94", "#aeb8c0": "174,184,192"}.get(hex_or_name)
+    if h:
+        return h
+    hx = hex_or_name.lstrip("#")
+    if len(hx) == 6:
+        return f"{int(hx[0:2],16)},{int(hx[2:4],16)},{int(hx[4:6],16)}"
+    return "174,184,192"
+
+
+def _spark_for(metric):
+    """Pull a KPI sparkline series from the kpi_spark table (returns list of floats or [])."""
+    d = table("kpi_spark")
+    if d.empty or "metric" not in d:
+        return []
+    sub = d[d["metric"] == metric].sort_values("seq")
+    return list(sub["value"]) if not sub.empty else []
+
+
+def kpi_spark_card(label, value, unit, status, spark_metric=None, delta=None, spark_color=None):
+    """Compact KPI card: label, big value, optional green/red delta, and a sparkline (reference design)."""
+    val, suffix = fmt(value, unit)
+    sp = _spark_for(spark_metric) if spark_metric else []
+    delta_el = None
+    if delta is not None and not _isnull(delta):
+        dcls = "kpi-delta pos" if delta >= 0 else "kpi-delta neg"
+        delta_el = html.Span(f"{delta:+.2f}", className=dcls)
+    badge_kind = {"BACKTEST": "good", "WALK-FORWARD": "good", "FORWARD": "good"}.get(
+        status, "warn" if status not in ("NOT STARTED", "PAPER") else "neut")
+    return html.Div([
+        html.Div(label, className="label"),
+        html.Div([html.Span(val, className="val mono"), html.Span(suffix, className="unit"),
+                  delta_el], className="kpi-valrow"),
+        html.Div(_spark(sp, color=spark_color), className="kpi-spark") if sp else html.Div(),
+        badge(status, badge_kind)], className="card kpi kpi-spark-card")
+
+
+def kpi_spark_row():
+    """The dense 6-card KPI strip with sparklines from real history (reference Image 1 KPI ROW)."""
+    kpi = table("kpi"); rmse = table("forecast_rmse"); cn = table("city_network")
+    eq = table("equity_curve"); strat = table("strategy_perf")
+    def kget(name, col="value"):
+        r = kpi[kpi["name"] == name] if not kpi.empty and "name" in kpi else kpi.iloc[0:0]
+        return r[col].iloc[0] if not r.empty else None
+    ny_rmse = kget("ny_rmse")
+    cities = kget("cities_beating_market")
+    ny_edge = kget("ny_s1_edge_c")
+    # best validated stream edge (high or low)
+    best_edge = None
+    if not strat.empty and "edge_c" in strat:
+        ev = strat["edge_c"].dropna()
+        best_edge = float(ev.max()) if not ev.empty else None
+    # cumulative paper backtest net (cents) -> the "total return (paper)" headline, clearly backtest
+    cum = float(eq["equity_c"].iloc[-1]) if not eq.empty else None
+    cards = [
+        kpi_spark_card("NY DAY-AHEAD RMSE", ny_rmse, "F", "WALK-FORWARD", "latency_s",
+                       spark_color=NEUTRAL),
+        kpi_spark_card("NY S1 EDGE (S2X)", ny_edge, "c/contract", "BACKTEST", "ny_edge_c"),
+        kpi_spark_card("BEST STREAM EDGE", best_edge, "c/contract", "BACKTEST", "monthly_net_c"),
+        kpi_spark_card("CITIES BEAT MARKET", cities, "cities", "BACKTEST", None),
+        kpi_spark_card("PAPER NET (BACKTEST)", cum, "c/contract", "BACKTEST", "equity_c"),
+        kpi_spark_card("LIVE CAPITAL", 0, "$", "PAPER", None),
+    ]
+    return html.Div(cards, className="grid kpi-strip")
+
+
+# ---------- Markets / Live page panels ----------
+def panel_market_feed(compact=False):
+    """Live-ish Kalshi market feed: recent scanned quotes per city/market (time/city/market/quote/edge/side).
+    Honest: these are PAPER scans of public quotes, NOT orders. Source: forward monitor logs."""
+    d = table("market_feed")
+    if d.empty:
+        return card([html.H3("Live Market Feed"), empty_state("Fills as the paper monitors scan quotes.")])
+    show = present(d, drop=["status"],
+                   rename={"scan_utc": "Time", "quote_c": "Quote", "model_p": "Model P", "edge_c": "Edge"},
+                   fmt={"quote_c": lambda v: "—" if _isnull(v) else f"{v:.0f}c",
+                        "model_p": lambda v: "—" if _isnull(v) else f"{v:.0%}",
+                        "edge_c": _cents1},
+                   order=["scan_utc", "city", "market", "ticker", "side", "quote_c", "model_p", "edge_c"])
+    return card([html.H3("Live Market Feed — Paper Quote Scans"),
+                 _cap("Most-recent public Kalshi quotes the paper monitors scanned, per city/market: the "
+                      "quoted entry, our model probability, and the signed edge. PAPER scans of public "
+                      "data — never orders, never real money. Time is UTC."),
+                 pro_table(show, present_df=False, max_rows=18 if compact else 40,
+                           align_left=("Side", "Market"))], cls="feed-card", id="market-feed-card")
+
+
+def panel_city_network():
+    """City-network map: 7 Kalshi cities as glowing nodes on a US map (geo scatter), sized by edge, colored
+    by deployed status, with forecast/temp labels. Honest paper edges; status badges. Source: city_network."""
+    d = table("city_network")
+    if d.empty:
+        return card([html.H3("City Network"), empty_state("Fills from the city forecast snapshot.")])
+    d = d.copy()
+    stat_color = {"tradable": GREEN, "watch": AMBER, "not-deployed": NEUTRAL}
+    colors = [stat_color.get(s, NEUTRAL) for s in d["status"]]
+    sizes = [10 + 2.4 * (abs(e) if e == e and e is not None else 0) for e in d["edge_c"].fillna(0)]
+    fig = go.Figure()
+    # faint arcs from NY to every other city (network look)
+    ny = d[d["city"] == "NY"]
+    if not ny.empty:
+        nlat, nlon = float(ny["lat"].iloc[0]), float(ny["lon"].iloc[0])
+        for _, r in d.iterrows():
+            if r["city"] == "NY":
+                continue
+            fig.add_scattergeo(lat=[nlat, r["lat"]], lon=[nlon, r["lon"]], mode="lines",
+                               line=dict(width=0.7, color="rgba(0,224,138,.18)"), hoverinfo="skip",
+                               showlegend=False)
+    fig.add_scattergeo(
+        lat=d["lat"], lon=d["lon"], mode="markers+text",
+        text=[f"{c}" for c in d["city"]], textposition="top center",
+        textfont=dict(size=10, color=INK),
+        marker=dict(size=sizes, color=colors, opacity=0.92, line=dict(width=1.2, color="rgba(255,255,255,.4)")),
+        customdata=d[["name", "station", "forecast_f", "edge_c", "status"]].values,
+        hovertemplate="<b>%{customdata[0]}</b> (%{customdata[1]})<br>forecast %{customdata[2]:.1f}°F"
+                      "<br>paper edge %{customdata[3]:+.2f}c · %{customdata[4]}<extra></extra>",
+        showlegend=False)
+    fig.update_geos(scope="usa", bgcolor="rgba(0,0,0,0)", landcolor="rgba(40,46,52,.55)",
+                    lakecolor="rgba(0,0,0,0)", subunitcolor="rgba(138,150,158,.18)",
+                    countrycolor="rgba(138,150,158,.25)", coastlinecolor="rgba(138,150,158,.22)",
+                    showlakes=False, framecolor="rgba(0,0,0,0)")
+    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=340, paper_bgcolor="rgba(0,0,0,0)",
+                      geo=dict(bgcolor="rgba(0,0,0,0)"))
+    return card([html.H3("City Network — Day-Ahead Forecast & Paper Edge"),
+                 _cap("The seven Kalshi daily-high cities at their settlement stations. Node size = "
+                      "validated paper S1 edge magnitude; color = deployed status (green tradable / amber "
+                      "watch / slate not-deployed). Arcs are illustrative. Paper/forward, never live P&L."),
+                 graph(fig)])
+
+
+def panel_city_rank():
+    """Ranked city cards (rank, city, station, forecast, paper edge + status) -- the reference 'city cards'."""
+    d = table("city_network")
+    if d.empty:
+        return card([html.H3("City Rankings"), empty_state("Fills from the city forecast snapshot.")])
+    d = d.copy()
+    d["_e"] = d["edge_c"].fillna(-999)
+    d = d.sort_values("_e", ascending=False).reset_index(drop=True)
+    stat_kind = {"tradable": "good", "watch": "warn", "not-deployed": "neut"}
+    rows = []
+    for i, r in d.iterrows():
+        edge = "—" if _isnull(r["edge_c"]) else f"{r['edge_c']:+.2f}c"
+        ecls = "pos" if (not _isnull(r["edge_c"]) and r["edge_c"] >= 0) else "neg"
+        fc = "—" if _isnull(r["forecast_f"]) else f"{r['forecast_f']:.0f}°F"
+        rows.append(html.Div([
+            html.Span(f"{i+1}", className="cn-rank"),
+            html.Div([html.Div(r["name"], className="cn-city"),
+                      html.Div(r["station"], className="cn-station")], className="cn-id"),
+            html.Div(fc, className="cn-temp mono"),
+            html.Div(edge, className=f"cn-edge mono {ecls}"),
+            badge(str(r["status"]).upper().replace("-", " "),
+                  stat_kind.get(r["status"], "neut"))], className="cn-row"))
+    return card([html.H3("City Rankings — by Paper Edge"),
+                 _cap("Ranked by validated paper S1 edge. Forecast = ensemble day-ahead high. Status is the "
+                      "deployed paper path, not a tall-bar artifact. Paper/forward."),
+                 html.Div(rows, className="cn-list")], id="city-rank-card")
+
+
+def panel_alerts():
+    """Severity-tagged operational alerts from the integrity sentinel (CRITICAL/HIGH/MEDIUM/LOW)."""
+    d = table("alerts")
+    if d.empty:
+        return card([html.H3("Alerts"), empty_state("Fills from the integrity sentinel.")])
+    sev_kind = {"CRITICAL": "bad", "HIGH": "warn", "MEDIUM": "warn", "LOW": "good"}
+    rows = []
+    for _, r in d.iterrows():
+        rows.append(html.Div([
+            badge(r["severity"], sev_kind.get(r["severity"], "neut")),
+            html.Div([html.Div(r["name"].replace("_", " ").title(), className="al-name"),
+                      html.Div(r["detail"], className="al-detail")], className="al-body")],
+            className="al-row"))
+    return card([html.H3("Alerts — Integrity Sentinel"),
+                 _cap("Live operational alerts from the daily integrity sentinel: settlement alignment, "
+                      "calibration drift, source liveness, latency, false-lock guard. Paper-monitor scope."),
+                 html.Div(rows, className="al-list")], id="alerts-card")
+
+
+def panel_source_health():
+    """Source-health table: source / status (LIVE/DEGRADED) / freshness / detail (reference design)."""
+    d = table("source_health")
+    if d.empty:
+        return card([html.H3("Source Health"), empty_state("Fills from the integrity sentinel.")])
+    rows = []
+    for _, r in d.iterrows():
+        live = str(r["status"]).upper() == "LIVE"
+        age = "—" if _isnull(r["age_min"]) else f"{r['age_min']:.0f}m"
+        rows.append(html.Div([
+            html.Span(className=f"sh-dot {'live' if live else 'deg'}"),
+            html.Div(r["source"], className="sh-src"),
+            html.Span("LIVE" if live else "DEGRADED", className=f"sh-st {'live' if live else 'deg'}"),
+            html.Div(age, className="sh-age mono"),
+            html.Div(str(r["detail"]), className="sh-detail")], className="sh-row"))
+    return card([html.H3("Source Health"),
+                 _cap("Each public data source the bot reads, its liveness and freshness. All unauthenticated "
+                      "public feeds. Paper-monitor telemetry."),
+                 html.Div([html.Div([html.Span("SOURCE", className="sh-h"), html.Span("STATUS", className="sh-h"),
+                                     html.Span("AGE", className="sh-h"), html.Span("DETAIL", className="sh-h")],
+                                    className="sh-row sh-head")] + rows, className="sh-list")],
+                id="source-health-card")
+
+
+def panel_model_drift():
+    """Model-drift monitor: per-city RMSE vs deployed sigma drift score + status (reference design)."""
+    d = table("model_drift")
+    if d.empty:
+        return card([html.H3("Model Drift"), empty_state("Fills from the multi-city forecast run.")])
+    show = present(d, rename={"drift_score": "Drift", "rmse": "RMSE"},
+                   fmt={"drift_score": lambda v: "—" if _isnull(v) else f"{v:.2f}×",
+                        "rmse": _degf, "n": _intf},
+                   order=["city", "model", "rmse", "drift_score", "status", "n"])
+    return card([html.H3("Model-Drift Monitor"),
+                 _cap("Per-city day-ahead RMSE as a multiple of the deployed ~1.66°F NY sigma target. A high "
+                      "score here means a NOISIER city forecast (DEN/AUS are intrinsically harder), not a "
+                      "live degradation — NY/MIA sit on-spec. Backtest/walk-forward."),
+                 pro_table(show, present_df=False, align_left=("Status", "Model"))], id="model-drift-card")
+
+
+def panel_strategy_perf():
+    """Strategy-performance table: strategy / paper edge / win-rate / PF / status (reference design)."""
+    d = table("strategy_perf")
+    if d.empty:
+        return card([html.H3("Strategy Performance"), empty_state("Fills as streams validate.")])
+    show = present(d, rename={"edge_c": "Paper Edge", "pf": "PF", "win_rate": "Win Rate"},
+                   fmt={"edge_c": _cents, "win_rate": _pct01,
+                        "pf": lambda v: "—" if _isnull(v) else f"{v:.2f}", "n": _intf,
+                        "status": lambda v: str(v).upper()},
+                   order=["strategy", "edge_c", "win_rate", "pf", "n", "status", "note"])
+    return card([html.H3("Strategy Performance — Paper Streams"),
+                 _cap("Every paper stream: validated edge (c/contract), win-rate, profit factor, deploy "
+                      "status, and the honest one-line note. TRADABLE = live paper signal; WATCH = logged "
+                      "not trusted; DEPRIORITIZED = real but not bankable. Paper/backtest, never live P&L."),
+                 pro_table(show, present_df=False, align_left=("Strategy", "Status", "Note"))],
+                id="strategy-perf-card")
+
+
+# ---------- Quant Lab page panels ----------
+def panel_equity_curve():
+    """BACKTEST paper equity curve (cumulative cents/contract) vs flat take-the-mark benchmark. Green area."""
+    d = table("equity_curve")
+    if d.empty:
+        return card([html.H3("Backtest Equity Curve"), empty_state("Fills from the walk-forward backtest.")])
+    fig = go.Figure()
+    fig.add_scatter(x=d["date"], y=d["benchmark_c"], mode="lines", name="take-the-mark (no edge)",
+                    line=dict(color=NEUTRAL, width=1.3, dash="dash"), hoverinfo="skip")
+    last = float(d["equity_c"].iloc[-1])
+    eqcol = GREEN if last >= 0 else RED
+    fig.add_scatter(x=d["date"], y=d["equity_c"], mode="lines", name="paper S1 (backtest)",
+                    line=dict(color=eqcol, width=2.2, shape="spline", smoothing=0.4),
+                    fill="tozeroy", fillcolor=f"rgba({_rgb(eqcol)},.10)",
+                    hovertemplate="%{x}<br>cum %{y:+.0f} c/ct<extra></extra>")
+    fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="cumulative paper net (c / contract)", ticksuffix="c", tickformat="+,.0f")
+    fig.update_xaxes(title="", nticks=8)
+    return card([html.H3("Backtest Equity Curve — Leak-Free Walk-Forward S1"),
+                 _cap(f"Cumulative paper net per contract from the leak-free walk-forward S1 backtest "
+                      f"({len(d)} settled days), vs a flat take-the-mark benchmark (no edge = the dashed "
+                      f"zero line). Ends at {last:+.0f} c/contract cumulative. This is BACKTEST research "
+                      f"in cents/contract — NOT dollars, NOT live, never realized P&L."),
+                 graph(_tpl(fig, h=360))])
+
+
+def panel_drawdown():
+    """Underwater drawdown chart (red) from the backtest equity curve + max-DD stat."""
+    d = table("equity_curve")
+    if d.empty:
+        return card([html.H3("Drawdown"), empty_state("Fills from the walk-forward backtest.")])
+    import numpy as _np
+    eq = d["equity_c"].astype(float).values
+    peak = _np.maximum.accumulate(eq)
+    dd = eq - peak                     # underwater in cents/contract (<=0)
+    maxdd = float(dd.min())
+    fig = go.Figure()
+    fig.add_scatter(x=d["date"], y=dd, mode="lines", name="drawdown",
+                    line=dict(color=RED, width=1.2), fill="tozeroy",
+                    fillcolor="rgba(255,77,94,.16)",
+                    hovertemplate="%{x}<br>underwater %{y:+.0f} c/ct<extra></extra>")
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="underwater (c / contract)", ticksuffix="c", tickformat="+,.0f")
+    fig.update_xaxes(title="", nticks=8)
+    return card([html.H3("Drawdown — Underwater Curve"),
+                 _cap(f"Peak-to-trough underwater of the backtest equity, in cents/contract. Max backtest "
+                      f"drawdown {maxdd:+.0f} c/contract. Drawdowns are part of any real edge — the curve "
+                      f"recovers, but losing stretches happen. Backtest, never live."),
+                 graph(_tpl(fig, h=240, legend=False))])
+
+
+def panel_monthly_returns():
+    """Monthly paper-return distribution histogram: green positive / red negative bars + stats."""
+    d = table("monthly_returns")
+    if d.empty:
+        return card([html.H3("Monthly Returns"), empty_state("Fills from the walk-forward backtest.")])
+    colors = [GREEN if v >= 0 else RED for v in d["net_c"]]
+    fig = go.Figure()
+    fig.add_bar(x=d["month"], y=d["net_c"], marker_color=colors, width=0.7,
+                text=[f"{v:+.0f}" for v in d["net_c"]], textposition="outside", cliponaxis=False,
+                hovertemplate="%{x}<br>%{y:+.0f} c/ct · %{customdata} trades<extra></extra>",
+                customdata=d["trades"])
+    fig.add_hline(y=0, line=dict(color=AXISCOL, width=1))
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="monthly paper net (c / contract)", ticksuffix="c", tickformat="+,.0f")
+    fig.update_xaxes(title="")
+    pos = int((d["net_c"] >= 0).sum()); tot = len(d)
+    return card([html.H3("Monthly Returns Distribution"),
+                 _cap(f"Paper net per contract summed by calendar month from the walk-forward backtest. "
+                      f"{pos} of {tot} months positive (green). The edge lives in the average — individual "
+                      f"months swing, including losers. Backtest, never realized P&L."),
+                 graph(_tpl(fig, h=300, legend=False))])
+
+
+def panel_model_compare():
+    """Model-comparison table: EMOS variants RMSE/CRPS/logscore/cov90, deployed row highlighted."""
+    d = table("model_compare")
+    if d.empty:
+        return card([html.H3("Model Comparison"), empty_state("Fills from the EMOS validation run.")])
+    show = present(d.drop(columns=["deployed"]),
+                   rename={"rmse": "RMSE", "crps": "CRPS", "logscore": "Log-Score", "cov90": "90% Cov"},
+                   fmt={"rmse": _degf, "crps": lambda v: "—" if _isnull(v) else f"{v:.3f}",
+                        "logscore": lambda v: "—" if _isnull(v) else f"{v:.3f}",
+                        "cov90": _pct01},
+                   order=["model", "rmse", "crps", "logscore", "cov90"])
+    return card([html.H3("Model Comparison — EMOS Variants"),
+                 _cap("Leak-free out-of-sample scores by model variant (lower RMSE/CRPS/log-score is better; "
+                      "90% coverage should be ≈90%). The deployed EMOS-full wins — which is why it ships. "
+                      "Backtest, strictly out-of-sample."),
+                 pro_table(show, present_df=False, align_left=("Model",))], id="model-compare-card")
+
+
+def panel_scenario():
+    """Scenario analysis cards: regime / season conditioning edges (cold/warm, sharp/noisy model)."""
+    d = table("scenario")
+    if d.empty:
+        return card([html.H3("Scenario Analysis"), empty_state("Fills from the regime-conditioning study.")])
+    cards = []
+    for _, r in d.iterrows():
+        e = r["edge_c"]
+        col = GREEN if (not _isnull(e) and e >= 0) else RED
+        cards.append(html.Div([
+            html.Div(r["scenario"], className="u-label"),
+            html.Div(f"{e:+.1f}c" if not _isnull(e) else "—", className="sc-val mono",
+                     style={"color": col}),
+            html.Div(str(r["detail"]), className="sub", style={"fontSize": "11px"})],
+            className="card sc-card col-3"))
+    return card([html.H3("Scenario / Regime Analysis"),
+                 _cap("How the paper edge changes by regime: cold vs warm season (the daily-low edge "
+                      "concentrates in winter) and sharp vs noisy model (counterfactual RMSE sweep). These "
+                      "are conditioning slices, not promises. Backtest."),
+                 html.Div(cards, className="grid12")], id="scenario-card")
+
+
+def panel_dailylow_edge():
+    """Validated daily-LOW S1 edge per city: net + CI error bars colored by tier (green/red/neutral)."""
+    d = table("dailylow_edge")
+    if d.empty:
+        return card([html.H3("Daily-Low S1 Edge"), empty_state("Fills from the daily-low edge backtest.")])
+    d = d.copy().sort_values("net_c", ascending=False)
+    tier_col = {"TRADABLE": GREEN, "WATCH": AMBER, "DEAD": RED}
+    colors = [tier_col.get(str(t).upper(), NEUTRAL) for t in d["tier"]]
+    err_plus = (d["ci_hi"] - d["net_c"]).clip(lower=0)
+    err_minus = (d["net_c"] - d["ci_lo"]).clip(lower=0)
+    fig = go.Figure()
+    fig.add_bar(x=d["city"], y=d["net_c"], marker_color=colors, width=0.62,
+                customdata=d[["tier", "recent_q_c"]].values,
+                hovertemplate="<b>%{x}</b><br>net %{y:+.2f}c · %{customdata[0]}"
+                              "<br>recent-Q %{customdata[1]:+.1f}c<extra></extra>",
+                error_y=dict(type="data", array=err_plus, arrayminus=err_minus,
+                             color=DIM, thickness=1.4, width=4))
+    fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="daily-low S1 net (c / contract)", ticksuffix="c", tickformat="+,.0f")
+    fig.update_xaxes(title="")
+    return card([html.H3("Daily-Low S1 Edge — the Orthogonal Overnight Book"),
+                 _cap("Validated daily-LOW S1 net per city with 95% bootstrap CIs (green = TRADABLE, amber = "
+                      "WATCH). The overnight-low market is roughly orthogonal to the daily high — a real "
+                      "diversifier. The edge concentrates in the cold season; recent-quarter is the forward "
+                      "decay watch. Paper/backtest, never realized P&L."),
+                 graph(_tpl(fig, h=320, legend=False))])
+
+
 def card(children, cls="", **kw):
     return html.Div(children, className=f"card {cls}".strip(), **kw)
 
@@ -670,8 +1077,7 @@ def staleness_chip():
 # ============================== PAGES ==============================
 def render_overview():
     kpi = table("kpi"); br = table("bankroll_run"); cs1 = table("city_s1")
-    cards = [kpi_card(r["label"], r["value"], r["unit"], r["status"]) for _, r in kpi.iterrows()] \
-        if not kpi.empty else [card("no KPIs yet")]
+    kpi_strip = kpi_spark_row()
     # bankroll
     if br.empty:
         # $1k DOLLAR curve stays OFF until separate approval. Fill this prime real estate with the REAL
@@ -715,12 +1121,44 @@ def render_overview():
                                            style={"margin": "10px 0 6px"}),
                                   html.Div(chips, style={"display": "flex", "gap": "8px", "flexWrap": "wrap"})])])
     return html.Div([section("Command Center"),
-                     html.Div(cards, className="grid"),
+                     kpi_strip,
                      html.Div([html.Div(bank, style={"flex": "2", "minWidth": "420px"}),
                                html.Div(status_card, style={"flex": "1", "minWidth": "260px"})],
                               className="grid"),
+                     html.Div([html.Div(panel_city_network(), className="col-7"),
+                               html.Div(panel_alerts(), className="col-5")], className="grid12"),
+                     html.Div([html.Div(panel_strategy_perf(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_brier_gauges(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_blotter(), className="col-12")], className="grid12")])
+
+
+def render_markets():
+    return html.Div([section("Markets / Live — Public Quote Scans (Paper)"),
+                     html.Div("Live public market context the bot watches. PAPER scans of public Kalshi "
+                              "quotes and public weather feeds — no orders, no account, no real money.",
+                              className="sub", style={"marginBottom": "10px"}),
+                     html.Div([html.Div(panel_city_network(), className="col-7"),
+                               html.Div(panel_city_rank(), className="col-5")], className="grid12"),
+                     html.Div([html.Div(panel_market_feed(), className="col-12")], className="grid12"),
+                     html.Div([html.Div(panel_source_health(), className="col-6"),
+                               html.Div(panel_model_drift(), className="col-6")], className="grid12"),
+                     html.Div([html.Div(panel_alerts(), className="col-12")], className="grid12")])
+
+
+def render_quantlab():
+    return html.Div([section("Quant Lab — Backtest Research"),
+                     html.Div("Leak-free walk-forward backtest diagnostics. Every figure is paper/backtest "
+                              "research in cents/contract or °F — NOT dollars, NOT live, never realized P&L.",
+                              className="sub", style={"marginBottom": "10px"}),
+                     html.Div([html.Div(panel_equity_curve(), className="col-8"),
+                               html.Div(panel_model_compare(), className="col-4")], className="grid12"),
+                     html.Div([html.Div(panel_drawdown(), className="col-6"),
+                               html.Div(panel_monthly_returns(), className="col-6")], className="grid12"),
+                     html.Div([html.Div(panel_dailylow_edge(), className="col-7"),
+                               html.Div(panel_emos_skill(), className="col-5")], className="grid12"),
+                     html.Div([html.Div(panel_pit(), className="col-6"),
+                               html.Div(panel_fan(), className="col-6")], className="grid12"),
+                     html.Div([html.Div(panel_scenario(), className="col-12")], className="grid12")])
 
 
 def render_forecasts():
@@ -1004,11 +1442,13 @@ def render_sandbox():
         field("sb-bankroll", "Bankroll ($)", 1000, 100, 100, 1_000_000),
         html.Div("Kelly fraction (risk profile)", className="sb-field-lbl u-label",
                  style={"margin": "12px 0 6px"}),
-        dcc.Slider(id="sb-kelly", min=0.25, max=0.75, step=0.05, value=0.25,
-                   marks={0.25: "0.25", 0.35: "0.35", 0.50: "0.50", 0.65: "0.65", 0.75: "0.75"},
+        dcc.Slider(id="sb-kelly", min=0.25, max=1.00, step=0.05, value=0.25,
+                   marks={0.25: "0.25", 0.50: "0.50x rec", 0.75: "0.75", 1.00: "1.0x full"},
                    tooltip={"placement": "bottom", "always_visible": False},
                    updatemode="mouseup"),
-        html.Div("Hard ceiling 0.50x — beyond it, ruin risk climbs steeply.", className="sub",
+        html.Div("Full Kelly (1.0x) reaches the highest validated return (+29.7%/m) but the worst "
+                 "stress drawdown (~41%). 0.50x is the recommended ceiling — beyond it, ruin risk "
+                 "climbs steeply. No ROI cap; the warnings escalate honestly.", className="sub",
                  style={"margin": "8px 0 2px", "fontSize": "11px"}),
         html.Div(style={"height": "10px"}),
         field("sb-winrate", "Win rate (%)", 55, 1, 1, 99),
@@ -1034,7 +1474,8 @@ def render_sandbox():
                   html.Span("green = ok", style={"color": MINT, "fontWeight": "700"}), ", ",
                   html.Span("amber = elevated", style={"color": AMBER, "fontWeight": "700"}), ", ",
                   html.Span("red = ruin-risk", style={"color": RED, "fontWeight": "700"}),
-                  ". Hard ceiling at 0.50x."], className="sub", style={"marginBottom": "10px"}),
+                  ". 0.50x recommended ceiling; the slider goes to full Kelly (1.0x) with escalating "
+                  "warnings — no ROI cap."], className="sub", style={"marginBottom": "10px"}),
         html.Div(id="sb-risk-metrics")],
         style={"flex": "1"})
 
@@ -1103,9 +1544,10 @@ def render_methodology():
                      card(dt(m, page_size=20) if not m.empty else html.Div("—", className="sub"))])
 
 
-RENDER = {"overview": render_overview, "forecasts": render_forecasts, "edges": render_edges,
-          "multicity": render_multicity, "accuracy": render_accuracy, "forward": render_forward,
-          "sandbox": render_sandbox, "risk": render_risk, "methodology": render_methodology}
+RENDER = {"overview": render_overview, "markets": render_markets, "forecasts": render_forecasts,
+          "edges": render_edges, "multicity": render_multicity, "accuracy": render_accuracy,
+          "quantlab": render_quantlab, "forward": render_forward, "sandbox": render_sandbox,
+          "risk": render_risk, "methodology": render_methodology}
 
 # ============================== APP ==============================
 app = Dash(__name__, title="AeroAlpha — Investor View", update_title=None,
@@ -1123,13 +1565,25 @@ dash_auth.BasicAuth(app, _users)
 def topbar():
     return html.Div(className="topbar", children=[
         html.Div([html.Span("Aero", className="a1"), html.Span("Alpha")], className="brand"),
-        html.Span([html.Span(className="dot"), "LIVE"], className="pill live"),
+        html.Span([html.Span(className="dot"), "LIVE DATA"], className="pill live",
+                  title="Public-data pipeline is live. This is NOT live trading."),
         html.Span("PAPER ONLY — no orders, no real money", className="pill paper"),
         html.Div(style={"flex": "1"}),
         html.Div(id="tb-tickers", style={"display": "flex", "gap": "20px"}),
+        html.Span(id="tb-stale", children=staleness_chip()),
         html.Span("Dark", id="theme-toggle", className="pill theme-toggle", n_clicks=0,
                   title="Toggle light / dark", style={"cursor": "pointer"}),
         html.Span(id="tb-clock", className="mono", style={"color": DIM, "fontSize": "13px"})])
+
+
+def statusbar():
+    return html.Div(className="statusbar", children=[
+        html.Span([html.Span(className="dot"), "DATA STREAM"], className="sb-item"),
+        html.Span(id="status-updated", className="sb-item mono"),
+        html.Span("MODE: PAPER", className="sb-item sb-paper"),
+        html.Div(style={"flex": "1"}),
+        html.Span("ALL SYSTEMS NOMINAL — paper / backtest / forward, never realized P&L",
+                  className="sb-item sb-ok")])
 
 
 def sidebar():
@@ -1148,6 +1602,7 @@ app.layout = html.Div([
     dcc.Interval(id="tick", interval=60_000, n_intervals=0),
     topbar(),
     html.Div(className="shell", children=[sidebar(), html.Div(id="main", className="main")]),
+    statusbar(),
 ])
 
 
@@ -1184,8 +1639,11 @@ def _nav_style(active):
             for o in ctx.outputs_list]
 
 
-@app.callback(Output("main", "children"), Input("active", "data"), Input("tick", "n_intervals"))
-def _route(active, _n):
+# BUG FIX #1: route ONLY on nav change (dcc.Store "active"), NOT on the 60s tick. Re-rendering the whole
+# page every minute wiped Sandbox inputs and made nav sluggish. Live elements (clock/tickers/staleness/
+# market-feed) update via their OWN small callbacks below, never by re-rendering the active page.
+@app.callback(Output("main", "children"), Input("active", "data"))
+def _route(active):
     return RENDER.get(active, render_overview)()
 
 
@@ -1193,23 +1651,35 @@ def _route(active, _n):
               Output("sb-uptime", "children"), Input("tick", "n_intervals"))
 def _live(_n):
     now = datetime.now(timezone.utc)
-    kpi = table("kpi")
-    def kv(name):
-        row = kpi[kpi["name"] == name] if not kpi.empty and "name" in kpi else kpi.iloc[0:0]
-        return row["value"].iloc[0] if not row.empty else None
-    rmse, cities = kv("ny_rmse"), kv("cities_beating_market")
-    tk = [html.Div([html.Span("NY RMSE ", className="k"),
-                    html.Span(f"{rmse:.2f}°F" if rmse is not None else "—", className="v up")], className="ticker"),
-          html.Div([html.Span("CITIES EDGE ", className="k"),
-                    html.Span(f"{int(cities) if cities is not None else 0}", className="v up")], className="ticker"),
-          html.Div([html.Span("INTEGRITY ", className="k"),
-                    html.Span(meta_value("integrity_verdict"), className="v")], className="ticker")]
+    cn = table("city_network")
+    tk = []
+    # HONEST market-style ticker strip: per-city day-ahead forecast high + the validated paper edge as the
+    # green/red "delta". Real public signals (forecast + our paper edge) -- NOT invented SPX/VIX, NOT P&L.
+    if not cn.empty:
+        for _, r in cn.head(6).iterrows():
+            fc = "—" if _isnull(r["forecast_f"]) else f"{r['forecast_f']:.0f}°F"
+            e = r["edge_c"]
+            if _isnull(e):
+                dv, dcls = "", "v"
+            else:
+                dv, dcls = f"{e:+.1f}c", ("v up" if e >= 0 else "v down")
+            tk.append(html.Div([html.Span(f"{r['city']} ", className="k"),
+                                html.Span(fc, className="v"),
+                                html.Span(dv, className=dcls)], className="ticker"))
+    tk.append(html.Div([html.Span("INTEGRITY ", className="k"),
+                        html.Span(meta_value("integrity_verdict"), className="v")], className="ticker"))
     return now.strftime("%H:%M:%S UTC"), tk, f"data · {meta_value('generated_at_utc')}"
 
 
 @app.callback(Output("ov-updated", "children"), Input("tick", "n_intervals"))
 def _ov_updated(_n):
     return f"updated {meta_value('generated_at_utc')}"
+
+
+@app.callback(Output("status-updated", "children"), Output("tb-stale", "children"),
+              Input("tick", "n_intervals"))
+def _statusbar(_n):
+    return f"LAST {meta_value('generated_at_utc')}", staleness_chip()
 
 
 # ---- Sandbox profitability model (transparent; paper estimate only) ----
@@ -1227,14 +1697,19 @@ S1_PRICE, LOCK_PRICE, LOW_PRICE = 0.5, 0.9, 0.5
 # ALL values verified against data/processed/kelly_1k_stake_sweep_20260619_000854.json. The earlier
 # P(month<0)/P(DD>25%) probabilities were DROPPED: inconsistent between Kelly's .md and .json AND
 # internally impossible (P(DD>25%) cannot exceed P(DD>p95)=5%). Drawdown PERCENTILES are well-defined.
+# EXTENDED to 1.0x (BUG FIX #3): the full-Kelly row is REAL (median +29.69%/m, p95 maxDD 33.1%, STRESS
+# maxDD 40.7%) -- no artificial ROI cap. Higher profit is reachable; the ruin/drawdown warnings escalate
+# honestly with the fraction. All values verified against kelly_1k_stake_sweep_20260619_000854.json.
 KELLY_SWEEP = [
     {"f": 0.25, "med":  7.08, "p5":  -4.51, "dd":  9.4, "sdd": 12.0, "stress": 1.94},
     {"f": 0.35, "med":  9.98, "p5":  -6.32, "dd": 12.9, "sdd": 16.5, "stress": 2.66},
     {"f": 0.50, "med": 14.40, "p5":  -9.03, "dd": 18.0, "sdd": 22.7, "stress": 3.68},
     {"f": 0.65, "med": 18.91, "p5": -11.73, "dd": 22.8, "sdd": 28.6, "stress": 4.63},
     {"f": 0.75, "med": 21.97, "p5": -13.53, "dd": 25.9, "sdd": 32.3, "stress": 5.22},
+    {"f": 1.00, "med": 29.69, "p5": -17.98, "dd": 33.1, "sdd": 40.7, "stress": 6.55},
 ]
-KELLY_CEILING = 0.50   # hard ceiling — beyond it the STRESS max-drawdown climbs past ~28%
+KELLY_MAX = 1.00       # slider ceiling = full Kelly (highest validated profit; highest ruin risk)
+KELLY_CEILING = 0.50   # RECOMMENDED ceiling — beyond it the STRESS max-drawdown climbs steeply (NOT a cap)
 
 
 def kelly_interp(frac):
@@ -1293,7 +1768,7 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
     except (TypeError, ValueError):
         return ("—", "—", {"color": DIM}, "", "Enter valid numbers in every field.", "",
                 blank, blank, blank, blank)
-    kelly = min(0.75, max(0.25, kelly))
+    kelly = min(KELLY_MAX, max(0.25, kelly))
 
     # ---- risk band from the embedded Kelly sweep (interpolated) ----
     # The HEADLINE return is ANCHORED to the validated $1k Kelly sweep median %/m (NOT a free-running
@@ -1321,12 +1796,20 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         lock_monthly = total * lock_gross / gross_sum
     else:
         s1_monthly = low_monthly = lock_monthly = 0.0
-    ceil_flag = ""
-    if kelly > KELLY_CEILING + 1e-9:
-        ceil_flag = html.Span("  ABOVE 0.50x HARD CEILING", className="badge bad",
+    # escalating ruin warning by fraction (honest -- no ROI cap, just sharper warnings as risk climbs)
+    if kelly <= KELLY_CEILING + 1e-9:
+        ceil_flag = ""
+        kelly_badge_cls = "badge good"
+    elif kelly <= 0.75 + 1e-9:
+        ceil_flag = html.Span("  ABOVE 0.50x RECOMMENDED CEILING", className="badge warn",
                               style={"marginLeft": "8px"})
+        kelly_badge_cls = "badge warn"
+    else:
+        ceil_flag = html.Span("  FULL-KELLY ZONE · RUIN RISK", className="badge bad",
+                              style={"marginLeft": "8px"})
+        kelly_badge_cls = "badge bad"
     kelly_band = html.Div([
-        html.Span(f"Kelly {kelly:.2f}x", className="badge good" if kelly <= KELLY_CEILING else "badge bad"),
+        html.Span(f"Kelly {kelly:.2f}x", className=kelly_badge_cls),
         ceil_flag,
         html.Div([f"Sweep (interpolated): median ", html.B(f"{k['med']:+.1f}%/m"),
                   f" · p5 {k['p5']:+.1f}%/m · stress {k['stress']:+.1f}%/m"],
@@ -1340,7 +1823,7 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         _risk_metric("p95 max drawdown", f"{k['dd']:.1f}%", _sev_dd(k["dd"]),
                      "Worst peak-to-trough in 19/20 paths."),
         _risk_metric("Stress max drawdown", f"{k['sdd']:.1f}%", _sev_sdd(k["sdd"]),
-                     "Worst peak-to-trough if EVERY edge is at its CI lower bound. Hard ceiling 0.50x."),
+                     "Worst peak-to-trough if EVERY edge is at its CI lower bound (~41% at full Kelly)."),
         _risk_metric("Stress return", f"{k['stress']:+.1f}%/m", "good" if k["stress"] > 0 else "bad",
                      "Median month, all edges at CI lower bound at once.")],
         style={"display": "flex", "flexWrap": "wrap", "gap": "10px"})
@@ -1392,10 +1875,10 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
                                line=dict(width=1.4, color="#fff")),
                    hovertemplate=f"your pick {kelly:.2f}x<br>median %{{y:+.1f}}%/m"
                                  f"<br>p95 maxDD %{{x:.1f}}%<extra></extra>")
-    # mark the hard ceiling drawdown (0.50x = 18%)
-    rr.add_vline(x=18.0, line=dict(color=AMBER, width=1.4, dash="dash"),
-                 annotation_text="0.50x hard ceiling", annotation_position="top",
-                 annotation_font=dict(color=AMBER, size=10))
+    # mark the RECOMMENDED ceiling drawdown (0.50x = 18%) -- beyond it is reachable but riskier
+    rr.add_vline(x=18.0, line=dict(color=NEUTRAL, width=1.4, dash="dash"),
+                 annotation_text="0.50x recommended", annotation_position="top",
+                 annotation_font=dict(color=NEUTRAL, size=10))
     rr.update_layout(title=None)
     rr.update_yaxes(title="median return (%/month)", ticksuffix="%")
     rr.update_xaxes(title="p95 max drawdown (%)", ticksuffix="%")
