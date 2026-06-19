@@ -670,19 +670,22 @@ def render_overview():
     if br.empty:
         # $1k DOLLAR curve stays OFF until separate approval. Fill this prime real estate with the REAL
         # forward-evidence graphics instead of a blank placeholder: the signal funnel + the decay/skill.
+        _fn = table("funnel")
+        if not _fn.empty:
+            funnel_content = graph(_tpl(go.Figure(go.Funnel(
+                y=_fn["stage"], x=_fn["count"], textposition="inside",
+                textinfo="value+percent initial",
+                marker=dict(color=[MINT, CYAN, VIOLET, AMBER, "#c07fb0"]),
+                connector=dict(line=dict(color=GRIDCOL, width=1)),
+                hovertemplate="%{y}<br>%{x} signals<extra></extra>")).update_layout(
+                title=None, margin=dict(l=160, r=20, t=10, b=20)), h=260, legend=False))
+        else:
+            funnel_content = empty_state("Wired and ready. Forward evidence fills as paper signals settle.")
         bank = card([html.H3("Forward Evidence — Signal Funnel"),
                      _cap("The $1,000 paper-run equity curve stays off until separately approved; until then "
                           "this space shows the live forward evidence. Below: how scanned contracts narrow to "
                           "net-positive settled paper signals."),
-                     (lambda f: graph(_tpl(go.Figure(go.Funnel(
-                         y=f["stage"], x=f["count"], textposition="inside",
-                         textinfo="value+percent initial",
-                         marker=dict(color=[MINT, CYAN, VIOLET, AMBER, "#c07fb0"]),
-                         connector=dict(line=dict(color=GRIDCOL, width=1)),
-                         hovertemplate="%{y}<br>%{x} signals<extra></extra>")).update_layout(
-                         title=None, margin=dict(l=160, r=20, t=10, b=20)), h=260, legend=False))
-                      if not (f := table("funnel")).empty else
-                      empty_state("Wired and ready. Forward evidence fills as paper signals settle."))])
+                     funnel_content])
     else:
         fig = go.Figure()
         fig.add_scatter(x=br["date"], y=br["bankroll"], name="Paper bankroll", mode="lines",
