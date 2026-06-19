@@ -325,3 +325,108 @@ a, a:visited { color: var(--cyan); }
 /* light/dark toggle chip (topbar) */
 .theme-toggle { color: var(--dim); border-color: var(--border); user-select: none; }
 .theme-toggle:hover { color: var(--ink); border-color: var(--border-hi); }
+
+/* ============================================================
+   $1,000 RUN PAGE (Iris 2026-06-19) — gate board, info dots, run note
+   ============================================================ */
+/* shared (i) info dot for the Paper-Net tooltip (and others) */
+.info-dot { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
+  border-radius: 50%; border: 1px solid var(--border-hi); color: var(--dim); font-size: 9.5px;
+  font-weight: 700; cursor: help; vertical-align: middle; margin-left: 4px; line-height: 1;
+  transition: color .12s ease, border-color .12s ease; }
+.info-dot:hover { color: var(--ink); border-color: var(--accent); }
+
+/* the honest "moves only on a gate PASS" note card */
+.run-note { border-color: color-mix(in srgb, var(--amber) 34%, transparent);
+  background: color-mix(in srgb, var(--amber) 5%, var(--panel)); }
+
+/* gate board: responsive auto-fit grid of per-edge gate cards */
+.gb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px;
+  margin-top: 4px; }
+.gb-card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2);
+  padding: 12px 13px; display: flex; flex-direction: column; gap: 8px;
+  transition: border-color .12s ease, transform .12s ease; }
+.gb-card:hover { border-color: var(--border-hi); transform: translateY(-1px); }
+.gb-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.gb-name { font-weight: 700; font-size: 13px; letter-spacing: .2px; }
+.gb-edge { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; }
+.gb-gate { font-size: 11px; line-height: 1.45; color: var(--dim); margin: 0; min-height: 30px; }
+.gb-prog { display: flex; flex-direction: column; gap: 4px; }
+.gb-prog-lbl { display: flex; align-items: baseline; justify-content: space-between; }
+.gb-stake { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap;
+  border-top: 1px dashed var(--border); padding-top: 7px; }
+.bar-fill { transition: width .3s ease; }
+
+/* ============================================================
+   MOBILE / RESPONSIVE (deliverable #6) — collapse sidebar to an icon rail,
+   reflow 12-col grid to single-column, full-width cards, scrollable tables.
+   ============================================================ */
+/* tablet: icon-rail sidebar, 12-col -> 6-wide pairs */
+@media (max-width: 900px) {
+  .col-3 { grid-column: span 6; }
+  .col-5, .col-7 { grid-column: span 12; }
+  .kpi-strip { gap: 8px; }
+  .kpi, .kpi-spark-card { min-width: 120px; }
+}
+/* phone: everything single-column, icon-rail sidebar, touch-friendly nav */
+@media (max-width: 720px) {
+  .col-3, .col-4, .col-5, .col-6, .col-7, .col-8 { grid-column: span 12; }
+  .gb-grid { grid-template-columns: 1fr; }
+  .grid > div { min-width: 100% !important; flex: 1 1 100% !important; }
+  .kpi-strip { flex-wrap: wrap; }
+  .kpi, .kpi-spark-card { min-width: calc(50% - 6px); flex: 1 1 calc(50% - 6px); }
+  .nav-item { padding: 13px 0; }            /* taller tap targets */
+  .topbar { gap: 10px; padding: 9px 12px; }
+  .topbar .pill.paper { font-size: 9px; padding: 2px 6px; }
+  #tb-tickers { display: none !important; }   /* hide the ticker strip on phones (space) */
+  .pt-wrap { -webkit-overflow-scrolling: touch; }   /* momentum scroll for wide tables */
+  .card h3 { font-size: 12.5px; }
+}
+@media (max-width: 420px) {
+  .kpi, .kpi-spark-card { min-width: 100%; flex: 1 1 100%; }
+  .sb-out { font-size: 26px; }
+  .main { padding: 12px 10px 44px; }
+}
+
+/* ============================================================
+   LIVE PANELS (deliverable #7) — quote board, scan stream, streaming pulse
+   ============================================================ */
+/* lightweight streaming pulse dot next to live-panel titles */
+.stream-pulse { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); vertical-align: middle; margin-left: 2px;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: streampulse 2.2s ease-out infinite; }
+@keyframes streampulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); opacity: 1; }
+  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); opacity: .85; }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .stream-pulse { animation: none; } }
+
+/* live per-city quote board */
+.qb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 9px; }
+.qb-tile { border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2);
+  padding: 10px 11px; display: flex; flex-direction: column; gap: 4px;
+  transition: border-color .12s ease; }
+.qb-tile:hover { border-color: var(--border-hi); }
+.qb-top { display: flex; align-items: baseline; justify-content: space-between; }
+.qb-city { font-weight: 800; font-size: 14px; }
+.qb-mkt { color: var(--dim); font-size: 9.5px; text-transform: uppercase; letter-spacing: var(--track);
+  font-weight: 700; }
+.qb-line { display: flex; align-items: baseline; gap: 5px; font-size: 12px; }
+.qb-q { font-weight: 600; }
+.qb-edge.pos { color: var(--accent); font-weight: 700; }
+.qb-edge.neg { color: var(--red); font-weight: 700; }
+
+/* rolling scan-stream tape */
+.ss-list { display: flex; flex-direction: column; }
+.ss-row { display: grid; grid-template-columns: 64px 38px 44px 38px 1fr 52px; gap: 8px; align-items: baseline;
+  padding: 5px 4px; border-bottom: 1px solid var(--border); font-size: 11.5px; white-space: nowrap; }
+.ss-row:first-child { animation: ssflash .9s ease; }
+@keyframes ssflash { from { background: color-mix(in srgb, var(--accent) 12%, transparent); } to { background: transparent; } }
+.ss-t { color: var(--dim); }
+.ss-c { font-weight: 700; }
+.ss-m, .ss-s { color: var(--dim); font-size: 10.5px; text-transform: uppercase; letter-spacing: .2px; }
+.ss-tk { color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+.ss-e { text-align: right; font-weight: 700; }
+.ss-e.pos { color: var(--accent); } .ss-e.neg { color: var(--red); }

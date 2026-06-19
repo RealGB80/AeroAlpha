@@ -50,6 +50,7 @@ AXISCOL = "rgba(138,150,158,0.28)"        # axis lines / ticks: neutral slate
 STALE_AFTER_MIN = 90                       # global staleness threshold
 
 NAV = [("overview", "◉", "Overview"), ("markets", "❖", "Markets / Live"),
+       ("bankroll", "$", "$1,000 Run"),
        ("forecasts", "☉", "Forecasts"), ("edges", "↑", "Edges"),
        ("multicity", "▦", "Multi-City"), ("accuracy", "◎", "Forecast Accuracy"),
        ("quantlab", "⊞", "Quant Lab"), ("forward", "✓", "Forward Validation"),
@@ -242,26 +243,42 @@ def panel_surprise():
     d["dow"] = d["dt"].dt.dayofweek
     dows = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     weeks = list(dict.fromkeys(d["week"]))
-    z = [[None] * len(weeks) for _ in range(7)]
+    # RECOLOR (deliverable #4): color by CLOSENESS = |error|. Continuous GREEN (close) -> RED (far).
+    # A DISTINCT NEUTRAL slate fills NULL/missing days so absent data never reads as a green "we nailed it".
+    # z = absolute error (closeness metric); a separate slate background layer marks the null cells.
+    z = [[None] * len(weeks) for _ in range(7)]          # |error| where present
+    sgn = [[None] * len(weeks) for _ in range(7)]        # signed error (hover only)
     cd = [[None] * len(weeks) for _ in range(7)]
+    nullmask = [[1] * len(weeks) for _ in range(7)]      # 1 = null/missing day -> slate
     wi = {w: i for i, w in enumerate(weeks)}
     for _, r in d.iterrows():
-        z[int(r["dow"])][wi[r["week"]]] = r["error_f"]
-        cd[int(r["dow"])][wi[r["week"]]] = r["date"]
-    fig = go.Figure(go.Heatmap(z=z, x=weeks, y=dows, customdata=cd,
-                               colorscale=[[0, MINT], [0.5, "#12161a"], [1, RED]],
-                               zmid=0, xgap=2, ygap=2,
-                               colorbar=dict(title="°F", thickness=10, len=0.8,
-                                             tickfont=dict(size=10, color=DIM)),
-                               hovertemplate="%{customdata}<br>error %{z:+.1f}°F<extra></extra>"))
+        di, wj = int(r["dow"]), wi[r["week"]]
+        z[di][wj] = abs(float(r["error_f"]))
+        sgn[di][wj] = float(r["error_f"])
+        cd[di][wj] = r["date"]
+        nullmask[di][wj] = None                          # has data -> not slate
+    zmax = max((abs(float(e)) for e in d["error_f"]), default=4.0)
+    fig = go.Figure()
+    # neutral slate layer for NULL cells (drawn first, underneath)
+    fig.add_trace(go.Heatmap(z=nullmask, x=weeks, y=dows, xgap=2, ygap=2, showscale=False,
+                             colorscale=[[0, NEUTRAL_DK], [1, NEUTRAL_DK]], hoverinfo="skip"))
+    # closeness layer: green (|err|=0, close) -> red (|err| large, far)
+    fig.add_trace(go.Heatmap(z=z, x=weeks, y=dows, customdata=sgn, xgap=2, ygap=2,
+                             colorscale=[[0.0, GREEN], [0.5, "#caa23a"], [1.0, RED]],
+                             zmin=0, zmax=zmax,
+                             colorbar=dict(title="|err| °F", thickness=10, len=0.8,
+                                           tickfont=dict(size=10, color=DIM)),
+                             hovertemplate="%{x}<br>error %{customdata:+.1f}°F "
+                                           "(|err| %{z:.1f}°F)<extra></extra>"))
     fig.update_layout(title=None)
     fig.update_xaxes(title="", showticklabels=False, nticks=12)
     fig.update_yaxes(title="", autorange="reversed")
-    mean_err = float(d["error_f"].mean())
-    return card([html.H3("Settlement-Surprise Calendar — Signed Forecast Error"),
-                 _cap(f"GitHub-style date grid of (observed − forecast) high in °F over ~{len(d)} settled days. "
-                      f"Red = we under-forecast (hotter than expected), green = over-forecast. Mean error "
-                      f"{mean_err:+.2f}°F — a small residual warm bias; clusters reveal regime surprises. Backtest."),
+    mae = float(d["error_f"].abs().mean())
+    return card([html.H3("Settlement-Surprise Calendar — Forecast Closeness"),
+                 _cap(f"GitHub-style date grid colored by how CLOSE the forecast was on each of ~{len(d)} "
+                      f"settled days: bright GREEN = small |error| (we nailed it), RED = large |error| (a "
+                      f"surprise day), slate-gray = no settled data. Mean absolute error {mae:.2f}°F. "
+                      f"Red clusters reveal regime surprises. Backtest."),
                  graph(_tpl(fig, h=240, legend=False))])
 
 
@@ -276,7 +293,7 @@ def panel_blotter():
                         "entry": lambda v: "—" if _isnull(v) else f"{v:.2f}",
                         "win": lambda v: "WIN" if v == 1 else ("LOSS" if v == 0 else "—")},
                    order=["city", "stream", "ticker", "side", "model_edge_c", "entry", "net_c", "win"])
-    return card([html.H3("Trade Blotter — Recent Settled Paper Signals"),
+    return card([html.H3(["Trade Blotter — Recent Settled Paper Signals  ", info_dot()]),
                  _cap("The last settled paper signals across streams/cities: model edge at entry, effective "
                       "entry price, realized paper net, and win/loss. Individual outcomes are noisy (small "
                       "stakes, thin sample); the edge lives in the average, not any one row. Paper/forward."),
@@ -454,7 +471,7 @@ def _spark_for(metric):
     return list(sub["value"]) if not sub.empty else []
 
 
-def kpi_spark_card(label, value, unit, status, spark_metric=None, delta=None, spark_color=None):
+def kpi_spark_card(label, value, unit, status, spark_metric=None, delta=None, spark_color=None, tip=None):
     """Compact KPI card: label, big value, optional green/red delta, and a sparkline (reference design)."""
     val, suffix = fmt(value, unit)
     sp = _spark_for(spark_metric) if spark_metric else []
@@ -464,8 +481,9 @@ def kpi_spark_card(label, value, unit, status, spark_metric=None, delta=None, sp
         delta_el = html.Span(f"{delta:+.2f}", className=dcls)
     badge_kind = {"BACKTEST": "good", "WALK-FORWARD": "good", "FORWARD": "good"}.get(
         status, "warn" if status not in ("NOT STARTED", "PAPER") else "neut")
+    label_el = html.Div([label, info_dot(tip)] if tip else label, className="label")
     return html.Div([
-        html.Div(label, className="label"),
+        label_el,
         html.Div([html.Span(val, className="val mono"), html.Span(suffix, className="unit"),
                   delta_el], className="kpi-valrow"),
         html.Div(_spark(sp, color=spark_color), className="kpi-spark") if sp else html.Div(),
@@ -495,7 +513,8 @@ def kpi_spark_row():
         kpi_spark_card("NY S1 EDGE (S2X)", ny_edge, "c/contract", "BACKTEST", "ny_edge_c"),
         kpi_spark_card("BEST STREAM EDGE", best_edge, "c/contract", "BACKTEST", "monthly_net_c"),
         kpi_spark_card("CITIES BEAT MARKET", cities, "cities", "BACKTEST", None),
-        kpi_spark_card("PAPER NET (BACKTEST)", cum, "c/contract", "BACKTEST", "equity_c"),
+        kpi_spark_card("PAPER NET (BACKTEST)", cum, "c/contract", "BACKTEST", "equity_c",
+                       tip=PAPER_NET_TIP),
         kpi_spark_card("LIVE CAPITAL", 0, "$", "PAPER", None),
     ]
     return html.Div(cards, className="grid kpi-strip")
@@ -520,6 +539,67 @@ def panel_market_feed(compact=False):
                       "data — never orders, never real money. Time is UTC."),
                  pro_table(show, present_df=False, max_rows=18 if compact else 40,
                            align_left=("Side", "Market"))], cls="feed-card", id="market-feed-card")
+
+
+def panel_quote_board():
+    """Live per-city quote board: latest scanned quote + model P + edge per city (compact tiles). A denser
+    'live market info' surface for Markets/Live. Source: market_feed (most-recent scan per city). Paper."""
+    d = table("market_feed")
+    if d.empty:
+        return card([html.H3("Live Quote Board"), empty_state("Fills as the paper monitors scan quotes.")])
+    d = d.copy()
+    # most-recent row per city (feed is already newest-first)
+    seen = {}
+    for _, r in d.iterrows():
+        c = r["city"]
+        if c not in seen:
+            seen[c] = r
+    tiles = []
+    for c, r in seen.items():
+        e = r["edge_c"]
+        ecls = "pos" if (not _isnull(e) and e >= 0) else ("neg" if not _isnull(e) else "")
+        ev = "—" if _isnull(e) else f"{e:+.1f}c"
+        q = "—" if _isnull(r["quote_c"]) else f"{r['quote_c']:.0f}c"
+        mp = "—" if _isnull(r["model_p"]) else f"{r['model_p']:.0%}"
+        tiles.append(html.Div([
+            html.Div([html.Span(c, className="qb-city"),
+                      html.Span(str(r["market"]), className="qb-mkt")], className="qb-top"),
+            html.Div([html.Span("QUOTE ", className="u-label"), html.Span(q, className="mono qb-q")],
+                     className="qb-line"),
+            html.Div([html.Span("MODEL ", className="u-label"), html.Span(mp, className="mono")],
+                     className="qb-line"),
+            html.Div([html.Span("EDGE ", className="u-label"),
+                      html.Span(ev, className=f"mono qb-edge {ecls}")], className="qb-line")],
+            className="qb-tile"))
+    return card([html.H3(["Live Quote Board  ", html.Span(className="stream-pulse")]),
+                 _cap("Most-recent public Kalshi quote the paper monitors scanned per city/market, with our "
+                      "model probability and the signed edge. PAPER scans of public data — no orders. Updates "
+                      "as the monitors run."),
+                 html.Div(tiles, className="qb-grid")], id="quote-board-card")
+
+
+def panel_scan_stream():
+    """Rolling 'last N scans' stream: a compact terminal-style log of the most recent paper quote scans with
+    a subtle streaming pulse. Source: market_feed. Honest: paper scans of public data, not a trade tape."""
+    d = table("market_feed")
+    if d.empty:
+        return card([html.H3("Scan Stream"), empty_state("Fills as the paper monitors scan quotes.")])
+    rows = []
+    for _, r in d.head(14).iterrows():
+        e = r["edge_c"]
+        ecls = "pos" if (not _isnull(e) and e >= 0) else ("neg" if not _isnull(e) else "")
+        ev = "—" if _isnull(e) else f"{e:+.1f}c"
+        rows.append(html.Div([
+            html.Span(str(r["scan_utc"]), className="ss-t mono"),
+            html.Span(str(r["city"]), className="ss-c"),
+            html.Span(str(r["market"]), className="ss-m"),
+            html.Span(str(r["side"]) if not _isnull(r["side"]) else "—", className="ss-s"),
+            html.Span(str(r["ticker"]) if not _isnull(r["ticker"]) else "—", className="ss-tk mono"),
+            html.Span(ev, className=f"ss-e mono {ecls}")], className="ss-row"))
+    return card([html.H3(["Scan Stream — Last 14 Paper Scans  ", html.Span(className="stream-pulse")]),
+                 _cap("Rolling tape of the most recent public-quote scans across the forward monitors (UTC). "
+                      "These are PAPER scans of public data — not a trade tape, no orders, no real money."),
+                 html.Div(rows, className="ss-list")], id="scan-stream-card")
 
 
 def panel_city_network():
@@ -662,7 +742,7 @@ def panel_strategy_perf():
                         "pf": lambda v: "—" if _isnull(v) else f"{v:.2f}", "n": _intf,
                         "status": lambda v: str(v).upper()},
                    order=["strategy", "edge_c", "win_rate", "pf", "n", "status", "note"])
-    return card([html.H3("Strategy Performance — Paper Streams"),
+    return card([html.H3(["Strategy Performance — Paper Streams  ", info_dot()]),
                  _cap("Every paper stream: validated edge (c/contract), win-rate, profit factor, deploy "
                       "status, and the honest one-line note. TRADABLE = live paper signal; WATCH = logged "
                       "not trusted; DEPRIORITIZED = real but not bankable. Paper/backtest, never live P&L."),
@@ -686,9 +766,28 @@ def panel_equity_curve():
                     fill="tozeroy", fillcolor=f"rgba({_rgb(eqcol)},.10)",
                     hovertemplate="%{x}<br>cum %{y:+.0f} c/ct<extra></extra>")
     fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
+    # annotate the peak and the endpoint (designed, not default-Plotly)
+    try:
+        import numpy as _np
+        eqv = d["equity_c"].astype(float).values
+        ipk = int(_np.argmax(eqv))
+        fig.add_annotation(x=d["date"].iloc[ipk], y=float(eqv[ipk]), text=f"peak {eqv[ipk]:+.0f}c",
+                           showarrow=True, arrowhead=0, arrowcolor=DIM, ax=0, ay=-22,
+                           font=dict(size=10, color=DIM))
+    except Exception:
+        pass
     fig.update_layout(title=None)
     fig.update_yaxes(title="cumulative paper net (c / contract)", ticksuffix="c", tickformat="+,.0f")
-    fig.update_xaxes(title="", nticks=8)
+    # range selector buttons on the time axis (designed time-series UX)
+    fig.update_xaxes(title="", nticks=8, rangeslider=dict(visible=False),
+                     rangeselector=dict(
+                         bgcolor="rgba(0,0,0,0)", activecolor="rgba(0,224,138,.18)",
+                         bordercolor=GRIDCOL, borderwidth=1, x=0, y=1.08,
+                         font=dict(size=10, color=DIM),
+                         buttons=[dict(count=1, label="1M", step="month", stepmode="backward"),
+                                  dict(count=3, label="3M", step="month", stepmode="backward"),
+                                  dict(count=6, label="6M", step="month", stepmode="backward"),
+                                  dict(step="all", label="ALL")]))
     return card([html.H3("Backtest Equity Curve — Leak-Free Walk-Forward S1"),
                  _cap(f"Cumulative paper net per contract from the leak-free walk-forward S1 backtest "
                       f"({len(d)} settled days), vs a flat take-the-mark benchmark (no edge = the dashed "
@@ -812,6 +911,249 @@ def panel_dailylow_edge():
                       "diversifier. The edge concentrates in the cold season; recent-quarter is the forward "
                       "decay watch. Paper/backtest, never realized P&L."),
                  graph(_tpl(fig, h=320, legend=False))])
+
+
+# ============================================================================================
+# $1,000 STAGED RUN PAGE (Iris 2026-06-19, user-approved). Surfaced HONESTLY: equity FLAT at $1,000,
+# LIVE allocation $0 (all STAGED), the per-edge GATE board (centerpiece), staged Kelly stakes, and the
+# OPEN paper signals. Every figure paper-only -- capital moves ONLY on a forward-gate PASS. No live P&L.
+# ============================================================================================
+# Shared INFO tooltip for the "Paper Net (backtest)" metric (deliverable #7): one definition, used
+# everywhere the metric appears. A small (i) glyph with a native title= tooltip (no JS, no deps).
+PAPER_NET_TIP = ("Avg net cents/contract a simulated trade would earn after modeled fees + slippage, "
+                 "replayed on historical settled outcomes. Paper, not live, not realized P&L.")
+
+
+def info_dot(tip=PAPER_NET_TIP):
+    return html.Span("ⓘ", className="info-dot", title=tip)
+
+
+def _run_meta(key, default="—"):
+    d = table("run_meta")
+    if d.empty or "key" not in d:
+        return default
+    r = d[d["key"] == key]
+    return str(r["value"].iloc[0]) if not r.empty else default
+
+
+_GATE_STATUS_STYLE = {
+    "DEPLOYED-live":      ("good", GREEN, "DEPLOYED · LIVE"),
+    "DEPLOYED-tradable":  ("good", GREEN, "DEPLOYED · TRADABLE"),
+    "WATCH-accumulating": ("warn", AMBER, "WATCH · ACCUMULATING"),
+    "WATCH-no-path":      ("neut", NEUTRAL, "WATCH · NO PATH"),
+    "candidate":          ("neut", NEUTRAL, "CANDIDATE"),
+}
+
+
+def panel_run_header():
+    """$1k Run header KPI strip: paper bankroll, current equity (flat), start date, LIVE allocation ($0),
+    drawdown (0%), staged total, gates passing. HONEST 'moves only on a gate PASS' note."""
+    eq = _run_meta("equity", "1000")
+    start = _run_meta("harness_start_date")
+    live = _run_meta("live_allocation_dollars", "0")
+    dd = _run_meta("current_drawdown", "0.0")
+    staged = _run_meta("staged_total_dollars", "—")
+    npass = _run_meta("n_gates_pass", "0"); ngate = _run_meta("n_gates", "0")
+    kf = _run_meta("kelly_fraction", "0.50")
+
+    def tile(label, value, sub, accent=INK):
+        return html.Div([html.Div(label, className="label"),
+                         html.Div([html.Span(value, className="val mono", style={"color": accent})]),
+                         html.Div(sub, className="sub", style={"fontSize": "10.5px", "marginTop": "2px"})],
+                        className="card kpi")
+    tiles = [
+        tile("PAPER BANKROLL", "$1,000", "staged paper capital", INK),
+        tile("CURRENT EQUITY", f"${eq}", "flat — no backfill", GREEN if eq == "1000" else INK),
+        tile("LIVE ALLOCATION", f"${live}", "all streams STAGED", AMBER),
+        tile("DRAWDOWN", f"{dd}%", "since start", GREEN),
+        tile("STAGED (at risk if live)", f"${staged}", f"Kelly {kf}x · CI-lower-bound", NEUTRAL),
+        tile("GATES PASSED", f"{npass}/{ngate}", "0 live until a gate PASSES", AMBER),
+    ]
+    note = card([html.Div([html.Span("●", style={"color": AMBER, "marginRight": "7px"}),
+                           html.B("This curve only moves once a forward gate PASSES.")], className="sub",
+                          style={"fontSize": "12.5px", "color": INK}),
+                 html.Div(f"Started {start}, no backfill. Today every stream is STAGED — LIVE capital = $0. "
+                          "The staged stakes below show what each edge WOULD be allocated (fractional-Kelly "
+                          "at its bootstrap CI lower bound) IF its pre-registered forward gate passes. "
+                          "Flipping STAGED → LIVE routes through the forward-protocol gate verdict + a "
+                          "safety review. Paper only — never real money, never realized P&L.",
+                          className="sub", style={"marginTop": "4px"})],
+                cls="run-note")
+    return html.Div([html.Div(tiles, className="grid kpi-strip"),
+                     html.Div([html.Div(note, className="col-12")], className="grid12",
+                              style={"marginTop": "10px"})])
+
+
+def panel_run_equity():
+    """Flat $1,000 staged equity curve with an honest 'staged' band. Source: bankroll_run (ledger curve)."""
+    d = table("bankroll_run")
+    fig = go.Figure()
+    if d.empty:
+        # single flat point at $1,000 so the chart still renders honestly
+        fig.add_scatter(x=["start"], y=[1000], mode="markers", marker=dict(color=NEUTRAL, size=8),
+                        hovertemplate="$1,000 (staged)<extra></extra>", showlegend=False)
+    else:
+        x = list(d["date"]); y = [float(v) for v in d["bankroll"]]
+        if len(x) == 1:               # render a flat segment so a single ledger row reads as a line
+            x = [x[0], x[0] + "  (today)"]
+            y = [y[0], y[0]]
+        fig.add_scatter(x=x, y=y, mode="lines+markers", name="paper equity (staged)",
+                        line=dict(color=NEUTRAL, width=2.4), marker=dict(size=6, color=NEUTRAL),
+                        hovertemplate="%{x}<br>$%{y:,.0f} (staged)<extra></extra>")
+    fig.add_hline(y=1000, line=dict(color=GREEN, width=1.2, dash="dot"),
+                  annotation_text="$1,000 staged baseline", annotation_position="bottom right",
+                  annotation_font=dict(color=GREEN, size=10))
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f", range=[900, 1100])
+    fig.update_xaxes(title="")
+    return card([html.H3("Staged Equity — Flat at $1,000"),
+                 _cap("The $1,000 paper bankroll. It is FLAT by construction: every stream is STAGED at "
+                      "$0 live, so no realized paper P&L has accrued. The line moves only when a forward "
+                      "gate PASSES and that stream is promoted STAGED → LIVE. Paper only, never realized P&L."),
+                 graph(_tpl(fig, h=240, legend=False))])
+
+
+def panel_gate_board():
+    """THE centerpiece: per-edge gate board. Each edge -> status badge, the specific gate it must pass, a
+    settled-progress bar (n/threshold), and the staged Kelly stake. Source: run_gates. Paper/forward only."""
+    d = table("run_gates")
+    if d.empty:
+        return card([html.H3("Deploy-Gate Board"), empty_state("Fills from the $1,000 staged-harness ledger.")])
+    rows = []
+    for _, r in d.iterrows():
+        kind, col, lbl = _GATE_STATUS_STYLE.get(r["status"], ("neut", NEUTRAL, str(r["status"]).upper()))
+        nset = int(r["n_settled"] or 0); nreq = int(r["n_required"] or 1)
+        pct = min(100, int(100 * nset / max(nreq, 1)))
+        edge = "—" if _isnull(r["edge_c"]) else f"{r['edge_c']:+.2f}c"
+        cil = "—" if _isnull(r["ci_lo"]) else f"{r['ci_lo']:+.1f}"
+        cih = "—" if _isnull(r["ci_hi"]) else f"{r['ci_hi']:+.1f}"
+        stake = float(r["staged_stake"] or 0.0)
+        stake_str = f"${stake:,.2f}" if stake > 0 else "$0"
+        bar_col = "var(--accent)" if kind == "good" else ("var(--amber)" if kind == "warn" else "var(--neutral)")
+        rows.append(html.Div([
+            html.Div([html.Div(r["edge_label"], className="gb-name"),
+                      badge(lbl, kind)], className="gb-head"),
+            html.Div([html.Span("EDGE ", className="u-label"),
+                      html.Span(edge, className="mono", style={"color": col, "fontWeight": "700"}),
+                      html.Span(f"  CI [{cil}, {cih}]c", className="sub", style={"fontSize": "10.5px"}),
+                      html.Span(f"  ·  {r['season']}", className="sub", style={"fontSize": "10.5px"})],
+                     className="gb-edge"),
+            html.Div(r["gate_desc"], className="gb-gate sub"),
+            html.Div([
+                html.Div([html.Span("FORWARD PROGRESS", className="u-label"),
+                          html.Span(f"{nset} / {nreq} settled", className="mono",
+                                    style={"fontSize": "11px", "color": DIM})],
+                         className="gb-prog-lbl"),
+                html.Div(html.Div(className="bar-fill", style={"width": f"{pct}%", "background": bar_col}),
+                         className="bar-track")], className="gb-prog"),
+            html.Div([html.Span("STAGED STAKE ", className="u-label"),
+                      html.Span(stake_str, className="mono", style={"fontWeight": "700",
+                                "color": (NEUTRAL if stake > 0 else DIM)}),
+                      html.Span("  · $0 LIVE until gate PASS", className="sub",
+                                style={"fontSize": "10px", "color": AMBER})], className="gb-stake")],
+            className="gb-card"))
+    return card([html.H3("Deploy-Gate Board — What Unlocks Capital"),
+                 _cap("Every paper stream, its DEPLOYED status, the SPECIFIC pre-registered gate it must "
+                      "pass (docs/FORWARD_PROTOCOL A2/A3/A4), forward progress (settled signals / threshold), "
+                      "and its STAGED Kelly stake. Capital is allocated ONLY when a gate PASSES — today all "
+                      "stakes are $0 live. WATCH · NO PATH = validated-but-not-promotable (within-cold decay). "
+                      "Paper/forward only, never realized P&L."),
+                 html.Div(rows, className="gb-grid")], id="gate-board-card")
+
+
+def panel_staged_alloc():
+    """Staged Kelly allocation bar: per-stream staged stake ($, $0-live), color by status. Source: run_gates."""
+    d = table("run_gates")
+    if d.empty:
+        return card([html.H3("Staged Allocation"), empty_state("Fills from the staged-harness ledger.")])
+    d = d.copy()
+    d = d[d["staged_stake"].fillna(0) > 0].sort_values("staged_stake", ascending=True)
+    if d.empty:
+        return card([html.H3("Staged Allocation — All $0 Live"),
+                     _cap("Every stream is STAGED at $0 live until its forward gate passes."),
+                     empty_state("No staged stake yet.")])
+    colors = [_GATE_STATUS_STYLE.get(s, ("neut", NEUTRAL, ""))[1] for s in d["status"]]
+    fig = go.Figure()
+    fig.add_bar(y=d["edge_label"], x=d["staged_stake"], orientation="h", marker_color=colors,
+                text=[f"${v:,.2f}" for v in d["staged_stake"]], textposition="outside", cliponaxis=False,
+                customdata=d[["season", "edge_c"]].values,
+                hovertemplate="<b>%{y}</b><br>staged $%{x:,.2f} (LIVE $0)"
+                              "<br>%{customdata[0]} · edge %{customdata[1]:+.2f}c<extra></extra>")
+    fig.update_layout(title=None, margin=dict(l=170, r=40, t=10, b=36))
+    fig.update_xaxes(title="staged stake ($ — $0 live until gate PASS)", tickprefix="$", tickformat=",.0f")
+    fig.update_yaxes(title="")
+    total = float(d["staged_stake"].sum())
+    return card([html.H3("Staged Kelly Allocation — per Stream"),
+                 _cap(f"Fractional-Kelly stake each stream WOULD receive (sized at its bootstrap CI lower "
+                      f"bound, ${total:,.0f} total across active streams) IF its gate passes. Cold-season "
+                      f"daily-low streams (PHIL/AUS/MIA) get the largest stakes — strong, robust cold edges. "
+                      f"All are $0 LIVE today. Paper model, never realized P&L."),
+                 graph(_tpl(fig, h=300, legend=False))])
+
+
+def panel_open_positions():
+    """PENDING PAPER TRADES: open, unsettled paper signals -- timeline scatter by target date + a table.
+    Source: open_positions. Honest: paper signals awaiting settlement; no real orders."""
+    d = table("open_positions")
+    if d.empty:
+        return card([html.H3("Pending Paper Trades"),
+                     empty_state("No open paper signals — all logged signals have settled.")])
+    d = d.copy()
+    import pandas as _pd
+    d["_dt"] = _pd.to_datetime(d["target_date"], errors="coerce")
+    scat = d.dropna(subset=["_dt"])
+    fig = go.Figure()
+    if not scat.empty:
+        for mkt, color in (("HIGH", GREEN), ("LOW", NEUTRAL)):
+            sub = scat[scat["market"] == mkt]
+            if sub.empty:
+                continue
+            fig.add_scatter(x=sub["_dt"], y=sub["edge_c"], mode="markers", name=f"{mkt} book",
+                            marker=dict(size=11, color=color, opacity=.82,
+                                        line=dict(width=1, color="rgba(255,255,255,.25)"),
+                                        symbol=["circle" if s == "YES" else "diamond" for s in sub["side"]]),
+                            customdata=sub[["city", "stream", "side", "ticker"]].values,
+                            hovertemplate="<b>%{customdata[0]} %{customdata[1]}</b> %{customdata[2]}"
+                                          "<br>%{customdata[3]}<br>model edge %{y:+.1f}c"
+                                          "<br>target %{x|%Y-%m-%d}<extra></extra>")
+        fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
+        fig.update_layout(title=None)
+        fig.update_yaxes(title="model edge at scan (c / contract)", ticksuffix="c", tickformat="+,.0f")
+        fig.update_xaxes(title="target settle date", nticks=8)
+    show = present(d.drop(columns=["_dt"]),
+                   rename={"edge_c": "Model Edge", "entry": "Entry", "age_h": "Age",
+                           "target_date": "Target Settle"},
+                   fmt={"edge_c": _cents1, "entry": lambda v: "—" if _isnull(v) else f"{v:.2f}",
+                        "age_h": lambda v: "—" if _isnull(v) else f"{v:.0f}h"},
+                   order=["target_date", "city", "market", "stream", "ticker", "side",
+                          "edge_c", "entry", "age_h"])
+    n = len(d)
+    return card([html.H3(["Pending Paper Trades — Open, Unsettled Signals  ", info_dot(
+                    "Paper signals the monitors have LOGGED but that have NOT yet settled. No real orders, "
+                    "no real money — these are forward paper scans awaiting their settlement outcome.")]),
+                 _cap(f"{n} paper signals logged across the forward monitors but NOT yet settled, plotted by "
+                      f"target settle date and model edge (circle = YES side, diamond = NO). These are PAPER "
+                      f"signals awaiting settlement — no real orders, no real money. Once they settle they "
+                      f"feed the gate-progress counters above."),
+                 graph(_tpl(fig, h=300)) if not scat.empty else html.Div(),
+                 pro_table(show, present_df=False, max_rows=16,
+                           align_left=("Side", "Market", "Stream", "Ticker"))],
+                id="open-positions-card")
+
+
+def render_bankroll():
+    return html.Div([section("$1,000 Staged Paper Run — Honest Gate Tracker"),
+                     html.Div(["The $1,000 paper bankroll and the pre-registered gates that govern it. ",
+                               html.B("LIVE capital today = $0"), " — every edge is STAGED until its forward "
+                               "gate passes. No orders, no account, no real money anywhere. Every figure is "
+                               "paper/backtest/forward, never realized P&L."], className="sub",
+                              style={"marginBottom": "12px"}),
+                     panel_run_header(),
+                     html.Div([html.Div(panel_run_equity(), className="col-5"),
+                               html.Div(panel_staged_alloc(), className="col-7")], className="grid12",
+                              style={"marginTop": "10px"}),
+                     html.Div([html.Div(panel_gate_board(), className="col-12")], className="grid12"),
+                     html.Div([html.Div(panel_open_positions(), className="col-12")], className="grid12")])
 
 
 def card(children, cls="", **kw):
@@ -954,6 +1296,12 @@ COLUMN_FMT = {
     "value": ("Value", None),
     "unit": ("Unit", None),
     "label": ("Metric", None),
+    "market": ("Market", None),
+    "ticker": ("Ticker", None),
+    "side": ("Side", None),
+    "edge_label": ("Edge", None),
+    "season": ("Season", None),
+    "age_h": ("Age", None),
 }
 
 
@@ -983,7 +1331,8 @@ def present(df, drop=(), rename=None, fmt=None, order=None):
 # Header names that are LABELS (left-aligned, regular weight). Everything else is treated as a
 # numeric/metric column -> right-aligned, mono tabular-nums. (Headers are post-present() Title-Case.)
 _LABEL_HEADERS = {"City", "Stream", "Source", "Status", "Item", "Detail", "Metric", "Gate Status",
-                  "Changepoint", "Target Date", "Unit", "Beats Market"}
+                  "Changepoint", "Target Date", "Unit", "Beats Market", "Market", "Ticker", "Side",
+                  "Edge", "Season", "Target Settle"}
 
 
 def _is_label_col(header, series):
@@ -1099,18 +1448,25 @@ def render_overview():
                           "net-positive settled paper signals."),
                      funnel_content])
     else:
+        # $1,000 staged run is now surfaced (its own page). Overview shows the HONEST flat-$1,000 staged
+        # curve + a pointer to the dedicated gate tracker. Equity is flat by construction (all streams $0 live).
+        x = list(br["date"]); y = [float(v) for v in br["bankroll"]]
+        if len(x) == 1:
+            x = [x[0], x[0] + "  (today)"]; y = [y[0], y[0]]
         fig = go.Figure()
-        fig.add_scatter(x=br["date"], y=br["bankroll"], name="Paper bankroll", mode="lines",
-                        line=dict(color=MINT, width=2.6, shape="spline", smoothing=0.5),
-                        fill="tozeroy", fillcolor="rgba(22,199,132,.07)",
-                        hovertemplate="%{x}<br>%{y:$,.0f}<extra></extra>")
-        if "expected_bankroll" in br:
-            fig.add_scatter(x=br["date"], y=br["expected_bankroll"], name="Backtest-expected", mode="lines",
-                            line=dict(color=DIM, width=1.6, dash="dash", shape="spline", smoothing=0.5),
-                            hovertemplate="%{x}<br>%{y:$,.0f}<extra></extra>")
-        fig.update_yaxes(title="paper bankroll ($)", tickprefix="$", tickformat=",.0f")
+        fig.add_scatter(x=x, y=y, name="paper equity (staged)", mode="lines+markers",
+                        line=dict(color=NEUTRAL, width=2.4), marker=dict(size=6, color=NEUTRAL),
+                        hovertemplate="%{x}<br>$%{y:,.0f} (staged)<extra></extra>")
+        fig.add_hline(y=1000, line=dict(color=GREEN, width=1.2, dash="dot"),
+                      annotation_text="$1,000 staged baseline", annotation_position="bottom right",
+                      annotation_font=dict(color=GREEN, size=10))
+        fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f", range=[900, 1100])
         fig.update_xaxes(title="")
-        bank = card([html.H3("$1,000 Paper Run vs Backtest-Expected"), graph(_tpl(fig))])
+        bank = card([html.H3("$1,000 Staged Paper Run — Flat at $1,000"),
+                     _cap("LIVE allocation $0 — every edge is STAGED until its forward gate PASSES, so equity "
+                          "is flat by construction. See the $1,000 Run page for the full per-edge gate board. "
+                          "Paper only, never realized P&L."),
+                     graph(_tpl(fig, h=240, legend=False))])
     # confirmed-cities mini panel
     rev = cs1[cs1["revived"] == 1] if not cs1.empty and "revived" in cs1 else cs1.iloc[0:0]
     chips = [badge(f"{r['city']}  +{r['s1_net_c']:.1f}c", "good") for _, r in rev.iterrows()] or [badge("NY", "good")]
@@ -1139,7 +1495,10 @@ def render_markets():
                               className="sub", style={"marginBottom": "10px"}),
                      html.Div([html.Div(panel_city_network(), className="col-7"),
                                html.Div(panel_city_rank(), className="col-5")], className="grid12"),
-                     html.Div([html.Div(panel_market_feed(), className="col-12")], className="grid12"),
+                     html.Div([html.Div(panel_quote_board(), className="col-12")], className="grid12"),
+                     html.Div([html.Div(panel_market_feed(), className="col-7"),
+                               html.Div(panel_scan_stream(), className="col-5")], className="grid12"),
+                     html.Div([html.Div(panel_open_positions(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_source_health(), className="col-6"),
                                html.Div(panel_model_drift(), className="col-6")], className="grid12"),
                      html.Div([html.Div(panel_alerts(), className="col-12")], className="grid12")])
@@ -1493,6 +1852,15 @@ def render_sandbox():
         dcc.Graph(id="sb-dist", config={"displayModeBar": False})])
     chart_break = card([html.H3("Profit Breakdown by Stream"),
         dcc.Graph(id="sb-chart", config={"displayModeBar": False})])
+    chart_cap = card([html.H3(["Capacity Ceiling vs Bankroll  ", info_dot(
+            "Real markets have finite depth (~250 contracts fillable per market within ~1c slip). Absolute-$ "
+            "profit scales with bankroll only until it hits this ceiling, then PLATEAUS. More bankroll past "
+            "that point earns the SAME dollars at a lower %.")]),
+        html.Div(id="sb-cap-flag", style={"marginBottom": "8px"}),
+        html.Div("Monthly paper profit as bankroll grows: it rises with capital UNTIL real fill-depth caps "
+                 "it, then flattens. Even a $100M bankroll returns the same capped dollars as ~$5k — the "
+                 "markets only absorb so much. Paper model.", className="sub"),
+        dcc.Graph(id="sb-cap", config={"displayModeBar": False})])
 
     disclaimer = card([html.Div("How this is computed", className="u-label", style={"marginBottom": "6px"}),
         html.Div(["The profit breakdown is a transparent parametric model: per-stream edge (c/contract) "
@@ -1515,6 +1883,7 @@ def render_sandbox():
                  className="grid12"),
         html.Div([html.Div(chart_dist, className="col-6"), html.Div(chart_break, className="col-6")],
                  className="grid12"),
+        html.Div([html.Div(chart_cap, className="col-12")], className="grid12"),
         html.Div([html.Div(disclaimer, className="col-12")], className="grid12")])
 
 
@@ -1544,10 +1913,10 @@ def render_methodology():
                      card(dt(m, page_size=20) if not m.empty else html.Div("—", className="sub"))])
 
 
-RENDER = {"overview": render_overview, "markets": render_markets, "forecasts": render_forecasts,
-          "edges": render_edges, "multicity": render_multicity, "accuracy": render_accuracy,
-          "quantlab": render_quantlab, "forward": render_forward, "sandbox": render_sandbox,
-          "risk": render_risk, "methodology": render_methodology}
+RENDER = {"overview": render_overview, "markets": render_markets, "bankroll": render_bankroll,
+          "forecasts": render_forecasts, "edges": render_edges, "multicity": render_multicity,
+          "accuracy": render_accuracy, "quantlab": render_quantlab, "forward": render_forward,
+          "sandbox": render_sandbox, "risk": render_risk, "methodology": render_methodology}
 
 # ============================== APP ==============================
 app = Dash(__name__, title="AeroAlpha — Investor View", update_title=None,
@@ -1745,11 +2114,23 @@ def _risk_metric(label, value, sev, meaning):
         className="card", style={"flex": "1", "minWidth": "150px", "padding": "12px 14px"})
 
 
+def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
+                              s1_edge_c, low_edge_c, lock_edge_c):
+    """Absolute-$ monthly profit CEILING from real market depth (deliverable #3). Per market+trade the most
+    we can deploy is DEPTH_CAP contracts; each fillable contract earns its stream's net edge (cents->$).
+    ceiling = sum over books of DEPTH_CAP * (edge_c/100) * trades/mo * active_markets. Independent of
+    bankroll -> this is the hard plateau. Source: 250ct median fillable depth within ~1c slip (sizing)."""
+    s1_cap = DEPTH_CAP * (s1_edge_c / 100.0) * s1tr * cities
+    low_cap = DEPTH_CAP * (low_edge_c / 100.0) * low_trades * low_cities
+    lock_cap = DEPTH_CAP * (lock_edge_c / 100.0) * lockpm * cities
+    return max(0.0, s1_cap + low_cap + lock_cap)
+
+
 @app.callback(
     Output("sb-profit", "children"), Output("sb-roi", "children"), Output("sb-roi", "style"),
     Output("sb-kelly-band", "children"), Output("sb-note", "children"), Output("sb-risk-metrics", "children"),
     Output("sb-chart", "figure"), Output("sb-fan", "figure"), Output("sb-rr", "figure"),
-    Output("sb-dist", "figure"),
+    Output("sb-dist", "figure"), Output("sb-cap", "figure"), Output("sb-cap-flag", "children"),
     Input("sb-rmse", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
     Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
     Input("sb-lock", "value"), Input("sb-lockpm", "value"),
@@ -1767,7 +2148,7 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         winrate = min(99.0, max(1.0, float(winrate))) / 100.0; slip = max(0.0, float(slip))
     except (TypeError, ValueError):
         return ("—", "—", {"color": DIM}, "", "Enter valid numbers in every field.", "",
-                blank, blank, blank, blank)
+                blank, blank, blank, blank, blank, "")
     kelly = min(KELLY_MAX, max(0.25, kelly))
 
     # ---- risk band from the embedded Kelly sweep (interpolated) ----
@@ -1787,7 +2168,16 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
     gross_sum = s1_gross + low_gross + lock_gross
     # headline monthly ROI = sweep median %/m, tilted by win-rate vs baseline (kept modest, capped)
     roi = k["med"] * min(2.0, max(0.0, wr_scale))
-    total = roi / 100.0 * bankroll if bankroll > 0 else 0.0
+    total_uncapped = roi / 100.0 * bankroll if bankroll > 0 else 0.0
+    # ---- DEPTH-CAPACITY CAP (deliverable #3): absolute-$ profit cannot exceed what real market depth
+    # fills. ceiling = DEPTH_CAP ct * edge * trades/mo * markets -> bankroll-INDEPENDENT plateau. Past the
+    # ceiling, more capital earns the SAME dollars (lower %). This is the "$100M -> same as ~$5k" reality.
+    cap_ceiling = _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
+                                            s1_edge_c, low_edge_c, lock_edge_c)
+    capacity_bound = bankroll > 0 and cap_ceiling > 0 and total_uncapped > cap_ceiling
+    total = min(total_uncapped, cap_ceiling) if cap_ceiling > 0 else total_uncapped
+    # effective realized ROI reflects the cap (so % falls once capacity binds)
+    roi = (total / bankroll * 100.0) if bankroll > 0 else 0.0
     roi_color = MINT if total >= 0 else RED
     # split the anchored $ total across streams by gross weight (composition, not independent sums)
     if gross_sum > 0:
@@ -1930,6 +2320,55 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
                      range=[_vmin * 1.18 if _vmin < 0 else 0, _vmax * 1.18])
     fig.update_xaxes(title="")
 
+    # ---- (d) capacity-ceiling-vs-bankroll line chart (deliverable #3): profit flattening ----
+    cap = go.Figure()
+    if cap_ceiling > 0:
+        bxs = _np.geomspace(100.0, 1e8, 60)                          # $100 -> $100M log axis
+        uncapped = k["med"] * min(2.0, max(0.0, wr_scale)) / 100.0   # ROI fraction (pre-cap, per $)
+        prof_uncapped = uncapped * bxs                               # linear-in-bankroll (no cap)
+        prof_capped = _np.minimum(prof_uncapped, cap_ceiling)        # depth-capped plateau
+        # bankroll where the cap first binds
+        bind_b = (cap_ceiling / uncapped) if uncapped > 0 else None
+        cap.add_scatter(x=bxs, y=prof_uncapped, mode="lines", name="uncapped (no depth limit)",
+                        line=dict(color=NEUTRAL, width=1.4, dash="dash"),
+                        hovertemplate="bankroll $%{x:,.0f}<br>uncapped $%{y:,.0f}/mo<extra></extra>")
+        cap.add_scatter(x=bxs, y=prof_capped, mode="lines", name="depth-capped (real)",
+                        line=dict(color=GREEN, width=2.6),
+                        fill="tozeroy", fillcolor="rgba(0,224,138,.08)",
+                        hovertemplate="bankroll $%{x:,.0f}<br>capped $%{y:,.0f}/mo<extra></extra>")
+        cap.add_hline(y=cap_ceiling, line=dict(color=RED, width=1.4, dash="dot"),
+                      annotation_text=f"absolute ceiling ${cap_ceiling:,.0f}/mo",
+                      annotation_position="top left", annotation_font=dict(color=RED, size=10))
+        if bind_b and 100 <= bind_b <= 1e8:
+            cap.add_vline(x=bind_b, line=dict(color=AMBER, width=1.3, dash="dash"),
+                          annotation_text=f"cap binds ~${bind_b:,.0f}", annotation_position="top right",
+                          annotation_font=dict(color=AMBER, size=10))
+        # mark the user's current bankroll
+        bnow = max(100.0, min(1e8, bankroll if bankroll > 0 else 1000.0))
+        pnow = min(uncapped * bnow, cap_ceiling)
+        cap.add_scatter(x=[bnow], y=[pnow], mode="markers", name="your bankroll",
+                        marker=dict(size=15, color=AMBER, symbol="star", line=dict(width=1.4, color="#fff")),
+                        hovertemplate=f"your bankroll ${bnow:,.0f}<br>$%{{y:,.0f}}/mo<extra></extra>")
+        cap.update_xaxes(type="log", title="bankroll ($, log scale)", tickprefix="$", tickformat="~s")
+        cap.update_yaxes(title="paper profit ($ / month)", tickprefix="$", tickformat="~s")
+    cap.update_layout(title=None)
+
+    if capacity_bound:
+        cap_flag = html.Div([badge("CAPACITY-LIMITED", "warn"),
+                             html.Span(f"  At ${bankroll:,.0f} the depth cap BINDS: profit is held at the "
+                                       f"${cap_ceiling:,.0f}/mo ceiling. More capital here earns the SAME "
+                                       f"dollars at a lower %.", className="sub",
+                                       style={"marginLeft": "8px"})],
+                            style={"display": "flex", "alignItems": "baseline", "flexWrap": "wrap"})
+    elif cap_ceiling > 0:
+        cap_flag = html.Div([badge("WITHIN CAPACITY", "good"),
+                             html.Span(f"  Profit still scales with bankroll; the depth-cap ceiling "
+                                       f"(${cap_ceiling:,.0f}/mo) binds above ~${(cap_ceiling/max(roi/100.0,1e-9)):,.0f}.",
+                                       className="sub", style={"marginLeft": "8px"})],
+                            style={"display": "flex", "alignItems": "baseline", "flexWrap": "wrap"})
+    else:
+        cap_flag = html.Div("Set non-zero edges to see the capacity ceiling.", className="sub")
+
     note = (f"Headline ROI is ANCHORED to the validated $1k Kelly sweep (median {k['med']:+.1f}%/m at "
             f"{kelly:.2f}x, edges sized at CI lower bound), tilted by win-rate vs the 55% baseline — it is "
             f"NOT a free-running contracts×trades product (that double-counts and overstates). The breakdown "
@@ -1937,10 +2376,14 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
             f"max(0,{S1_EDGE_K}·({MKT_SD}−RMSE)−slip)={s1_edge_c:.1f}c×{s1tr:.0f}/mo×{cities} cities; "
             f"daily-low {low_edge_c:.1f}c×{low_trades:.0f}/mo×{low_cities} cities; lock-in "
             f"{lock_edge_c:.1f}c×{lockpm:.0f}/mo×{cities} cities. Risk band + fan + curve + gauge all read "
-            f"the same sweep. Paper/backtest — NOT a guarantee, never realized P&L; LIVE capital today = $0 "
+            f"the same sweep. The dollar total is then CAPPED by real market depth "
+            f"(~{DEPTH_CAP}ct/market within ~1c slip) -> a hard ${cap_ceiling:,.0f}/mo absolute ceiling "
+            f"{'(BINDING now)' if capacity_bound else '(not binding yet)'}; past it, bankroll buys no extra "
+            f"dollars. Paper/backtest — NOT a guarantee, never realized P&L; LIVE capital today = $0 "
             f"until the forward gates PASS.")
     return (f"${total:,.0f}", f"{roi:+.1f}%", {"color": roi_color}, kelly_band, note, metrics,
-            _tpl(fig, h=300, legend=False), _tpl(fan, h=300), _tpl(rr, h=300, legend=False), dist)
+            _tpl(fig, h=300, legend=False), _tpl(fan, h=300), _tpl(rr, h=300, legend=False), dist,
+            _tpl(cap, h=320), cap_flag)
 
 
 def _sev_color(sev):
