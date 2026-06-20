@@ -201,6 +201,85 @@ def panel_pit():
                  graph(_tpl(fig, h=320, legend=False))])
 
 
+def panel_brier_decomp():
+    """MURPHY BRIER DECOMPOSITION (Part B): our Brier vs the market's, split into reliability / resolution /
+    uncertainty. Stacked bars per book; shows WHY we beat the market (low reliability = calibrated, positive
+    resolution = discriminating). Green/red/neutral only. Source: brier_decomp."""
+    d = table("brier_decomp")
+    if d.empty:
+        return card([html.H3("Brier Decomposition (Murphy)"),
+                     empty_state("Fills from settled binned predictions vs outcomes.")])
+    d = d.copy()
+    # bars: reliability (RED = penalty, lower better), resolution shown as a CREDIT (GREEN), uncertainty (NEUTRAL).
+    fig = go.Figure()
+    fig.add_bar(x=d["who"], y=d["reliability"], name="Reliability (penalty ↓)", marker_color=RED,
+                hovertemplate="<b>%{x}</b><br>reliability %{y:.4f} (lower = better calibrated)<extra></extra>")
+    fig.add_bar(x=d["who"], y=d["uncertainty"], name="Uncertainty (base)", marker_color=NEUTRAL,
+                hovertemplate="<b>%{x}</b><br>uncertainty %{y:.4f} (irreducible)<extra></extra>")
+    fig.add_bar(x=d["who"], y=-d["resolution"], name="Resolution (credit ↑)", marker_color=GREEN,
+                hovertemplate="<b>%{x}</b><br>resolution %{customdata:.4f} (higher = more discriminating)"
+                              "<extra></extra>", customdata=d["resolution"])
+    # net Brier marker = reliability - resolution + uncertainty
+    fig.add_scatter(x=d["who"], y=d["brier"], mode="markers+text", name="Brier (net)",
+                    marker=dict(size=12, color=INK, symbol="diamond",
+                                line=dict(width=1.4, color="rgba(255,255,255,.4)")),
+                    text=[f"{b:.4f}" for b in d["brier"]], textposition="top center",
+                    textfont=dict(color=INK, size=11),
+                    hovertemplate="<b>%{x}</b><br>Brier %{y:.4f}<extra></extra>")
+    fig.update_layout(title=None, barmode="relative")
+    fig.update_yaxes(title="Brier contribution (Brier = reliability − resolution + uncertainty)")
+    fig.update_xaxes(title="")
+    # honest verdict from the numbers
+    md = d[d["who"].str.startswith("Model")]
+    mk = d[d["who"] == "Market"]
+    n = int(d["n"].iloc[0])
+    verdict = ""
+    if not md.empty and not mk.empty:
+        beats = float(md["brier"].iloc[0]) < float(mk["brier"].iloc[0])
+        verdict = (f"The model's Brier {float(md['brier'].iloc[0]):.4f} "
+                   f"{'beats' if beats else 'trails'} the market's {float(mk['brier'].iloc[0]):.4f}. "
+                   f"Its reliability term ({float(md['reliability'].iloc[0]):.4f}) is the calibration penalty "
+                   f"(lower = better); its resolution ({float(md['resolution'].iloc[0]):.4f}) is the "
+                   f"discrimination credit (higher = better). ")
+    return card([html.H3("Brier Decomposition (Murphy) — Why the Model Scores Well"),
+                 _cap(f"{verdict}Brier = reliability − resolution + uncertainty over n={n} settled paper "
+                      f"signals. RED reliability is a penalty (low = calibrated); GREEN resolution is a "
+                      f"credit (high = discriminates winners from losers); NEUTRAL uncertainty is the "
+                      f"irreducible base-rate term, shared by both. Small sample — paper/backtest, the same "
+                      f"settled set the forward gates accumulate."),
+                 graph(_tpl(fig, h=340))])
+
+
+def panel_lead_decay():
+    """LEAD-TIME SKILL-DECAY (Part B): RMSE vs forecast lead. HONEST empty-state today -- the decision archive
+    logs a SINGLE horizon, so no real decay curve is buildable; we do NOT fake it. Source: lead_decay."""
+    d = table("lead_decay")
+    if d.empty:
+        return card([html.H3("Lead-Time Skill Decay"),
+                     html.Div([
+                         empty_state("Needs a multi-lead forecast archive (forward collection)."),
+                         _cap("The decision/replay archive currently logs a SINGLE forecast horizon "
+                              "(one-day-ahead only), so an honest RMSE-vs-lead curve cannot be drawn yet — "
+                              "and we do NOT fabricate one. TO BUILD IT, the pipeline would snapshot the "
+                              "Open-Meteo Previous-Runs forecast at MULTIPLE leads (day1…day7) per contract "
+                              "date and log forecast_high_f PER LEAD; this panel then plots RMSE by lead from "
+                              "those leak-free pairs. Forward-collection item for the data pipeline (Conduit).")],
+                         style={"display": "flex", "flexDirection": "column", "gap": "8px"})],
+                    id="lead-decay-card")
+    # real curve (only if >=2 horizons ever land)
+    d = d.copy().sort_values("rmse")
+    fig = go.Figure()
+    fig.add_scatter(x=d["lead_days"], y=d["rmse"], mode="lines+markers", name="RMSE",
+                    line=dict(color=GREEN, width=2.2), marker=dict(size=7, color=GREEN),
+                    hovertemplate="lead %{x}<br>RMSE %{y:.2f}°F<extra></extra>")
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="day-ahead RMSE (°F)", ticksuffix="°F")
+    fig.update_xaxes(title="forecast lead")
+    return card([html.H3("Lead-Time Skill Decay"),
+                 _cap("Forecast RMSE by lead time (multi-lead archive). Backtest."),
+                 graph(_tpl(fig, h=300, legend=False))], id="lead-decay-card")
+
+
 def panel_fan():
     """Forecast fan: deployed forecast high +/- sigma band vs realized observed high, recent dates."""
     d = table("fan")
@@ -946,15 +1025,23 @@ _GATE_STATUS_STYLE = {
 
 
 def panel_run_header():
-    """$1k Run header KPI strip: paper bankroll, current equity (flat), start date, LIVE allocation ($0),
-    drawdown (0%), staged total, gates passing. HONEST 'moves only on a gate PASS' note."""
+    """$1k Run header KPI strip. THREE distinct allocation pools shown side-by-side: ACTIVE-PAPER (deployed
+    in the paper run NOW, user-activated ahead of the gate), STAGED (the $0-live Kelly stakes the gate still
+    governs), and LIVE REAL-DEPLOY ($0 — no real money). Plus equity (flat $1,000) + gates passing + the
+    honest pre-gate-activation callout. HONEST: activation is PAPER, ahead of the forward gate; gates UNCHANGED."""
     eq = _run_meta("equity", "1000")
     start = _run_meta("harness_start_date")
-    live = _run_meta("live_allocation_dollars", "0")
+    act_date = _run_meta("activation_date", start)
+    active_p = _run_meta("active_paper_allocation_dollars", "0.00")
+    staged_z = _run_meta("staged_zero_allocation_dollars", _run_meta("staged_total_dollars", "—"))
+    live_real = _run_meta("live_real_deploy_allocation_dollars", _run_meta("live_allocation_dollars", "0"))
     dd = _run_meta("current_drawdown", "0.0")
-    staged = _run_meta("staged_total_dollars", "—")
     npass = _run_meta("n_gates_pass", "0"); ngate = _run_meta("n_gates", "0")
+    nactive = _run_meta("n_active_paper_streams", "0")
     kf = _run_meta("kelly_fraction", "0.50")
+    activated = _run_meta("activated_streams", "—")
+    note_txt = _run_meta("ledger_note", "—")
+    act_note = _run_meta("activation_note", "—")
 
     def tile(label, value, sub, accent=INK):
         return html.Div([html.Div(label, className="label"),
@@ -964,19 +1051,23 @@ def panel_run_header():
     tiles = [
         tile("PAPER BANKROLL", "$1,000", "staged paper capital", INK),
         tile("CURRENT EQUITY", f"${eq}", "flat — no backfill", GREEN if eq == "1000" else INK),
-        tile("LIVE ALLOCATION", f"${live}", "all streams STAGED", AMBER),
-        tile("DRAWDOWN", f"{dd}%", "since start", GREEN),
-        tile("STAGED (at risk if live)", f"${staged}", f"Kelly {kf}x · CI-lower-bound", NEUTRAL),
-        tile("GATES PASSED", f"{npass}/{ngate}", "0 live until a gate PASSES", AMBER),
+        tile("ACTIVE · PAPER", f"${active_p}", f"{nactive} streams · paper, pre-gate", GREEN),
+        tile("STAGED · $0 LIVE", f"${staged_z}", f"Kelly {kf}x · awaits gate", NEUTRAL),
+        tile("LIVE REAL-DEPLOY", f"${live_real}", "no real money, no orders", AMBER),
+        tile("GATES PASSED", f"{npass}/{ngate}", "real deploy needs a PASS", AMBER),
     ]
-    note = card([html.Div([html.Span("●", style={"color": AMBER, "marginRight": "7px"}),
-                           html.B("This curve only moves once a forward gate PASSES.")], className="sub",
-                          style={"fontSize": "12.5px", "color": INK}),
-                 html.Div(f"Started {start}, no backfill. Today every stream is STAGED — LIVE capital = $0. "
-                          "The staged stakes below show what each edge WOULD be allocated (fractional-Kelly "
-                          "at its bootstrap CI lower bound) IF its pre-registered forward gate passes. "
-                          "Flipping STAGED → LIVE routes through the forward-protocol gate verdict + a "
-                          "safety review. Paper only — never real money, never realized P&L.",
+    note = card([html.Div([html.Span("●", style={"color": GREEN, "marginRight": "7px"}),
+                           html.B("Activated in the PAPER run by user decision — AHEAD of the forward gate.")],
+                          className="sub", style={"fontSize": "12.5px", "color": INK}),
+                 html.Div([f"Four warm-season-applicable edges ({activated}) are now ACTIVE in the "
+                           f"$1,000 PAPER run ({act_note}, activated {act_date}) — paper allocation "
+                           f"${active_p}. ",
+                           html.B("Paper $1,000 only — no real money, no orders, $0 live real-deploy. "),
+                           "The forward-validation gates (reconcile_forward_edges.py / FORWARD_PROTOCOL) are "
+                           "UNCHANGED and still govern any REAL deployment. Activation does NOT mean these "
+                           "edges PASSED their gates — each is still ACCUMULATING settled signals below. "
+                           "Equity stays flat $1,000 with no backfill and moves only as activated PAPER "
+                           "signals settle. Never realized P&L."],
                           className="sub", style={"marginTop": "4px"})],
                 cls="run-note")
     return html.Div([html.Div(tiles, className="grid kpi-strip"),
@@ -985,31 +1076,33 @@ def panel_run_header():
 
 
 def panel_run_equity():
-    """Flat $1,000 staged equity curve with an honest 'staged' band. Source: bankroll_run (ledger curve)."""
+    """Flat $1,000 PAPER equity curve from the activation date, no backfill. Source: bankroll_run (ledger curve)."""
     d = table("bankroll_run")
+    act = _run_meta("activation_date", "2026-06-19")
     fig = go.Figure()
     if d.empty:
         # single flat point at $1,000 so the chart still renders honestly
-        fig.add_scatter(x=["start"], y=[1000], mode="markers", marker=dict(color=NEUTRAL, size=8),
-                        hovertemplate="$1,000 (staged)<extra></extra>", showlegend=False)
+        fig.add_scatter(x=["start"], y=[1000], mode="markers", marker=dict(color=GREEN, size=8),
+                        hovertemplate="$1,000 (paper)<extra></extra>", showlegend=False)
     else:
         x = list(d["date"]); y = [float(v) for v in d["bankroll"]]
         if len(x) == 1:               # render a flat segment so a single ledger row reads as a line
             x = [x[0], x[0] + "  (today)"]
             y = [y[0], y[0]]
-        fig.add_scatter(x=x, y=y, mode="lines+markers", name="paper equity (staged)",
-                        line=dict(color=NEUTRAL, width=2.4), marker=dict(size=6, color=NEUTRAL),
-                        hovertemplate="%{x}<br>$%{y:,.0f} (staged)<extra></extra>")
-    fig.add_hline(y=1000, line=dict(color=GREEN, width=1.2, dash="dot"),
-                  annotation_text="$1,000 staged baseline", annotation_position="bottom right",
-                  annotation_font=dict(color=GREEN, size=10))
+        fig.add_scatter(x=x, y=y, mode="lines+markers", name="paper equity",
+                        line=dict(color=GREEN, width=2.4), marker=dict(size=6, color=GREEN),
+                        hovertemplate="%{x}<br>$%{y:,.0f} (paper)<extra></extra>")
+    fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
+                  annotation_text="$1,000 baseline", annotation_position="bottom right",
+                  annotation_font=dict(color=NEUTRAL, size=10))
     fig.update_layout(title=None)
     fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f", range=[900, 1100])
     fig.update_xaxes(title="")
-    return card([html.H3("Staged Equity — Flat at $1,000"),
-                 _cap("The $1,000 paper bankroll. It is FLAT by construction: every stream is STAGED at "
-                      "$0 live, so no realized paper P&L has accrued. The line moves only when a forward "
-                      "gate PASSES and that stream is promoted STAGED → LIVE. Paper only, never realized P&L."),
+    return card([html.H3("Paper Equity — Flat at $1,000"),
+                 _cap(f"The $1,000 PAPER bankroll, flat from activation {act} (no backfill). Four edges are "
+                      "ACTIVE in the paper run; the line moves as those activated PAPER signals SETTLE. "
+                      "LIVE real-deploy capital = $0 — promotion to REAL still requires a forward-gate PASS. "
+                      "Paper only, never realized P&L."),
                  graph(_tpl(fig, h=240, legend=False))])
 
 
@@ -1019,6 +1112,7 @@ def panel_gate_board():
     d = table("run_gates")
     if d.empty:
         return card([html.H3("Deploy-Gate Board"), empty_state("Fills from the $1,000 staged-harness ledger.")])
+    has_state = "paper_state" in d.columns
     rows = []
     for _, r in d.iterrows():
         kind, col, lbl = _GATE_STATUS_STYLE.get(r["status"], ("neut", NEUTRAL, str(r["status"]).upper()))
@@ -1030,9 +1124,30 @@ def panel_gate_board():
         stake = float(r["staged_stake"] or 0.0)
         stake_str = f"${stake:,.2f}" if stake > 0 else "$0"
         bar_col = "var(--accent)" if kind == "good" else ("var(--amber)" if kind == "warn" else "var(--neutral)")
+        # ACTIVATION (orthogonal to the gate): ACTIVE = user-activated in the PAPER run ahead of the gate.
+        is_active = has_state and str(r.get("paper_state") or "").upper() == "ACTIVE"
+        active_stake = float(r.get("active_stake") or 0.0) if has_state else 0.0
+        # State chip: green ACTIVE·PAPER vs neutral STAGED. Stake line shows the live PAPER stake when active.
+        if is_active:
+            state_chip = badge("ACTIVE · PAPER", "good")
+            stake_block = html.Div([
+                html.Span("PAPER STAKE ", className="u-label"),
+                html.Span(f"${active_stake:,.2f}", className="mono",
+                          style={"fontWeight": "700", "color": GREEN}),
+                html.Span("  · active in the $1k paper run · $0 REAL until gate PASS", className="sub",
+                          style={"fontSize": "10px", "color": AMBER})], className="gb-stake")
+        else:
+            state_chip = badge("STAGED", "neut")
+            stake_block = html.Div([
+                html.Span("STAGED STAKE ", className="u-label"),
+                html.Span(stake_str, className="mono",
+                          style={"fontWeight": "700", "color": (NEUTRAL if stake > 0 else DIM)}),
+                html.Span("  · $0 until gate PASS", className="sub",
+                          style={"fontSize": "10px", "color": AMBER})], className="gb-stake")
         rows.append(html.Div([
             html.Div([html.Div(r["edge_label"], className="gb-name"),
-                      badge(lbl, kind)], className="gb-head"),
+                      html.Div([state_chip, badge(lbl, kind)],
+                               style={"display": "flex", "gap": "5px"})], className="gb-head"),
             html.Div([html.Span("EDGE ", className="u-label"),
                       html.Span(edge, className="mono", style={"color": col, "fontWeight": "700"}),
                       html.Span(f"  CI [{cil}, {cih}]c", className="sub", style={"fontSize": "10.5px"}),
@@ -1040,55 +1155,70 @@ def panel_gate_board():
                      className="gb-edge"),
             html.Div(r["gate_desc"], className="gb-gate sub"),
             html.Div([
-                html.Div([html.Span("FORWARD PROGRESS", className="u-label"),
-                          html.Span(f"{nset} / {nreq} settled", className="mono",
-                                    style={"fontSize": "11px", "color": DIM})],
+                html.Div([html.Span("FORWARD GATE PROGRESS", className="u-label"),
+                          html.Span(f"{nset} / {nreq} settled  ·  {str(r['status']).split('-')[-1].upper()}",
+                                    className="mono", style={"fontSize": "11px", "color": DIM})],
                          className="gb-prog-lbl"),
                 html.Div(html.Div(className="bar-fill", style={"width": f"{pct}%", "background": bar_col}),
                          className="bar-track")], className="gb-prog"),
-            html.Div([html.Span("STAGED STAKE ", className="u-label"),
-                      html.Span(stake_str, className="mono", style={"fontWeight": "700",
-                                "color": (NEUTRAL if stake > 0 else DIM)}),
-                      html.Span("  · $0 LIVE until gate PASS", className="sub",
-                                style={"fontSize": "10px", "color": AMBER})], className="gb-stake")],
-            className="gb-card"))
-    return card([html.H3("Deploy-Gate Board — What Unlocks Capital"),
-                 _cap("Every paper stream, its DEPLOYED status, the SPECIFIC pre-registered gate it must "
-                      "pass (docs/FORWARD_PROTOCOL A2/A3/A4), forward progress (settled signals / threshold), "
-                      "and its STAGED Kelly stake. Capital is allocated ONLY when a gate PASSES — today all "
-                      "stakes are $0 live. WATCH · NO PATH = validated-but-not-promotable (within-cold decay). "
-                      "Paper/forward only, never realized P&L."),
+            stake_block],
+            className="gb-card", style=({"borderLeft": f"3px solid {GREEN}"} if is_active else {})))
+    n_active = sum(1 for _, r in d.iterrows()
+                   if has_state and str(r.get("paper_state") or "").upper() == "ACTIVE")
+    return card([html.H3("Deploy-Gate Board — Active vs Staged, and What Unlocks REAL Capital"),
+                 _cap(f"Each paper stream shows its PAPER state ({n_active} green ACTIVE · PAPER vs the rest "
+                      "STAGED), the SPECIFIC pre-registered gate it must pass (docs/FORWARD_PROTOCOL A2/A3/A4), "
+                      "forward progress, and its stake. ACTIVE = user-activated in the $1,000 PAPER run AHEAD "
+                      "of the gate (paper money only). Activation is ORTHOGONAL to the gate — every row is "
+                      "still ACCUMULATING, shown beside its stake. REAL deployment ($0 live) still requires a "
+                      "gate PASS. WATCH · NO PATH = validated-but-not-promotable. Paper/forward only, never "
+                      "realized P&L."),
                  html.Div(rows, className="gb-grid")], id="gate-board-card")
 
 
 def panel_staged_alloc():
-    """Staged Kelly allocation bar: per-stream staged stake ($, $0-live), color by status. Source: run_gates."""
+    """Per-stream allocation bar: ACTIVE-paper stakes (green) and STAGED-$0 Kelly stakes (neutral). Each bar
+    is the dollar amount the stream holds in the PAPER run (ACTIVE) or WOULD hold if its gate passes (STAGED).
+    Source: run_gates."""
     d = table("run_gates")
     if d.empty:
-        return card([html.H3("Staged Allocation"), empty_state("Fills from the staged-harness ledger.")])
+        return card([html.H3("Allocation"), empty_state("Fills from the staged-harness ledger.")])
     d = d.copy()
-    d = d[d["staged_stake"].fillna(0) > 0].sort_values("staged_stake", ascending=True)
+    has_state = "paper_state" in d.columns
+    if has_state:
+        d["is_active"] = d["paper_state"].astype(str).str.upper() == "ACTIVE"
+        # bar value: ACTIVE rows use the live paper stake; STAGED rows use the staged ($0-live) Kelly stake.
+        d["alloc"] = d.apply(lambda r: float(r.get("active_stake") or 0.0) if r["is_active"]
+                             else float(r.get("staged_stake") or 0.0), axis=1)
+    else:
+        d["is_active"] = False
+        d["alloc"] = d["staged_stake"].fillna(0.0)
+    d = d[d["alloc"].fillna(0) > 0].sort_values("alloc", ascending=True)
     if d.empty:
-        return card([html.H3("Staged Allocation — All $0 Live"),
-                     _cap("Every stream is STAGED at $0 live until its forward gate passes."),
-                     empty_state("No staged stake yet.")])
-    colors = [_GATE_STATUS_STYLE.get(s, ("neut", NEUTRAL, ""))[1] for s in d["status"]]
+        return card([html.H3("Allocation — All $0"),
+                     _cap("Every stream is STAGED at $0 until its forward gate passes."),
+                     empty_state("No stake yet.")])
+    colors = [GREEN if a else NEUTRAL for a in d["is_active"]]
+    labels = [f"{lbl}  ·  {'ACTIVE' if a else 'STAGED'}"
+              for lbl, a in zip(d["edge_label"], d["is_active"])]
     fig = go.Figure()
-    fig.add_bar(y=d["edge_label"], x=d["staged_stake"], orientation="h", marker_color=colors,
-                text=[f"${v:,.2f}" for v in d["staged_stake"]], textposition="outside", cliponaxis=False,
-                customdata=d[["season", "edge_c"]].values,
-                hovertemplate="<b>%{y}</b><br>staged $%{x:,.2f} (LIVE $0)"
-                              "<br>%{customdata[0]} · edge %{customdata[1]:+.2f}c<extra></extra>")
-    fig.update_layout(title=None, margin=dict(l=170, r=40, t=10, b=36))
-    fig.update_xaxes(title="staged stake ($ — $0 live until gate PASS)", tickprefix="$", tickformat=",.0f")
+    fig.add_bar(y=labels, x=d["alloc"], orientation="h", marker_color=colors,
+                text=[f"${v:,.2f}" for v in d["alloc"]], textposition="outside", cliponaxis=False,
+                customdata=d[["season", "edge_c", "is_active"]].values,
+                hovertemplate="<b>%{y}</b><br>$%{x:,.2f}"
+                              "<br>%{customdata[0]} · edge %{customdata[1]:+.2f}c"
+                              "<br>paper only — $0 REAL until gate PASS<extra></extra>")
+    fig.update_layout(title=None, margin=dict(l=210, r=44, t=10, b=36))
+    fig.update_xaxes(title="paper allocation ($ — $0 REAL until gate PASS)", tickprefix="$", tickformat=",.0f")
     fig.update_yaxes(title="")
-    total = float(d["staged_stake"].sum())
-    return card([html.H3("Staged Kelly Allocation — per Stream"),
-                 _cap(f"Fractional-Kelly stake each stream WOULD receive (sized at its bootstrap CI lower "
-                      f"bound, ${total:,.0f} total across active streams) IF its gate passes. Cold-season "
-                      f"daily-low streams (PHIL/AUS/MIA) get the largest stakes — strong, robust cold edges. "
-                      f"All are $0 LIVE today. Paper model, never realized P&L."),
-                 graph(_tpl(fig, h=300, legend=False))])
+    active_total = float(d[d["is_active"]]["alloc"].sum())
+    staged_total = float(d[~d["is_active"]]["alloc"].sum())
+    return card([html.H3("Per-Stream Allocation — Active (Paper) vs Staged"),
+                 _cap(f"GREEN = ACTIVE in the $1,000 PAPER run (${active_total:,.2f} total, user-activated "
+                      f"ahead of the gate); NEUTRAL = STAGED at $0 live (${staged_total:,.2f} the gate still "
+                      f"governs). Cold-season daily-low streams (PHIL/AUS/MIA) carry the largest STAGED stakes. "
+                      f"All are $0 REAL today — REAL deploy needs a gate PASS. Paper model, never realized P&L."),
+                 graph(_tpl(fig, h=320, legend=False))])
 
 
 def panel_open_positions():
@@ -1137,9 +1267,31 @@ def panel_open_positions():
                           html.Span(f"{cp:.0f}c", className="mono"),
                           html.Span(f"  {arrow}{dtxt}", className=f"mono qb-edge {chip_cls}",
                                     style={"marginLeft": "4px", "fontSize": "11px"})])
+    # PRICE SPARKLINE (Part B): a tiny per-row line of entry -> snapshots -> current (cents). Grows over
+    # runs as each materialize appends a snapshot. Green if last>=first else red. Honest: PAPER mark.
+    import json as _json
+    has_series = "price_series" in d.columns
+    def _row_spark(row):
+        raw = row.get("price_series")
+        try:
+            seq = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except (ValueError, TypeError):
+            seq = []
+        seq = [float(v) for v in seq if v is not None]
+        if len(seq) < 2:
+            # one point (or none) -> a single dot so the cell is non-empty + honest about thin history
+            pts = seq or ([row.get("entry_price")] if not _isnull(row.get("entry_price")) else [])
+            lbl = f"{pts[0]:.0f}c" if pts else "—"
+            return html.Span(["• ", html.Span(lbl, className="mono sub")],
+                             title="accumulating price snapshots (grows each run)")
+        return _spark(seq, height=22, fill=False)
     if has_mark:
         d = d.copy()
         d["mark"] = d.apply(_entry_to_current, axis=1)
+    if has_series:
+        if not has_mark:
+            d = d.copy()
+        d["trend"] = d.apply(_row_spark, axis=1)
     cols = ["target_date", "city", "market", "stream", "ticker", "side", "edge_c", "age_h"]
     rename = {"edge_c": "Model Edge", "age_h": "Age", "target_date": "Target Settle"}
     fmtmap = {"edge_c": _cents1, "age_h": lambda v: "—" if _isnull(v) else f"{v:.0f}h"}
@@ -1147,7 +1299,12 @@ def panel_open_positions():
         cols = cols + ["mark"]
         rename["mark"] = "Entry → Current (paper mark)"
         fmtmap["mark"] = lambda v: v          # already an html element
-    show = present(d.drop(columns=["_dt"] + ([] if has_mark else []), errors="ignore"),
+    if has_series:
+        cols = cols + ["trend"]
+        rename["trend"] = "Price Trend (paper)"
+        fmtmap["trend"] = lambda v: v         # already an html element
+    show = present(d, drop=["_dt", "price_series", "entry", "entry_price", "current_price",
+                            "mark_delta", "direction"],
                    rename=rename, fmt=fmtmap, order=cols)
     n = len(d)
     return card([html.H3(["Pending Paper Trades — Open, Unsettled Signals  ", info_dot(
@@ -1774,6 +1931,8 @@ def render_accuracy():
                               present_df=False)]),
                      html.Div([html.Div(panel_pit(), className="col-6"),
                                html.Div(panel_emos_skill(), className="col-6")], className="grid12"),
+                     html.Div([html.Div(panel_brier_decomp(), className="col-7"),
+                               html.Div(panel_lead_decay(), className="col-5")], className="grid12"),
                      html.Div([html.Div(panel_fan(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_surprise(), className="col-12")], className="grid12")])
 
