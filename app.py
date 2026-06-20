@@ -150,25 +150,92 @@ def panel_divergence():
                     name="model < market", hoverinfo="skip", showlegend=False)
     fig.add_scatter(x=[0, 1], y=[0, 1], mode="lines", name="agreement",
                     line=dict(color=DIM, width=1.4, dash="dash"), hoverinfo="skip")
-    for strat, color in zip(["S1", "S3", "S3early"], [MINT, VIOLET, CYAN]):
-        sub = d[d["strategy"] == strat]
+    # COLOR BY SETTLED OUTCOME (not strategy): WON green / LOST red / PENDING neutral. Strategy -> hover.
+    d = d.copy()
+    def _oc(w):
+        return "won" if w == 1 else ("lost" if w == 0 else "pending")
+    d["_oc"] = d["win"].apply(_oc)
+    if "strategy" not in d.columns:
+        d["strategy"] = "—"
+    d["strategy"] = d["strategy"].fillna("—")
+    for key, label, color in (("won", "WON", GREEN), ("lost", "LOST", RED),
+                              ("pending", "PENDING (unsettled)", NEUTRAL)):
+        sub = d[d["_oc"] == key]
         if sub.empty:
             continue
-        fig.add_scatter(x=sub["market_mid"], y=sub["model_p"], mode="markers", name=strat,
-                        marker=dict(size=9, color=color, opacity=.8,
+        fig.add_scatter(x=sub["market_mid"], y=sub["model_p"], mode="markers", name=label,
+                        marker=dict(size=9, color=color, opacity=.82 if key != "pending" else .5,
                                     line=dict(width=1, color="rgba(255,255,255,.2)")),
-                        customdata=sub[["ticker", "edge"]].values,
-                        hovertemplate="<b>%{customdata[0]}</b><br>market mid %{x:.2f} · model %{y:.2f}"
-                                      "<br>edge %{customdata[1]:+.2f}<extra></extra>")
+                        customdata=sub[["ticker", "strategy", "edge"]].values,
+                        hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]} · " + label +
+                                      "<br>market mid %{x:.2f} · model %{y:.2f}"
+                                      "<br>edge %{customdata[2]:+.2f}<extra></extra>")
     fig.update_layout(title=None)
     fig.update_xaxes(title="market mid (implied P)", range=[0, 1], tickformat=".0%")
     fig.update_yaxes(title="model P(yes)", range=[0, 1], tickformat=".0%")
-    return card([html.H3("Market-Divergence Ribbon — Where We Disagree With the Market"),
-                 _cap("Each point is a scanned contract: our model P(yes) vs the market mid. On the dashed "
-                      "agreement line we have no view. The green band (model above market) is our buy-YES "
-                      "edge zone; red is the opposite. Distance from the line is the raw edge before fills. "
+    return card([html.H3("Market-Divergence — Where We Fired vs the Market, by Outcome"),
+                 _cap("Each point is a scanned contract: our model P(yes) vs the market mid, colored by "
+                      "settled outcome (green = won, red = lost, dim = not yet settled). The strategy "
+                      "(S1/S3/S3early) is in the hover. On the dashed agreement line we have no view; the "
+                      "green band (model above market) is our buy-YES edge zone, red the opposite. "
                       "Paper/forward scans only."),
                  graph(_tpl(fig, h=360))])
+
+
+def panel_edge_success():
+    """Edge magnitude vs paper return per contract — does a BIGGER model edge actually pay? Success here is
+    realized paper NET (EV), NOT directional win-rate (a big-edge longshot loses often yet can be +EV).
+    Source: divergence table (settled forward signals carry realized_net)."""
+    d = table("divergence")
+    if d.empty or "realized_net" not in d.columns:
+        return card([html.H3("Edge vs Outcome — Does a Bigger Edge Pay?"),
+                     empty_state("Fills when settled paper signals carry realized net.")])
+    import numpy as _np
+    d = d.copy()
+    d = d[d["realized_net"].notna() & d["edge"].notna()]
+    if len(d) < 6:
+        return card([html.H3("Edge vs Outcome — Does a Bigger Edge Pay?"),
+                     empty_state(f"Accumulating — {len(d)} settled paper signals so far (need a few more).")])
+    d["abs_edge"] = d["edge"].abs()
+    if "strategy" not in d.columns:
+        d["strategy"] = "—"
+    d["strategy"] = d["strategy"].fillna("—")
+    fig = go.Figure()
+    fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
+    for w, label, color in ((1, "won", GREEN), (0, "lost", RED)):
+        sub = d[d["win"] == w]
+        if sub.empty:
+            continue
+        fig.add_scatter(x=sub["abs_edge"], y=sub["realized_net"], mode="markers", name=label,
+                        marker=dict(size=9, color=color, opacity=.8,
+                                    line=dict(width=1, color="rgba(255,255,255,.2)")),
+                        customdata=sub[["ticker", "strategy"]].values,
+                        hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]} · " + label +
+                                      "<br>|edge| %{x:.2f} · paper net $%{y:+.2f}/ct<extra></extra>")
+    # binned-mean trend: does mean paper net rise with edge size?
+    hi = float(d["abs_edge"].max()) + 1e-9
+    bins = _np.linspace(0, hi, 6)
+    cx, cy = [], []
+    for i in range(len(bins) - 1):
+        m = (d["abs_edge"] >= bins[i]) & (d["abs_edge"] < bins[i + 1])
+        if int(m.sum()) >= 2:
+            cx.append((bins[i] + bins[i + 1]) / 2)
+            cy.append(float(d.loc[m, "realized_net"].mean()))
+    if len(cx) >= 2:
+        fig.add_scatter(x=cx, y=cy, mode="lines+markers", name="binned mean",
+                        line=dict(color=NEUTRAL, width=2), marker=dict(size=7),
+                        hovertemplate="|edge| ~%{x:.2f}<br>mean paper net $%{y:+.2f}/ct<extra></extra>")
+    r = float(_np.corrcoef(d["abs_edge"], d["realized_net"])[0, 1]) if len(d) > 2 else float("nan")
+    rtxt = f"  ·  Pearson r = {r:+.2f}" if r == r else ""
+    fig.update_layout(title=None)
+    fig.update_xaxes(title="model edge magnitude  |edge|  (implied-prob)", tickformat=".0%")
+    fig.update_yaxes(title="paper net ($ / contract)", tickprefix="$", tickformat="+.2f")
+    return card([html.H3("Edge vs Outcome — Does a Bigger Edge Pay?"),
+                 _cap("Each settled paper signal: model edge magnitude (x) vs realized paper NET per contract "
+                      "(y), colored by win/loss; the grey line is the binned mean. Success is paper RETURN "
+                      "(EV), NOT hit-rate — a big-edge longshot can lose often yet pay, so we measure dollars, "
+                      f"not wins. n={len(d)} settled, paper/forward, thin — directional only.{rtxt}"),
+                 graph(_tpl(fig, h=340))])
 
 
 def panel_pit():
@@ -2002,6 +2069,7 @@ def render_edges():
             panel_fills_waterfall(),
             html.Div([html.Div(panel_divergence(), className="col-6"),
                       html.Div(panel_decay(), className="col-6")], className="grid12"),
+            html.Div([html.Div(panel_edge_success(), className="col-12")], className="grid12"),
             html.Div([html.Div(panel_funnel(), className="col-12")], className="grid12")]
     return html.Div(body)
 
