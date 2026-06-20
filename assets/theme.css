@@ -430,3 +430,56 @@ a, a:visited { color: var(--cyan); }
 .ss-tk { color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
 .ss-e { text-align: right; font-weight: 700; }
 .ss-e.pos { color: var(--accent); } .ss-e.neg { color: var(--red); }
+
+/* ============================================================
+   NEON BLOOM (2026-06-20) — ultrabright glow pass, DARK MODE ONLY.
+   Pure additive layer: neon-green / red / amber bloom on data values,
+   status chips, active nav, and the Plotly trace layers (lines/areas/
+   bars). No base colours or layout changed. Auto-disabled on the light
+   investor-deck theme (glow tokens -> none).
+   ============================================================ */
+:root {
+  --glow-green:   0 0 7px rgba(0, 224, 138, .50), 0 0 15px rgba(0, 224, 138, .22);
+  --glow-green-s: 0 0 6px rgba(0, 224, 138, .42);
+  --glow-red:     0 0 7px rgba(255, 77, 94, .45), 0 0 15px rgba(255, 77, 94, .20);
+  --glow-amber:   0 0 7px rgba(217, 162, 58, .45);
+  --glow-ink:     0 0 9px rgba(120, 255, 190, .17);
+  /* chart bloom: soft green-white halo so green lines go neon and red lines
+     still read red (kept low-radius to avoid muddying multi-series charts) */
+  --glow-chart:   drop-shadow(0 0 1.4px rgba(120, 255, 190, .55))
+                  drop-shadow(0 0 5px rgba(0, 224, 138, .30));
+}
+[data-theme="light"] {
+  --glow-green: none; --glow-green-s: none; --glow-red: none;
+  --glow-amber: none; --glow-ink: none; --glow-chart: none;
+}
+
+/* brand accent + KPI / scenario big values bloom */
+.brand .a1            { text-shadow: var(--glow-green); }
+.kpi .val,
+.sc-val,
+.val.mono             { text-shadow: var(--glow-ink); }
+
+/* sign-aware data bloom: positive -> green halo, negative -> red halo */
+.kpi-delta.pos, .cn-edge.pos, .qb-edge.pos, .ss-e.pos,
+.ticker .v.up, .pro-table .pt-r.pos, .statusbar .sb-ok {
+  text-shadow: var(--glow-green);
+}
+.kpi-delta.neg, .cn-edge.neg, .qb-edge.neg, .ss-e.neg,
+.ticker .v.down, .pro-table .pt-r.neg {
+  text-shadow: var(--glow-red);
+}
+
+/* status chips + active nav + KPI accent bar glow */
+.pill.live        { box-shadow: var(--glow-green-s); text-shadow: var(--glow-green); }
+.pill.paper       { box-shadow: var(--glow-amber); }
+.nav-item.active  { box-shadow: inset 3px 0 0 var(--accent), 0 0 11px rgba(0, 224, 138, .20); }
+.kpi::before      { box-shadow: var(--glow-green-s); }
+
+/* card hover lift gets a faint neon edge */
+.card:hover       { box-shadow: 0 4px 16px rgba(0,0,0,.28), 0 0 14px rgba(0, 224, 138, .10); }
+
+/* THE chart bloom — glow the Plotly trace layers (lines / areas / bars),
+   NOT the axis/tick/legend text (those live in .infolayer, untouched) */
+.js-plotly-plot .scatterlayer,
+.js-plotly-plot .barlayer { filter: var(--glow-chart); }
