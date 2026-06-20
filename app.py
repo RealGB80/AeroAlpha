@@ -925,15 +925,19 @@ def panel_equity_curve():
     if d.empty:
         return card([html.H3("Backtest Equity Curve"), empty_state("Fills from the walk-forward backtest.")])
     fig = go.Figure()
-    fig.add_scatter(x=d["date"], y=d["benchmark_c"], mode="lines", name="take-the-mark (no edge)",
-                    line=dict(color=NEUTRAL, width=1.3, dash="dash"), hoverinfo="skip")
     last = float(d["equity_c"].iloc[-1])
     eqcol = GREEN if last >= 0 else RED
     fig.add_scatter(x=d["date"], y=d["equity_c"], mode="lines", name="paper S1 (backtest)",
                     line=dict(color=eqcol, width=2.2, shape="spline", smoothing=0.4),
                     fill="tozeroy", fillcolor=f"rgba({_rgb(eqcol)},.10)",
-                    hovertemplate="%{x}<br>cum %{y:+.0f} c/ct<extra></extra>")
-    fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
+                    customdata=d["trades"],
+                    hovertemplate="%{x}<br>cumulative %{y:+,.0f}c"
+                                  "<br>%{customdata} contract(s) settled that day<extra></extra>")
+    # the zero line IS the take-the-mark / no-edge benchmark (taking every quote at the mark = 0 cumulative
+    # edge by construction; benchmark_c is flat 0). Drawn as a single labelled baseline, not a redundant trace.
+    fig.add_hline(y=0, line=dict(color=NEUTRAL, width=1.2, dash="dash"),
+                  annotation_text="take-the-mark (no edge)", annotation_position="bottom right",
+                  annotation_font=dict(size=10, color=DIM))
     # annotate the peak and the endpoint (designed, not default-Plotly)
     try:
         import numpy as _np
@@ -945,7 +949,8 @@ def panel_equity_curve():
     except Exception:
         pass
     fig.update_layout(title=None)
-    fig.update_yaxes(title="cumulative paper net (c / contract)", ticksuffix="c", tickformat="+,.0f")
+    fig.update_yaxes(title="cumulative paper net  (c/contract, 1 ct per signal)", ticksuffix="c",
+                     tickformat="+,.0f")
     # range selector buttons on the time axis (designed time-series UX)
     fig.update_xaxes(title="", nticks=8, rangeslider=dict(visible=False),
                      rangeselector=dict(
@@ -956,11 +961,16 @@ def panel_equity_curve():
                                   dict(count=3, label="3M", step="month", stepmode="backward"),
                                   dict(count=6, label="6M", step="month", stepmode="backward"),
                                   dict(step="all", label="ALL")]))
+    d0, d1 = str(d["date"].iloc[0]), str(d["date"].iloc[-1])
     return card([html.H3("Backtest Equity Curve — Leak-Free Walk-Forward S1"),
-                 _cap(f"Cumulative paper net per contract from the leak-free walk-forward S1 backtest "
-                      f"({len(d)} settled days), vs a flat take-the-mark benchmark (no edge = the dashed "
-                      f"zero line). Ends at {last:+.0f} c/contract cumulative. This is BACKTEST research "
-                      f"in cents/contract — NOT dollars, NOT live, never realized P&L."),
+                 _cap(f"CUMULATIVE paper net from trading ONE contract of every settled S1 signal, summed in "
+                      f"order over {len(d)} settled days ({d0} to {d1}). It ends at {last:+,.0f}c "
+                      f"(about {last/100:+.2f} dollars total) — a running SUM across all those contracts, so "
+                      f"each new day's settled contracts ADD to it; it is NOT a per-contract average and NOT "
+                      f"annualised. The dashed zero line is the no-edge baseline (take every quote at the mark). "
+                      f"This is BACKTEST research in cents/contract; the DEPLOYED $1,000 paper run with real "
+                      f"Kelly sizing lives on the \"$1k Run\" page (different measure — don't conflate). "
+                      f"Cents/contract, never realized P&L."),
                  graph(_tpl(fig, h=360))])
 
 
@@ -2150,6 +2160,29 @@ def render_multicity():
                                present_df=False)]))
     else:
         blocks.append(card("Per-city S1 validation table fills from the latest revival-validate run."))
+    # NEW-CITY EXPANSION watchlist (Magellan -> Kelvin -> Falcon -> Verity, Jun 2026). Reflects SEA-high
+    # WATCH + the ruled-out cities. BACKTEST probes only; none deployed; SEA is the sole live WATCH candidate.
+    blocks.append(card([
+        html.H3("New-City Expansion — Candidate Watchlist (Jun 2026 backtest probe)"),
+        html.Div([badge("WATCH", "warn"),
+                  html.Span("  SEA-high  ", className="sub", style={"fontWeight": "700"}),
+                  html.Span("+4.25c dedup, but P(net>0)=.979 fails the k=6 99.17% Bonferroni bar (needs "
+                            ".9958); fill-fragile (+1c slippage re-touches 0) and not lambda-robust on the "
+                            "deduped pool. Pre-registered promotion gate; not yet logging forward.",
+                            className="sub")], style={"marginBottom": "6px"}),
+        html.Div([badge("DEAD", "bad"),
+                  html.Span("  SFO-high  ", className="sub", style={"fontWeight": "700"}),
+                  html.Span("S1 edge vanished on dedup (+2.88c -> +0.46c) — a collinear-pool artifact.",
+                            className="sub")], style={"marginBottom": "6px"}),
+        html.Div([badge("PARKED", "neut"),
+                  html.Span("  PHX / DAL / BOS-high  ", className="sub", style={"fontWeight": "700"}),
+                  html.Span("PHX is a strong forecast (RMSE 1.555) but the desert market is too sharp for an "
+                            "S1 edge -> lock-in candidate, not S1; DAL/BOS show no market-beating Brier.",
+                            className="sub")]),
+        html.Div("Backtest probes only (Magellan -> Kelvin -> Falcon -> Verity); none deployed. SEA is the "
+                 "sole live WATCH candidate, on a pre-registered forward gate. Paper/forward, never realized "
+                 "P&L.", className="sub", style={"marginTop": "8px", "opacity": ".82"}),
+    ]))
     if not ll.empty:
         d = ll.copy()
         fig2 = go.Figure()
@@ -2229,13 +2262,18 @@ def render_forward():
                      className="bar-track", style={"margin": "5px 0 14px"})]))
     return html.Div([section("Forward Validation"),
                      card([html.H3("Pre-registered forward gates"),
-                           html.Div(["Thresholds fixed in advance (docs/FORWARD_PROTOCOL.md, gates A2/A3/A4). "
-                                     "Current pre-registered set: LOCK-IN (latency, deprioritized), S1-high "
-                                     "(NY deployed), multi-city S1-high (LAX/CHI), S1_LOW_NYC (A3, MIN_N=150), "
-                                     "and the A4 daily-low multi-city cold sub-gates — PHIL/AUS/MIA (cold n≥110 "
-                                     "+ non-degradation + fresh forward CI-excludes-0 + fills clause) with "
-                                     "DEN/LAX WATCH (no tradable path). Same gate table as the $1,000 Run board, "
-                                     "so the two pages agree. All ACCUMULATING — not yet a proven live edge."],
+                           html.Div(["Thresholds fixed in advance (docs/FORWARD_PROTOCOL.md, gates A2/A3/A4/"
+                                     "A4.1). Current pre-registered set: LOCK-IN (latency, deprioritized), "
+                                     "S1-high (NY deployed), multi-city S1-high (LAX/CHI), S1_LOW_NYC (A3, "
+                                     "MIN_N=150), and the A4 daily-low multi-city cold sub-gates — PHIL/AUS/MIA "
+                                     "(cold n≥110 + non-degradation + fresh forward CI-excludes-0 + fills "
+                                     "clause) with DEN/LAX WATCH (no tradable path). A4.1 (2026-06-20) adds a "
+                                     "WARM-season TRACKING gate for the user-activated LAX/DEN/MIA warm streams "
+                                     "(break-even floor, n_warm≥90, WATCH-only — promotion needs a Verity k=9 "
+                                     "re-rule + Aegis). New-city S1-high expansion: SEA-high is a WATCH "
+                                     "candidate (fails the k=6 Bonferroni bar); SFO/DAL/BOS/PHX ruled out. "
+                                     "Same gate table as the $1,000 Run board, so the two pages agree. All "
+                                     "ACCUMULATING — not yet a proven live edge."],
                                     className="sub"),
                            html.Div(bars, style={"marginTop": "12px"})])])
 
