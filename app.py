@@ -337,15 +337,36 @@ def panel_surprise():
         cd[di][wj] = r["date"]
         nullmask[di][wj] = None                          # has data -> not slate
     zmax = max((abs(float(e)) for e in d["error_f"]), default=4.0)
+    zmax = max(zmax, 4.0)                                  # keep the upper red end stable
     fig = go.Figure()
     # neutral slate layer for NULL cells (drawn first, underneath)
     fig.add_trace(go.Heatmap(z=nullmask, x=weeks, y=dows, xgap=2, ygap=2, showscale=False,
                              colorscale=[[0, NEUTRAL_DK], [1, NEUTRAL_DK]], hoverinfo="skip"))
-    # closeness layer: green (|err|=0, close) -> red (|err| large, far)
+    # SEGMENTED NON-LINEAR colorscale (deliverable #5): the low end (0-3°F absolute error) was washing out
+    # under a linear 0..zmax scale (zmax can be ~8°F, so 0-3°F occupied only ~0-0.37 of the ramp). Here the
+    # 0-3°F band is given ~70% of the color range with multiple distinct stops (bright green -> teal-green ->
+    # yellow-green -> amber) so small deviations are clearly distinguishable; red is reserved for |err|>3°F.
+    # Stops are placed at FIXED °F breakpoints mapped to the 0..zmax domain so semantics stay green=close /
+    # red=far regardless of the actual max. NULL/no-data days remain the neutral slate layer beneath.
+    def _f(stop_f):                                       # °F breakpoint -> 0..1 position on the scale
+        return min(1.0, max(0.0, stop_f / zmax))
+    seg = sorted({0.0: GREEN,                              # 0°F  -> bright green (nailed it)
+                  _f(0.75): "#3fd29a",                     # 0.75°F -> teal-green
+                  _f(1.5): "#9ad04a",                      # 1.5°F  -> yellow-green
+                  _f(2.25): "#d9c23a",                     # 2.25°F -> yellow
+                  _f(3.0): "#e0902e",                      # 3°F    -> amber (boundary close/far)
+                  _f(5.0): "#e8562f",                      # 5°F    -> orange-red
+                  1.0: RED}.items())                       # zmax   -> red (big surprise)
+    # collapse duplicate positions (when zmax is small the high stops can coincide at 1.0)
+    seen = {}
+    for pos, col in seg:
+        seen[round(pos, 4)] = col
+    colorscale = [[p, seen[p]] for p in sorted(seen)]
+    # closeness layer: green (|err|=0, close) -> red (|err| large, far), high resolution in 0-3°F
     fig.add_trace(go.Heatmap(z=z, x=weeks, y=dows, customdata=sgn, xgap=2, ygap=2,
-                             colorscale=[[0.0, GREEN], [0.5, "#caa23a"], [1.0, RED]],
-                             zmin=0, zmax=zmax,
+                             colorscale=colorscale, zmin=0, zmax=zmax,
                              colorbar=dict(title="|err| °F", thickness=10, len=0.8,
+                                           tickvals=[0, 0.75, 1.5, 2.25, 3, 5, zmax] if zmax > 5 else None,
                                            tickfont=dict(size=10, color=DIM)),
                              hovertemplate="%{x}<br>error %{customdata:+.1f}°F "
                                            "(|err| %{z:.1f}°F)<extra></extra>"))
@@ -355,9 +376,10 @@ def panel_surprise():
     mae = float(d["error_f"].abs().mean())
     return card([html.H3("Settlement-Surprise Calendar — Forecast Closeness"),
                  _cap(f"GitHub-style date grid colored by how CLOSE the forecast was on each of ~{len(d)} "
-                      f"settled days: bright GREEN = small |error| (we nailed it), RED = large |error| (a "
-                      f"surprise day), slate-gray = no settled data. Mean absolute error {mae:.2f}°F. "
-                      f"Red clusters reveal regime surprises. Backtest."),
+                      f"settled days. The color scale is HIGH-RESOLUTION in the 0–3°F band (green → teal → "
+                      f"yellow-green → amber) so small day-to-day deviations are distinguishable, with RED "
+                      f"reserved for larger |error| (>3°F) surprise days; slate-gray = no settled data. Mean "
+                      f"absolute error {mae:.2f}°F. Red clusters reveal regime surprises. Backtest."),
                  graph(_tpl(fig, h=240, legend=False))])
 
 
@@ -1056,12 +1078,25 @@ def panel_run_header():
         tile("LIVE REAL-DEPLOY", f"${live_real}", "no real money, no orders", AMBER),
         tile("GATES PASSED", f"{npass}/{ngate}", "real deploy needs a PASS", AMBER),
     ]
+    # headline projection stats (read straight from the curated run_projection table so they always match the
+    # fan). median +14.63%/m / stress +0.70%/m (~breakeven) for the 7-stream warm book.
+    rp = table("run_projection")
+    med_mo = stress_mo = None
+    if not rp.empty:
+        if "mc_median_mo" in rp and rp["mc_median_mo"].notna().any():
+            med_mo = float(rp["mc_median_mo"].dropna().iloc[0])
+        if "mc_stress_mo" in rp and rp["mc_stress_mo"].notna().any():
+            stress_mo = float(rp["mc_stress_mo"].dropna().iloc[0])
+    med_str = f"{100*med_mo:+.2f}%/mo" if med_mo is not None else "—"
+    stress_str = f"{100*stress_mo:+.2f}%/mo" if stress_mo is not None else "—"
     note = card([html.Div([html.Span("●", style={"color": GREEN, "marginRight": "7px"}),
                            html.B("Activated in the PAPER run by user decision — AHEAD of the forward gate.")],
                           className="sub", style={"fontSize": "12.5px", "color": INK}),
-                 html.Div([f"Four warm-season-applicable edges ({activated}) are now ACTIVE in the "
+                 html.Div([f"{nactive} warm-season-applicable edges ({activated}) are now ACTIVE in the "
                            f"$1,000 PAPER run ({act_note}, activated {act_date}) — paper allocation "
-                           f"${active_p}. ",
+                           f"${active_p}, equity flat at ${eq}. Paper projection (BACKTEST, not realized): "
+                           f"MEDIAN ", html.B(med_str), " vs STRESS ", html.B(stress_str),
+                           " (~breakeven — the honest planning number if the underpowered warm edges are ~0). ",
                            html.B("Paper $1,000 only — no real money, no orders, $0 live real-deploy. "),
                            "The forward-validation gates (reconcile_forward_edges.py / FORWARD_PROTOCOL) are "
                            "UNCHANGED and still govern any REAL deployment. Activation does NOT mean these "
@@ -1070,8 +1105,22 @@ def panel_run_header():
                            "signals settle. Never realized P&L."],
                           className="sub", style={"marginTop": "4px"})],
                 cls="run-note")
+    # plain-language legend defining ACTIVE PAPER vs STAGED (deliverable #2)
+    defs = card([html.Div("What the labels mean", className="u-label", style={"marginBottom": "6px"}),
+                 html.Div([
+                     html.Div([badge("ACTIVE · PAPER", "good"),
+                               html.Span(" a user-activated paper stream accumulating forward (simulated) "
+                                         "results at a simulated stake — $0 real money, activated PRE-GATE "
+                                         "by user decision.", className="sub")],
+                              style={"display": "flex", "gap": "8px", "alignItems": "baseline",
+                                     "marginBottom": "6px"}),
+                     html.Div([badge("STAGED", "neut"),
+                               html.Span(" sized but holding $0 simulated stake until its forward-validation "
+                                         "gate PASSES.", className="sub")],
+                              style={"display": "flex", "gap": "8px", "alignItems": "baseline"})])])
     return html.Div([html.Div(tiles, className="grid kpi-strip"),
-                     html.Div([html.Div(note, className="col-12")], className="grid12",
+                     html.Div([html.Div(note, className="col-8"),
+                               html.Div(defs, className="col-4")], className="grid12",
                               style={"marginTop": "10px"})])
 
 
@@ -1099,7 +1148,7 @@ def panel_run_equity():
     fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f", range=[900, 1100])
     fig.update_xaxes(title="")
     return card([html.H3("Paper Equity — Flat at $1,000"),
-                 _cap(f"The $1,000 PAPER bankroll, flat from activation {act} (no backfill). Four edges are "
+                 _cap(f"The $1,000 PAPER bankroll, flat from activation {act} (no backfill). Seven edges are "
                       "ACTIVE in the paper run; the line moves as those activated PAPER signals SETTLE. "
                       "LIVE real-deploy capital = $0 — promotion to REAL still requires a forward-gate PASS. "
                       "Paper only, never realized P&L."),
@@ -1119,6 +1168,12 @@ def panel_run_projection():
     start = float(d["start_equity"].iloc[0])
     med_mo = float(d["mc_median_mo"].iloc[0]); p5_mo = float(d["mc_p5_mo"].iloc[0])
     p95_mo = float(d["mc_p95_mo"].iloc[0])
+    # STRESS leg (deliverable #1): a deterministic line compounding the stress %/m (every edge at its CI
+    # lower bound -> the underpowered warm edges ~0). Present only if the producer emitted it.
+    has_stress = "stress" in d.columns and d["stress"].notna().any()
+    stress = [float(v) if v == v and v is not None else None for v in d["stress"]] if has_stress else None
+    stress_mo = (float(d["mc_stress_mo"].iloc[0]) if "mc_stress_mo" in d.columns
+                 and d["mc_stress_mo"].notna().any() else None)
     fig = go.Figure()
     # shaded NEUTRAL band between P5 and P95
     fig.add_scatter(x=months + months[::-1], y=p95 + p5[::-1], fill="toself",
@@ -1136,6 +1191,14 @@ def panel_run_projection():
     fig.add_scatter(x=months, y=p5, mode="lines", name="P5 path",
                     line=dict(color=RED, width=1.6, dash="dot"),
                     hovertemplate="month %{x}<br>P5 $%{y:,.0f} (paper)<extra></extra>")
+    # STRESS trajectory (deliverable #1): a DASHED WARNING line ON TOP of the variance fan. Compounds the
+    # stress %/m (~+0.70%/m, ~breakeven) -> shows the downside if the underpowered warm edges are actually ~0.
+    # This is EDGE uncertainty, NOT the monthly-variance fan -> drawn distinctly in amber/dashed.
+    if stress is not None:
+        fig.add_scatter(x=months, y=stress, mode="lines",
+                        name="Stress (warm edges → ~breakeven)",
+                        line=dict(color=AMBER, width=2.0, dash="dash"),
+                        hovertemplate="month %{x}<br>stress $%{y:,.0f} (paper, warm edges ~0)<extra></extra>")
     # baseline + YOU ARE HERE marker at month 0
     fig.add_hline(y=start, line=dict(color=NEUTRAL, width=1, dash="dash"))
     fig.add_scatter(x=[0], y=[start], mode="markers+text", name="you are here",
@@ -1149,14 +1212,22 @@ def panel_run_projection():
     fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f")
     fig.update_xaxes(title="forward month", nticks=13)
     end_med = med[-1]; end_p5 = p5[-1]; end_p95 = p95[-1]
+    end_stress = stress[-1] if stress is not None else None
+    stress_txt = ""
+    if stress_mo is not None and end_stress is not None:
+        stress_txt = (f" The dashed amber STRESS line compounds {100*stress_mo:+.1f}%/mo — the honest "
+                      f"downside if the underpowered warm edges turn out to be ~0 — reaching only "
+                      f"${end_stress:,.0f} after 12 paper months.")
     return card([html.H3("Projected Paper-Equity Fan — 12-Month Monte-Carlo"),
-                 _cap("Paper projection (model estimate, NOT realized). Monte-Carlo of the activated 4-edge "
-                      "book at 0.50x Kelly; bands are P5 / median / P95 of simulated 12-month paper-equity "
-                      "paths (they widen with time). The run started 2026-06-19 at $1,000 and is flat so far "
-                      f"(YOU ARE HERE). Inputs: median {100*med_mo:+.1f}%/mo, P5 {100*p5_mo:+.1f}%/mo, P95 "
-                      f"{100*p95_mo:+.1f}%/mo -> after 12 paper months the median path reaches ${end_med:,.0f} "
-                      f"(P5 ${end_p5:,.0f} / P95 ${end_p95:,.0f}). Activated AHEAD of the forward gate; paper "
-                      "$1,000 only, $0 REAL, never realized P&L."),
+                 _cap("Paper projection (model estimate, NOT realized). Monte-Carlo of the activated 7-edge "
+                      "book at 0.50x Kelly; the P5 / median / P95 BANDS propagate MONTHLY-RETURN VARIANCE ONLY "
+                      "(they assume the edges hold, and widen with time). The dashed amber STRESS line is "
+                      "different: it propagates EDGE UNCERTAINTY by compounding the stress %/mo. The run "
+                      "started 2026-06-19 at $1,000 and is flat so far (YOU ARE HERE). Inputs: median "
+                      f"{100*med_mo:+.1f}%/mo, P5 {100*p5_mo:+.1f}%/mo, P95 {100*p95_mo:+.1f}%/mo -> after 12 "
+                      f"paper months the median path reaches ${end_med:,.0f} (P5 ${end_p5:,.0f} / P95 "
+                      f"${end_p95:,.0f}).{stress_txt} Activated AHEAD of the forward gate; paper $1,000 only, "
+                      "$0 REAL, never realized P&L."),
                  graph(_tpl(fig, h=320))], id="run-projection-card")
 
 
@@ -1371,7 +1442,8 @@ def panel_open_positions():
                       f"up / red down chip — a PAPER, UNREALIZED mark, NOT real money or realized P&L. Once "
                       f"they settle they feed the gate-progress counters above."),
                  graph(_tpl(fig, h=300)) if not scat.empty else html.Div(),
-                 pro_table(show, present_df=False, max_rows=16,
+                 # deliverable #3: show ALL pending rows (no row cap / no truncation footer)
+                 pro_table(show, present_df=False,
                            align_left=("Side", "Market", "Stream", "Ticker",
                                        "Entry → Current (paper mark)"))],
                 id="open-positions-card")
@@ -1762,11 +1834,75 @@ def render_quantlab():
                      html.Div([html.Div(panel_scenario(), className="col-12")], className="grid12")])
 
 
+def panel_city_source_attribution():
+    """Per-city forecast-source ATTRIBUTION (deliverable #4): for each city, which sources are ACTIVE members
+    of that city's deployed ensemble (green) vs REFERENCE-ONLY / excluded (muted grey). Source: city_pool
+    (authoritative monitor pool configs). Honest: shows the real per-city membership, not a guess."""
+    d = table("city_pool")
+    if d.empty:
+        return card([html.H3("Per-City Source Attribution"),
+                     empty_state("Fills from the per-city ensemble pool config.")])
+    d = d.copy()
+    # nicer source labels; keep ordering deterministic (active first, then reference)
+    def src_chip(src, role):
+        active = role == "active"
+        style = {"display": "inline-block", "padding": "3px 8px", "margin": "3px 4px 0 0",
+                 "borderRadius": "5px", "fontSize": "11px", "fontFamily": "JetBrains Mono, monospace",
+                 "border": "1px solid"}
+        if active:
+            style.update({"color": GREEN, "borderColor": "rgba(0,224,138,.45)",
+                          "background": "rgba(0,224,138,.08)"})
+        else:
+            style.update({"color": DIM, "borderColor": GRIDCOL, "background": "rgba(138,150,158,.06)"})
+        return html.Span(_titlecase(src), style=style)
+
+    # city display order + market label
+    city_order = ["NY", "CHI", "LAX", "MIA", "AUS", "DEN", "PHIL"]
+    d["_co"] = d["city"].map(lambda c: city_order.index(c) if c in city_order else 99)
+    blocks = []
+    for (city, market), sub in sorted(d.groupby(["city", "market"]),
+                                      key=lambda kv: (city_order.index(kv[0][0]) if kv[0][0] in city_order
+                                                      else 99, kv[0][1])):
+        sub = sub.sort_values("role", ascending=True)   # 'active' < 'reference' alphabetically
+        actives = sub[sub["role"] == "active"]
+        refs = sub[sub["role"] == "reference"]
+        pool = sub["pool"].iloc[0]
+        mkt_lbl = "daily-high" if market == "high" else "daily-low"
+        chips = ([src_chip(s, "active") for s in actives["source"]] +
+                 [src_chip(s, "reference") for s in refs["source"]])
+        blocks.append(html.Div([
+            html.Div([html.Span(f"{city} ", style={"fontWeight": "700", "color": INK}),
+                      html.Span(mkt_lbl, className="sub"),
+                      html.Span(f"  ·  {len(actives)} active "
+                                f"({'expanded pool' if pool == 'full' else 'core 5 members'})",
+                                className="sub", style={"fontSize": "10.5px"})],
+                     style={"marginBottom": "2px"}),
+            html.Div(chips)], className="col-6", style={"marginBottom": "10px"}))
+    legend = html.Div([
+        html.Span("green = ACTIVE member (factored into this city's ensemble)",
+                  style={"color": GREEN, "fontWeight": "600"}),
+        html.Span("   ·   ", className="sub"),
+        html.Span("grey = reference-only / excluded", style={"color": DIM, "fontWeight": "600"})],
+        className="sub", style={"marginBottom": "8px"})
+    return card([html.H3("Per-City Source Attribution — Active Members vs Reference-Only"),
+                 _cap("Which forecast sources are ACTUALLY factored into each city's deployed ensemble "
+                      "(GREEN active members) versus carried for REFERENCE only / excluded (MUTED GREY). NYC "
+                      "uses the 5-member EMOS (icon/aifs/gfs/nbm/ecmwf); high-S1 LAX/CHI/MIA and daily-low "
+                      "MIA/AUS use the full ~15-source expanded pool; the rest use the core 5. nws_baseline "
+                      "is reference-only everywhere. Membership mirrors the authoritative monitor pool "
+                      "configs. Paper/backtest config."),
+                 legend,
+                 html.Div(blocks, className="grid12")], id="city-pool-card")
+
+
 def render_forecasts():
     sf = table("source_forecast")
     if sf.empty:
-        return html.Div([section("Forecasts by source"), card("No source-forecast snapshot yet "
-                         "(snapshot_source_forecasts.py runs in the pipeline; panel fills shortly).")])
+        return html.Div([section("Forecasts by source"),
+                         card("No source-forecast snapshot yet "
+                              "(snapshot_source_forecasts.py runs in the pipeline; panel fills shortly)."),
+                         html.Div([html.Div(panel_city_source_attribution(), className="col-12")],
+                                  className="grid12")])
     members = sf[sf["source"] != "ENSEMBLE_MEAN"].copy()
     ens = sf[sf["source"] == "ENSEMBLE_MEAN"].copy()
     # spread chart: each source a point per city, ensemble a diamond
@@ -1800,6 +1936,8 @@ def render_forecasts():
                                     "forecasts and their spread per city. Wide spread = high model "
                                     "disagreement (a no-trade signal).", className="sub"),
                            graph(_tpl(fig, h=340))]),
+                     html.Div([html.Div(panel_city_source_attribution(), className="col-12")],
+                              className="grid12"),
                      card([html.H3("Per-Source Detail (°F)"), dt(piv_fmt, present_df=False, page_size=8)])])
 
 
@@ -2044,7 +2182,14 @@ def render_sandbox():
         return html.Div([html.Label(label), dcc.Input(**kw)], className="sb-field")
 
     # ---- column 1: edge & flow inputs ----
+    # DEFAULTS = the DEPLOYED $1,000 run's 7-stream activated book (deliverable #6): 3 high-S1 cities
+    # (NY/LAX/CHI) + 4 daily-low WARM cities (AUS/LAX/DEN/MIA), ~84/82 trades/mo, low edge ~7.7c (the mean
+    # of the 4 warm daily-low nets), $30.29 staked at 0.50x Kelly. Lock-in is NOT in the activated book
+    # (deprioritized speed race) -> defaults to 0 locks/mo so it doesn't inflate the deployed view. With
+    # SANDBOX_CT_CAL recalibrated, the lab OPENS showing the real deployed median (~+14.63%/m).
     edge_inputs = card([html.H3("Edges & Flow"),
+        html.Div("Defaults = the deployed $1,000 run (7-stream activated book, $30.29 staked, 0.50x Kelly).",
+                 className="sub", style={"margin": "0 0 8px", "fontSize": "11px"}),
         html.Div("Day-ahead S1 (high)", className="sub",
                  style={"margin": "2px 0 2px", "color": MINT, "fontWeight": "700"}),
         field("sb-rmse", "Day-ahead RMSE (°F)", 1.66, 0.01, 0.5, 3.0),
@@ -2052,13 +2197,13 @@ def render_sandbox():
         field("sb-s1trades", "High-S1 trades / month / city", 84, 1, 0, 400),
         html.Div("Daily-LOW S1 (validated, overnight)", className="sub",
                  style={"margin": "14px 0 2px", "color": MINT, "fontWeight": "700"}),
-        field("sb-lowedge", "Daily-low S1 edge (c/contract)", 6.96, 0.1, 0, 20),
-        field("sb-lowcities", "Daily-low S1 cities", 1, 1, 0, 7),
+        field("sb-lowedge", "Daily-low S1 edge (c/contract)", 7.73, 0.1, 0, 20),
+        field("sb-lowcities", "Daily-low S1 cities", 4, 1, 0, 7),
         field("sb-lowtrades", "Daily-low trades / month / city", 82, 1, 0, 400),
         html.Div("Lock-in (latency, NYC + airports)", className="sub",
                  style={"margin": "14px 0 2px", "color": DIM, "fontWeight": "700"}),
         field("sb-lock", "Lock-in edge (c/contract)", 12, 0.5, 0, 30),
-        field("sb-lockpm", "Locks / month / city", 14, 1, 0, 120)],
+        field("sb-lockpm", "Locks / month / city (0 = not in deployed book)", 0, 1, 0, 120)],
         style={"flex": "1", "minWidth": "270px"})
 
     # ---- column 2: capital, risk profile, frictions ----
@@ -2066,8 +2211,8 @@ def render_sandbox():
         field("sb-bankroll", "Bankroll ($)", 1000, 100, 100, 1_000_000),
         html.Div("Kelly fraction (risk profile)", className="sb-field-lbl u-label",
                  style={"margin": "12px 0 6px"}),
-        dcc.Slider(id="sb-kelly", min=0.25, max=1.00, step=0.05, value=0.25,
-                   marks={0.25: "0.25", 0.50: "0.50x rec", 0.75: "0.75", 1.00: "1.0x full"},
+        dcc.Slider(id="sb-kelly", min=0.25, max=1.00, step=0.05, value=0.50,
+                   marks={0.25: "0.25", 0.50: "0.50x dep", 0.75: "0.75", 1.00: "1.0x full"},
                    tooltip={"placement": "bottom", "always_visible": False},
                    updatemode="mouseup"),
         html.Div("Full Kelly (1.0x) reaches the highest validated return (+29.7%/m) but the worst "
@@ -2321,11 +2466,13 @@ MKT_SD = 1.95          # market prices ~this implied SD; edge ~ overconfidence v
 S1_EDGE_K = 12.0       # c/contract per F of (MKT_SD - RMSE); calibrated to ~+4c at RMSE 1.66
 DEPTH_CAP = 250        # contracts fillable within slippage (measured median)
 S1_PRICE, LOCK_PRICE, LOW_PRICE = 0.5, 0.9, 0.5
-# Calibrated contracts-per-trade at the DEFAULT sandbox scenario (high 3 cities*84tr*~2.5c + low 1*82*~6c +
-# lock 3*14*11c) on $1,000 at 0.25x Kelly, so the headline equals the validated $1k sweep median ~7.08%/m
-# (data/processed/kelly_1k_stake_sweep_20260619_000854.json). Keeps the transparent per-stream model GROUNDED
-# to the real backtest number while letting every input move the output. ~70.8$ target / 15.76$-per-1ct = 4.49.
-SANDBOX_CT_CAL = 4.49
+# Calibrated contracts-per-trade so the DEFAULT sandbox scenario reproduces the DEPLOYED $1,000 run's median
+# (deliverable #6, 2026-06-19): the 7-stream activated book = high 3 cities (NY/LAX/CHI) * 84tr * ~2.48c-net
+# + low 4 cities (AUS/LAX/DEN/MIA) * 82tr * ~6.73c-net + 0 lock-in, on $1,000 at 0.50x Kelly -> median
+# ~+14.63%/m (~$146/mo), matching kelly_activated_book_20260619_225520.json joint_mc.activated_all.median_mo.
+# Keeps the transparent per-stream model GROUNDED to the real activated-book number while letting every input
+# move the output. CT = $146.27 / (scale 2.0 * per-unit 28.32) = 2.58. Depth cap (250ct/mkt) non-binding here.
+SANDBOX_CT_CAL = 2.58
 
 # Kelly stake-sweep — TRANSPARENT EMBEDDED CONSTANT, sourced verbatim from
 # data/processed/kelly_1k_stake_sweep_20260619_000854.json ($1,000 correlation-aware MC, every edge
@@ -2435,8 +2582,8 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
     s1_edge_c = max(0.0, S1_EDGE_K * (MKT_SD - rmse) - slip)
     low_edge_c = max(0.0, low_c - slip)
     lock_edge_c = max(0.0, lock_c - slip)
-    # contracts per trade: CALIBRATED so the DEFAULT scenario at 0.25x Kelly on $1,000 reproduces the
-    # validated $1k Kelly-sweep median (~7.08%/m) -- the headline stays GROUNDED to the real backtest number,
+    # contracts per trade: CALIBRATED so the DEFAULT scenario (deployed 7-stream book) at 0.50x Kelly on
+    # $1,000 reproduces the activated-book median (~14.63%/m) -- the headline stays GROUNDED to the real number,
     # it does NOT run away. From that anchor it scales LINEARLY with Kelly fraction and bankroll, and is
     # CAPPED at the measured fillable depth (DEPTH_CAP/market). Every per-stream input (edge, trades, cities)
     # still multiplies through, so all inputs MOVE the output (FIX 1) while the magnitude stays honest.
