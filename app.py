@@ -1106,6 +1106,60 @@ def panel_run_equity():
                  graph(_tpl(fig, h=240, legend=False))])
 
 
+def panel_run_projection():
+    """MONTE-CARLO equity FAN for the $1,000 paper run under the ACTIVATED 4-edge book: P95 (top, green-ish) /
+    MEDIAN (green) / P5 (bottom, red-ish) simulated 12-month paper-equity paths, with a 'YOU ARE HERE' marker
+    at month 0 = $1,000. Source: run_projection (curated, seeded MC). PAPER projection, NOT realized P&L."""
+    d = table("run_projection")
+    if d.empty:
+        return card([html.H3("Projected Paper-Equity Fan — 12-Month Monte-Carlo"),
+                     empty_state("Fills from the activated-book Kelly projection.")])
+    d = d.sort_values("month")
+    months = list(d["month"]); p5 = list(d["p5"]); med = list(d["median"]); p95 = list(d["p95"])
+    start = float(d["start_equity"].iloc[0])
+    med_mo = float(d["mc_median_mo"].iloc[0]); p5_mo = float(d["mc_p5_mo"].iloc[0])
+    p95_mo = float(d["mc_p95_mo"].iloc[0])
+    fig = go.Figure()
+    # shaded NEUTRAL band between P5 and P95
+    fig.add_scatter(x=months + months[::-1], y=p95 + p5[::-1], fill="toself",
+                    fillcolor="rgba(174,184,192,.12)", line=dict(width=0), mode="lines",
+                    name="P5–P95 band", hoverinfo="skip", showlegend=False)
+    # P95 run (green-ish)
+    fig.add_scatter(x=months, y=p95, mode="lines", name="P95 path",
+                    line=dict(color=GREEN_DK, width=1.6, dash="dot"),
+                    hovertemplate="month %{x}<br>P95 $%{y:,.0f} (paper)<extra></extra>")
+    # MEDIAN run (bright green)
+    fig.add_scatter(x=months, y=med, mode="lines", name="Median path",
+                    line=dict(color=GREEN, width=2.6, shape="spline", smoothing=0.4),
+                    hovertemplate="month %{x}<br>median $%{y:,.0f} (paper)<extra></extra>")
+    # P5 run (red-ish)
+    fig.add_scatter(x=months, y=p5, mode="lines", name="P5 path",
+                    line=dict(color=RED, width=1.6, dash="dot"),
+                    hovertemplate="month %{x}<br>P5 $%{y:,.0f} (paper)<extra></extra>")
+    # baseline + YOU ARE HERE marker at month 0
+    fig.add_hline(y=start, line=dict(color=NEUTRAL, width=1, dash="dash"))
+    fig.add_scatter(x=[0], y=[start], mode="markers+text", name="you are here",
+                    marker=dict(size=12, color=INK, symbol="circle",
+                                line=dict(width=2, color=GREEN)),
+                    text=["  YOU ARE HERE"], textposition="middle right",
+                    textfont=dict(color=INK, size=11),
+                    hovertemplate=f"month 0 · ${start:,.0f} (paper, flat so far)<extra></extra>",
+                    showlegend=False)
+    fig.update_layout(title=None)
+    fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f")
+    fig.update_xaxes(title="forward month", nticks=13)
+    end_med = med[-1]; end_p5 = p5[-1]; end_p95 = p95[-1]
+    return card([html.H3("Projected Paper-Equity Fan — 12-Month Monte-Carlo"),
+                 _cap("Paper projection (model estimate, NOT realized). Monte-Carlo of the activated 4-edge "
+                      "book at 0.50x Kelly; bands are P5 / median / P95 of simulated 12-month paper-equity "
+                      "paths (they widen with time). The run started 2026-06-19 at $1,000 and is flat so far "
+                      f"(YOU ARE HERE). Inputs: median {100*med_mo:+.1f}%/mo, P5 {100*p5_mo:+.1f}%/mo, P95 "
+                      f"{100*p95_mo:+.1f}%/mo -> after 12 paper months the median path reaches ${end_med:,.0f} "
+                      f"(P5 ${end_p5:,.0f} / P95 ${end_p95:,.0f}). Activated AHEAD of the forward gate; paper "
+                      "$1,000 only, $0 REAL, never realized P&L."),
+                 graph(_tpl(fig, h=320))], id="run-projection-card")
+
+
 def panel_gate_board():
     """THE centerpiece: per-edge gate board. Each edge -> status badge, the specific gate it must pass, a
     settled-progress bar (n/threshold), and the staged Kelly stake. Source: run_gates. Paper/forward only."""
@@ -1333,6 +1387,8 @@ def render_bankroll():
                      panel_run_header(),
                      html.Div([html.Div(panel_run_equity(), className="col-5"),
                                html.Div(panel_staged_alloc(), className="col-7")], className="grid12",
+                              style={"marginTop": "10px"}),
+                     html.Div([html.Div(panel_run_projection(), className="col-12")], className="grid12",
                               style={"marginTop": "10px"}),
                      html.Div([html.Div(panel_gate_board(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_open_positions(), className="col-12")], className="grid12")])
