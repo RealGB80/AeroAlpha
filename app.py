@@ -3219,12 +3219,15 @@ def render_sandbox():
                  className="sub", style={"margin": "0 0 8px", "fontSize": "11px"}),
         html.Div("Day-ahead S1 (high)", className="sub",
                  style={"margin": "2px 0 2px", "color": MINT, "fontWeight": "700"}),
-        field("sb-rmse", "Day-ahead RMSE (°F)", 1.66, 0.01, 0.5, 3.0),
+        field("sb-s1edge", "High-S1 edge (c/contract, gross)", S1_HIGH_EDGE_DEFAULT, 0.1, 0, 20),
+        html.Div(f"Gross model edge before fills; ~{S1_HIGH_EDGE_DEFAULT - 1.0:.1f}c net after the 1c base-slip "
+                 "floor. Default = the deployed NY/LAX/CHI activated-book mean.", className="sub",
+                 style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
         field("sb-cities", "Active high-S1 cities (streams)", 3, 1, 0, 7),
         field("sb-s1trades", "High-S1 trades / month / city", 84, 1, 0, 400),
         html.Div("Daily-LOW S1 (validated, overnight)", className="sub",
                  style={"margin": "14px 0 2px", "color": MINT, "fontWeight": "700"}),
-        field("sb-lowedge", "Daily-low S1 edge (c/contract)", 7.73, 0.1, 0, 20),
+        field("sb-lowedge", "Daily-low S1 edge (c/contract, gross)", LOW_EDGE_DEFAULT, 0.1, 0, 20),
         field("sb-lowcities", "Daily-low S1 cities", 4, 1, 0, 7),
         field("sb-lowtrades", "Daily-low trades / month / city", 82, 1, 0, 400),
         html.Div("Lock-in (latency, NYC + airports)", className="sub",
@@ -3319,9 +3322,11 @@ def render_sandbox():
         dcc.Graph(id="sb-ruin", config={"displayModeBar": False})])
     asof_note = _scal_data_asof()
     chart_cap = card([html.H3(["Capacity Ceiling vs Bankroll  ", info_dot(
-            "Real markets have finite depth. As order size grows, VWAP slippage climbs along each stream's "
-            "measured curve (Mosaic), so the net edge per contract degrades and crosses zero at the stream's "
-            "capacity ceiling. Absolute-$ profit scales with bankroll only until depth binds, then PLATEAUS.")]),
+            "Real markets have finite depth. As order size grows, VWAP slippage climbs along each book's "
+            "measured curve (Mosaic), so the net edge per contract degrades and crosses zero at that book's "
+            "capacity ceiling. Each book saturates at its OWN size, so the plateau is a STAIRCASE: the shallow "
+            "daily-low books cap first (faint marker), then the deep high books. The amber line marks where "
+            "the LAST book saturates — beyond it, extra bankroll adds ~$0/mo.")]),
         # LIVE-DATA note (Task B): the scaling curves read from the materialized fill tables, so this moves as
         # the depth archive + forward fill_curve logging grow. NOT a hardcoded date.
         (html.Div(["⟳ Live from the curated fill tables — ", html.B(asof_note),
@@ -3330,9 +3335,12 @@ def render_sandbox():
          if asof_note else html.Div()),
         html.Div(id="sb-cap-flag", style={"marginBottom": "8px"}),
         html.Div(["Monthly paper profit as bankroll grows: it rises with capital UNTIL real fill-depth caps "
-                  "it, then flattens — modeled on the per-stream non-linear slippage curves (see the ",
-                  html.B("Scalability"), " page). Even a $100M bankroll returns the same capped dollars — the "
-                  "markets only absorb so much. Paper model; model edge held fixed across sizes."],
+                  "it, then flattens — modeled on each book's non-linear slippage curve (see the ",
+                  html.B("Scalability"), " page). Books drop out a GROUP at a time (shallow daily-low books "
+                  "first, then the deep high books), so the green curve is a staircase. The ",
+                  html.B("amber line", style={"color": AMBER}), " is where the last book saturates — beyond it "
+                  "even a $100M bankroll returns the same capped dollars. Paper model; model edge held fixed "
+                  "across sizes."],
                  className="sub"),
         dcc.Graph(id="sb-cap", config={"displayModeBar": False})])
 
@@ -3579,17 +3587,19 @@ def _statusbar(_n):
 
 
 # ---- Sandbox profitability model (transparent; paper estimate only) ----
-MKT_SD = 1.95          # market prices ~this implied SD; edge ~ overconfidence vs our RMSE
-S1_EDGE_K = 12.0       # c/contract per F of (MKT_SD - RMSE); calibrated to ~+4c at RMSE 1.66
-DEPTH_CAP = 250        # contracts fillable within slippage (measured median)
-S1_PRICE, LOCK_PRICE, LOW_PRICE = 0.5, 0.9, 0.5
-# Calibrated contracts-per-trade so the DEFAULT sandbox scenario reproduces the DEPLOYED $1,000 run's median
-# (deliverable #6, 2026-06-19): the 7-stream activated book = high 3 cities (NY/LAX/CHI) * 84tr * ~2.48c-net
-# + low 4 cities (AUS/LAX/DEN/MIA) * 82tr * ~6.73c-net + 0 lock-in, on $1,000 at 0.50x Kelly -> median
-# ~+14.63%/m (~$146/mo), matching kelly_activated_book_20260619_225520.json joint_mc.activated_all.median_mo.
-# Keeps the transparent per-stream model GROUNDED to the real activated-book number while letting every input
-# move the output. CT = $146.27 / (scale 2.0 * per-unit 28.32) = 2.58. Depth cap (250ct/mkt) non-binding here.
-SANDBOX_CT_CAL = 2.58
+DEPTH_CAP = 250        # contracts fillable within slippage (measured median; flat fallback only)
+# HIGH-S1 and DAILY-LOW edges are now DIRECT c/contract inputs (2026-06-21, user ask: c/ct is more
+# conventional than the old RMSE->edge derivation). Defaults = the CURRENT ACTUAL per-stream net c/ct from
+# the deployed activated book (kelly_activated_book_20260619_225520.json -> joint_mc.activated_all, the
+# ~+14.63%/m median): high (NY/LAX/CHI) net_opt mean ~2.9c, daily-low (AUS/LAX/DEN/MIA warm) net_opt mean
+# ~5.7c. The sandbox edge field is the GROSS model edge (before the 1c base-slip/fee floor); gross = net +
+# ~1c -> high 3.9c / low 6.7c defaults (the 'off' slip mode subtracts the 1c floor back to the actual net).
+S1_HIGH_EDGE_DEFAULT = 3.9     # gross c/ct -> ~2.9c net (activated-book NY/LAX/CHI mean)
+LOW_EDGE_DEFAULT = 6.7         # gross c/ct -> ~5.7c net (activated-book warm-low mean)
+# Calibrated contracts-per-trade so the DEFAULT scenario reproduces the DEPLOYED $1,000 activated-book median
+# (~+14.63%/m, ~$146/mo). With high 2.9c-net*84tr*3 cities + low 5.7c-net*82tr*4 cities at 0.50x Kelly on
+# $1,000: CT = 146.27 / 52.01 = 2.81 (re-derived for the new c/ct defaults; was 2.58 under the RMSE input).
+SANDBOX_CT_CAL = 2.81
 
 # ---- NON-LINEAR per-stream slippage(size) curves (AUDIT-CORRECTED 2026-06-21) ----
 # The ONLY stream with a real logged per-size fill curve is NY-high (median across n logged lock-moment
@@ -3600,28 +3610,65 @@ SANDBOX_CT_CAL = 2.58
 # the depth model GROUNDED in the only real data and produces a HIGHER, honest capacity than the old tiny/
 # degenerate ceilings -> profit-vs-bankroll now plateaus as a visible staircase. CAVEAT (carried into the
 # note): model_edge is held FIXED across sizes -> this is the FILLS side of capacity only.
-_SCAL_ARCHETYPE_MEMBERS = {"high": ("NY_high_S1",), "low": ("NY_high_S1",)}
+# ---- REAL per-stream fill curves (AUDIT-CORRECTED 2026-06-21, user ask: per-stream so the capacity chart
+# drops streams one GROUP at a time instead of one shared cliff). The deployed high cities each carry a REAL
+# measured slippage(size) curve in fill_scalability: NY = lock-moment (deep), LAX/CHI = 9-day standing-book
+# (deep, ~0 slip to 250ct). The daily-low books are SHALLOWER (1-day standing read 2026-06-21: slip ~1c to
+# ~100ct, then climbs to ~9-18c by 250ct) -> they saturate at a SMALLER fill size and so bind at a LOWER
+# bankroll than the highs. That difference is what makes capacity-vs-bankroll a STAIRCASE instead of a cliff.
+_HIGH_CITY_ORDER = ["NY_high_S1", "LAX_high_S1", "CHI_high_S1"]
+# Conservative daily-low curve, PRELIMINARY from the 1-day low standing-book read (the low depth archive is
+# still maturing ~1-2wk before promotion to a producer real_curve like the highs). Slippage-vs-best (0 at the
+# top of book, like the real high curves; the base-slip/fee floor is applied separately so this is INCREMENTAL
+# size slippage only) climbs to ~9c by 250ct -> SHALLOWER than the highs, so low books saturate ~100-150ct.
+_LOW_FALLBACK_CURVE = [(10, 0.0), (25, 0.0), (50, 0.5), (100, 1.5), (250, 9.0)]
 
 
-def _scal_curves():
-    """Return {archetype: [(size_ct, mean_slippage_c), ...]} from the curated fill_scalability table, using
-    ONLY real-curve streams (depth_state=='real_curve' -> NY-high today). Empty dict (-> the sandbox falls
-    back to the flat depth cap) if no real curve is materialized yet."""
+def _real_stream_curves():
+    """{stream_id: [(size_ct, slip_c), ...]} for every stream with depth_state=='real_curve' in the curated
+    fill_scalability table (NY/LAX/CHI high today). {} if none materialized."""
     sc = table("fill_scalability")
-    if sc.empty:
+    if sc.empty or "depth_state" not in sc:
         return {}
-    if "depth_state" in sc:
-        sc = sc[sc["depth_state"] == "real_curve"]
+    sc = sc[sc["depth_state"] == "real_curve"]
     if sc.empty:
         return {}
     out = {}
-    for arch, members in _SCAL_ARCHETYPE_MEMBERS.items():
-        d = sc[sc["stream_id"].isin(members)]
-        if d.empty:
-            continue
-        g = d.groupby("size_ct")["slippage_vs_best_c"].mean().sort_index()
-        out[arch] = [(float(s), float(v)) for s, v in g.items()]
+    for sid, g in sc.groupby("stream_id"):
+        gg = g.groupby("size_ct")["slippage_vs_best_c"].mean().sort_index()
+        out[str(sid)] = [(float(s), float(v)) for s, v in gg.items()]
     return out
+
+
+def _scal_curves():
+    """Representative high/low curves for the HEADLINE net-at-size math (auto/manual slip modes). high = the
+    deepest real high curve (NY); low = the real warm-low curve if promoted, else the conservative fallback."""
+    real = _real_stream_curves()
+    high = next((real[s] for s in _HIGH_CITY_ORDER if s in real), None)
+    low = real.get("AUS_low_S1") or _LOW_FALLBACK_CURVE
+    out = {}
+    if high:
+        out["high"] = high
+    if low:
+        out["low"] = low
+    return out
+
+
+def _capacity_book_list(cities, s1tr, low_cities, low_trades, lockpm, s1_edge_c, low_edge_c, lock_edge_c):
+    """Each ACTIVE per-market book as (key, net_edge_c, slip_curve, trades_per_mo). Real per-city HIGH curves
+    + a conservative DAILY-LOW curve -> shallower low books saturate at a smaller size (earlier bankroll) than
+    deep high books, so the capacity-vs-bankroll curve is a STAIRCASE that drops streams a group at a time."""
+    real = _real_stream_curves()
+    hi = [real[s] for s in _HIGH_CITY_ORDER if s in real] or [None]
+    low_curve = real.get("AUS_low_S1") or _LOW_FALLBACK_CURVE
+    books = []
+    for i in range(max(0, int(cities))):
+        books.append((f"high{i+1}", s1_edge_c, hi[i] if i < len(hi) else hi[-1], s1tr))
+    for j in range(max(0, int(low_cities))):
+        books.append((f"low{j+1}", low_edge_c, low_curve, low_trades))
+    if lockpm > 0:
+        books.append(("lock", lock_edge_c, real.get("NY_high_S1"), lockpm))
+    return books
 
 
 def _scal_data_asof():
@@ -3757,19 +3804,18 @@ def _optimal_fill_dollars(base_edge_c, curve, trades, markets):
 
 def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
                               s1_edge_c, low_edge_c, lock_edge_c):
-    """Absolute-$ monthly profit CEILING from REAL non-linear market depth (Mosaic 2026-06-20). For each
-    stream we fill the profit-MAXIMIZING size along its archetype slippage(size) curve (net edge degrades
-    with size, total $ peaks then falls). ceiling = sum over books of peak_$_per_trade * trades/mo * markets.
-    Bankroll-independent -> the hard plateau, now stream-specific (NY/CHI high bind ~250ct; deep low books
-    much higher). Falls back to the flat 250ct cap per stream if the curated curves are absent."""
-    curves = _scal_curves()
-    s1_peak, _ = _optimal_fill_dollars(s1_edge_c, curves.get("high"), s1tr, cities)
-    low_peak, _ = _optimal_fill_dollars(low_edge_c, curves.get("low"), low_trades, low_cities)
-    lock_peak, _ = _optimal_fill_dollars(lock_edge_c, curves.get("high"), lockpm, cities)  # lock-in ~high book
-    s1_cap = s1_peak * s1tr * cities
-    low_cap = low_peak * low_trades * low_cities
-    lock_cap = lock_peak * lockpm * cities
-    return max(0.0, s1_cap + low_cap + lock_cap)
+    """Absolute-$ monthly profit CEILING from REAL non-linear market depth, summed PER BOOK (each book fills
+    its profit-MAXIMIZING size along its OWN archetype slippage(size) curve; net edge degrades with size, $
+    peaks then falls). Bankroll-independent -> the hard plateau. Because shallow daily-low books peak at a
+    smaller size than the deep high books, the books saturate at DIFFERENT bankrolls -> the staircase. Falls
+    back to the flat 250ct cap per book if a curve is absent."""
+    books = _capacity_book_list(cities, s1tr, low_cities, low_trades, lockpm,
+                                s1_edge_c, low_edge_c, lock_edge_c)
+    tot = 0.0
+    for _key, edge, curve, trades in books:
+        peak, _ = _optimal_fill_dollars(edge, curve, trades, 1)
+        tot += peak * trades
+    return max(0.0, tot)
 
 
 @app.callback(
@@ -3778,17 +3824,17 @@ def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
     Output("sb-chart", "figure"), Output("sb-fan", "figure"), Output("sb-rr", "figure"),
     Output("sb-dist", "figure"), Output("sb-cap", "figure"), Output("sb-cap-flag", "children"),
     Output("sb-ruin", "figure"),
-    Input("sb-rmse", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
+    Input("sb-s1edge", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
     Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
     Input("sb-lock", "value"), Input("sb-lockpm", "value"),
     Input("sb-bankroll", "value"), Input("sb-kelly", "value"),
     Input("sb-slip", "value"), Input("sb-slip-mode", "value"), Input("sb-slip-manual", "value"))
-def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
+def _sandbox(s1_c, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
              bankroll, kelly, slip, slip_mode, slip_manual):
     import numpy as _np
     blank = _tpl(go.Figure(), h=300)
     try:
-        rmse = float(rmse); cities = max(0, int(cities)); s1tr = max(0.0, float(s1tr))
+        s1_c = max(0.0, float(s1_c)); cities = max(0, int(cities)); s1tr = max(0.0, float(s1tr))
         low_c = float(low_c); low_cities = max(0, int(low_cities)); low_trades = max(0.0, float(low_trades))
         lock_c = float(lock_c); lockpm = max(0.0, float(lockpm))
         bankroll = max(0.0, float(bankroll)); kelly = float(kelly)
@@ -3812,7 +3858,7 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
     k = kelly_interp(kelly)
     # GROSS per-stream model edge (before any slippage). The win rate is already embedded in the backtest
     # net c/contract; slippage is applied per-mode below (item 6).
-    s1_gross_c = max(0.0, S1_EDGE_K * (MKT_SD - rmse))
+    s1_gross_c = max(0.0, s1_c)            # direct gross c/contract input (was RMSE->edge derivation)
     low_gross_c = max(0.0, low_c)
     lock_gross_c = max(0.0, lock_c)
     # per-stream NET edge after the BASE slippage (used by the depth-ceiling/optimal-fill math, which is
@@ -4024,27 +4070,34 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
     # (not a hard 250ct cliff). LOG x AND LOG y so the plateau and the rising uncapped line are both legible.
     cap = go.Figure()
     if cap_ceiling > 0:
-        bxs = _np.geomspace(100.0, 1e8, 70)                          # $100 -> $100M log axis
+        bxs = _np.geomspace(100.0, 1e8, 90)                          # $100 -> $100M log axis
+        # PER-BOOK staircase (2026-06-21): each active book fills along its OWN curve; shallow daily-low books
+        # cap at a smaller size (lower bankroll) than the deep high books, so streams drop a group at a time.
+        _books = _capacity_book_list(cities, s1tr, low_cities, low_trades, lockpm,
+                                     s1_edge_c, low_edge_c, lock_edge_c)
+        _peaks = [_optimal_fill_dollars(e, c, 1, 1) for _k, e, c, tr in _books]  # (peak_$/mkt, best_size), bk-indep
         def _profit_at(bk, capped):
             ct = max(0.0, SANDBOX_CT_CAL * (kelly / 0.25) * (bk / 1000.0))
-            if not capped:                                           # naive flat-edge linear growth
-                s = (s1_edge_c / 100.0) * s1tr * cities * ct
-                l = (low_edge_c / 100.0) * low_trades * low_cities * ct
-                k_ = (lock_edge_c / 100.0) * lockpm * cities * ct
-                return s + l + k_
-            # capped = non-linear per-stream: net edge at this size, never past each stream's optimal-fill $
-            sn = max(0.0, _net_edge_at_size(s1_edge_c, _curves.get("high"), ct)) if _curves.get("high") else s1_edge_c
-            ln = max(0.0, _net_edge_at_size(low_edge_c, _curves.get("low"), ct)) if _curves.get("low") else low_edge_c
-            kn = max(0.0, _net_edge_at_size(lock_edge_c, _curves.get("high"), ct)) if _curves.get("high") else lock_edge_c
-            s = min((sn / 100.0) * ct, _optimal_fill_dollars(s1_edge_c, _curves.get("high"), s1tr, cities)[0]) * s1tr * cities
-            l = min((ln / 100.0) * ct, _optimal_fill_dollars(low_edge_c, _curves.get("low"), low_trades, low_cities)[0]) * low_trades * low_cities
-            k_ = min((kn / 100.0) * ct, _optimal_fill_dollars(lock_edge_c, _curves.get("high"), lockpm, cities)[0]) * lockpm * cities
-            return s + l + k_
+            tot = 0.0
+            for (_k, e, c, tr), (peak, bs) in zip(_books, _peaks):
+                if not capped or not c:                              # naive flat-edge linear growth
+                    tot += (e / 100.0) * tr * ct
+                else:                                                # fill only up to the profit-MAX size, then
+                    fill = min(ct, bs) if bs > 0 else ct             # hold (never fill into negative-edge depth)
+                    net = max(0.0, _net_edge_at_size(e, c, fill))
+                    tot += (net / 100.0) * fill * tr
+            return tot
         prof_uncapped = _np.array([_profit_at(b, capped=False) for b in bxs])
         prof_capped = _np.array([_profit_at(b, capped=True) for b in bxs])
-        # bankroll where the capped curve first flattens (within 1% of the ceiling)
-        bind_idx = _np.argmax(prof_capped >= 0.99 * cap_ceiling) if (prof_capped >= 0.99 * cap_ceiling).any() else None
-        bind_b = float(bxs[bind_idx]) if bind_idx else None
+        # FINAL saturation = smallest bankroll where the capped curve reaches 99.5% of its ceiling -> the TRUE
+        # plateau where extra bankroll stops buying profit (the labeled yellow line). 99.5% (not 99%) so the
+        # mark lands ON the flat, matching "where bankroll stops returning more profit/mo".
+        _reach = prof_capped >= 0.995 * cap_ceiling
+        bind_b = float(bxs[_np.argmax(_reach)]) if _reach.any() else None
+        # FIRST staircase step = bankroll where the SHALLOWEST book caps (its best_size reached) -> faint marker
+        _bsz = [bs for (_pk, bs) in _peaks if bs and bs > 0]
+        _denom = SANDBOX_CT_CAL * (kelly / 0.25)
+        step1_b = (min(_bsz) / _denom * 1000.0) if (_bsz and _denom > 0) else None
         cap.add_scatter(x=bxs, y=prof_uncapped, mode="lines", name="uncapped (no depth limit)",
                         line=dict(color=NEUTRAL, width=1.6, dash="dash"),
                         hovertemplate="bankroll $%{x:,.0f}<br>uncapped $%{y:,.0f}/mo<extra></extra>")
@@ -4053,12 +4106,17 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
                         fill="tozeroy", fillcolor="rgba(0,224,138,.08)",
                         hovertemplate="bankroll $%{x:,.0f}<br>capped $%{y:,.0f}/mo<extra></extra>")
         cap.add_hline(y=cap_ceiling, line=dict(color=RED, width=1.4, dash="dot"),
-                      annotation_text=f"absolute ceiling ${cap_ceiling:,.0f}/mo",
+                      annotation_text=f"absolute depth ceiling ${cap_ceiling:,.0f}/mo",
                       annotation_position="top left", annotation_font=dict(color=RED, size=10))
+        if step1_b and bind_b and 100 <= step1_b <= 1e8 and step1_b < bind_b * 0.9:
+            cap.add_vline(x=step1_b, line=dict(color=NEUTRAL, width=1.1, dash="dot"),
+                          annotation_text=f"shallow daily-low books saturate ~${step1_b:,.0f}",
+                          annotation_position="bottom left", annotation_font=dict(color=DIM, size=9))
         if bind_b and 100 <= bind_b <= 1e8:
-            cap.add_vline(x=bind_b, line=dict(color=AMBER, width=1.3, dash="dash"),
-                          annotation_text=f"cap binds ~${bind_b:,.0f}", annotation_position="top right",
-                          annotation_font=dict(color=AMBER, size=10))
+            cap.add_vline(x=bind_b, line=dict(color=AMBER, width=1.9, dash="dash"),
+                          annotation_text=(f"depth fully saturates ~${bind_b:,.0f} — "
+                                           f"beyond here extra bankroll adds ~$0/mo"),
+                          annotation_position="top right", annotation_font=dict(color=AMBER, size=10))
         # mark the user's current bankroll on the capped (actual) curve
         bnow = max(100.0, min(1e8, bankroll if bankroll > 0 else 1000.0))
         pnow = _profit_at(bnow, capped=True)
@@ -4093,8 +4151,9 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
             f"Contracts/trade ({s1_ct:.1f} here) is CALIBRATED so the default scenario at 0.25x on $1,000 "
             f"equals the validated $1k Kelly-sweep median (~7.1%/m); it scales with Kelly ({kelly:.2f}x) and "
             f"bankroll (${bankroll:,.0f}). NON-LINEAR DEPTH{_nonlin}: the net c/contract DEGRADES as per-market "
-            f"size grows along each stream's measured VWAP-slippage curve and crosses zero at its real capacity "
-            f"ceiling (NY/CHI high ~250ct, deep daily-low books far higher) — there is no flat cliff. High-S1 "
+            f"size grows along each book's measured VWAP-slippage curve and crosses zero at its real capacity "
+            f"ceiling (deep high books fill to ~250ct; the shallower daily-low books cap sooner, so they "
+            f"saturate at a lower bankroll — the capacity chart is a staircase, not a flat cliff). High-S1 "
             f"net at size = {s1_net_at:.1f}c (model {s1_edge_c:.1f}c) × {s1tr:.0f}/mo × {cities} cities = "
             f"${s1_monthly:,.0f}/mo; daily-low net at size {low_net_at:.1f}c × {low_trades:.0f}/mo × "
             f"{low_cities} cities = ${low_monthly:,.0f}/mo; lock-in net at size {lock_net_at:.1f}c × "
