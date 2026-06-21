@@ -1210,48 +1210,152 @@ def panel_run_header():
                               style={"marginTop": "10px"})])
 
 
-def panel_run_equity():
-    """The $1,000 PAPER equity curve from the harness ledger (now LIVE/non-flat as activated paper signals
-    settle). Source: bankroll_run (ledger equity_curve). PAPER only, never realized P&L."""
+# Time-window selector for the $1k paper-equity chart (USER ASK 2026-06-21). value = lookback hours
+# (None = All). Intraday windows (12hr/1D) format the x axis as HH:MM; longer windows as dates.
+_EQ_WINDOWS = [("12hr", 12), ("1D", 24), ("3D", 72), ("1W", 168), ("1M", 720), ("All", None)]
+_EQ_WINDOW_HOURS = {lbl: hrs for lbl, hrs in _EQ_WINDOWS}
+_EQ_INTRADAY = {"12hr", "1D"}                  # show HH:MM tick labels; longer windows show dates
+
+
+def _equity_points():
+    """Return (points, source) for the $1k paper-equity chart. points = list of dicts with a real datetime x:
+    {dt (pandas Timestamp), equity, drawdown}. PREFER the timestamped bankroll_marks (fine-grained, time-aware);
+    if marks are SPARSE (<2) fall back to the settlement-keyed bankroll_run (equity_curve), spacing its rows
+    one-day apart so the long windows still render a line. source tags which fed the chart (shown in the cap)."""
+    marks = table("bankroll_marks")
+    if not marks.empty and len(marks) >= 2 and "ts" in marks.columns:
+        m = marks.copy()
+        m["dt"] = pd.to_datetime(m["ts"], utc=True, errors="coerce")
+        m = m.dropna(subset=["dt"]).sort_values("dt")
+        pts = [{"dt": r["dt"], "equity": float(r["equity"]),
+                "drawdown": (None if pd.isna(r.get("drawdown")) else float(r["drawdown"]))}
+               for _, r in m.iterrows()]
+        if len(pts) >= 2:
+            return pts, "marks"
+    # ---- fallback: the daily settlement curve (sparse marks / long windows). Synthesize a date x.
     d = table("bankroll_run")
-    act = _run_meta("activation_date", "2026-06-19")
-    eq = _run_meta("equity", "1000")
-    dd = _run_meta("current_drawdown", "0.0")
+    if not d.empty:
+        dd = d.copy()
+        dd["dt"] = pd.to_datetime(dd["date"], utc=True, errors="coerce")
+        # rows can repeat a date (multiple same-day settlements) -> keep order, nudge dupes by index seconds
+        dd = dd.reset_index(drop=True)
+        out = []
+        for i, r in dd.iterrows():
+            base = r["dt"]
+            if pd.isna(base):
+                continue
+            out.append({"dt": base + pd.Timedelta(seconds=int(i)), "equity": float(r["bankroll"]),
+                        "drawdown": None})
+        if out:
+            # if there is exactly ONE marks row, splice it on as the latest point so the head is current
+            if not marks.empty and "ts" in marks.columns and len(marks) == 1:
+                m0 = marks.iloc[0]
+                mdt = pd.to_datetime(m0["ts"], utc=True, errors="coerce")
+                if pd.notna(mdt):
+                    out.append({"dt": mdt, "equity": float(m0["equity"]),
+                                "drawdown": (None if pd.isna(m0.get("drawdown")) else float(m0["drawdown"]))})
+            out.sort(key=lambda r: r["dt"])
+            return out, "curve"
+    # last resort: a single flat marks row (or nothing) -> one point so the chart still renders
+    if not marks.empty and "ts" in marks.columns:
+        m0 = marks.iloc[0]
+        mdt = pd.to_datetime(m0["ts"], utc=True, errors="coerce")
+        if pd.notna(mdt):
+            return [{"dt": mdt, "equity": float(m0["equity"]),
+                     "drawdown": (None if pd.isna(m0.get("drawdown")) else float(m0["drawdown"]))}], "marks"
+    return [], "none"
+
+
+def _equity_figure(window_label):
+    """Build the windowed $1k paper-equity figure + the (raw $ change, % change) readout for `window_label`.
+    Returns (figure, readout_children, readout_color). Time-aware x (HH:MM intraday, dates for long windows).
+    Graceful with 1-2 points (renders a marker/short line, never crashes). PAPER equity, hypothetical."""
+    pts, source = _equity_points()
+    hours = _EQ_WINDOW_HOURS.get(window_label, None)
     fig = go.Figure()
-    cur_val = None
-    if d.empty:
-        # single flat point at $1,000 so the chart still renders honestly
-        fig.add_scatter(x=["start"], y=[1000], mode="markers", marker=dict(color=GREEN, size=8),
+    if not pts:
+        fig.add_scatter(x=[pd.Timestamp.utcnow()], y=[1000], mode="markers",
+                        marker=dict(color=GREEN, size=8),
                         hovertemplate="$1,000 (paper)<extra></extra>", showlegend=False)
-        lo, hi = 900, 1100
+        fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"))
+        fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.2f", range=[900, 1100])
+        return _tpl(fig, h=240, legend=False), "—", DIM
+    # window the series by the lookback from the LATEST point
+    last_dt = pts[-1]["dt"]
+    if hours is not None:
+        cutoff = last_dt - pd.Timedelta(hours=hours)
+        win = [p for p in pts if p["dt"] >= cutoff]
+        # keep >=1 anchor point at the window edge even if nothing falls inside (sparse data)
+        if len(win) < 2:
+            win = pts[-2:] if len(pts) >= 2 else pts[-1:]
     else:
-        x = list(range(len(d)))                       # ordinal step index (curve has repeated same-day dates)
-        y = [float(v) for v in d["bankroll"]]
-        cur_val = y[-1] if y else None
-        if len(x) == 1:               # render a flat segment so a single ledger row reads as a line
-            x = [0, 1]; y = [y[0], y[0]]
-        # colour the curve by where it sits vs the $1,000 baseline (below = drawdown shade)
-        line_col = GREEN if (cur_val is not None and cur_val >= 1000) else RED
-        fig.add_scatter(x=x, y=y, mode="lines+markers", name="paper equity",
-                        line=dict(color=line_col, width=2.4), marker=dict(size=6, color=line_col),
-                        customdata=[str(v) for v in d["date"]],
-                        hovertemplate="%{customdata}<br>$%{y:,.2f} (paper)<extra></extra>")
-        span = (max(y) - min(y)) or 1.0
-        lo = min(min(y), 1000) - span * 0.6
-        hi = max(max(y), 1000) + span * 0.6
+        win = pts
+    xs = [p["dt"] for p in win]
+    ys = [p["equity"] for p in win]
+    dds = [p["drawdown"] for p in win]
+    first_eq, last_eq = ys[0], ys[-1]
+    raw = last_eq - first_eq
+    pct = (100.0 * raw / first_eq) if first_eq else 0.0
+    col = GREEN if raw >= 0 else RED
+    # hover: precise datetime + equity + drawdown
+    cd = [[("—" if dd is None else f"{100.0*dd:.2f}%")] for dd in dds]
+    mode = "lines+markers" if len(win) > 1 else "markers"
+    fig.add_scatter(x=xs, y=ys, mode=mode, name="paper equity",
+                    line=dict(color=col, width=2.4, shape="hv" if source == "marks" else "linear"),
+                    marker=dict(size=6, color=col), customdata=cd,
+                    hovertemplate="%{x|%Y-%m-%d %H:%M} UTC<br>$%{y:,.2f} (paper)"
+                                  "<br>drawdown %{customdata[0]}<extra></extra>")
     fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
                   annotation_text="$1,000 baseline", annotation_position="bottom right",
                   annotation_font=dict(color=NEUTRAL, size=10))
-    fig.update_layout(title=None)
+    span = (max(ys) - min(ys)) or 1.0
+    lo = min(min(ys), 1000) - span * 0.6
+    hi = max(max(ys), 1000) + span * 0.6
     fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.2f", range=[lo, hi])
-    fig.update_xaxes(title="settlement step", showticklabels=False)
+    # time-aware x: HH:MM for intraday windows, dates otherwise (proper datetime axis -> Plotly auto-formats)
+    if window_label in _EQ_INTRADAY:
+        fig.update_xaxes(title=None, tickformat="%H:%M", type="date")
+    else:
+        fig.update_xaxes(title=None, tickformat="%b %d", type="date")
+    readout = html.Span([
+        html.Span(f"{'+' if raw >= 0 else '−'}${abs(raw):,.2f}", className="mono",
+                  style={"fontWeight": "800"}),
+        html.Span(f"  ·  {pct:+.2f}%", className="mono"),
+        html.Span(f"  ({window_label})", className="sub", style={"marginLeft": "4px"})],
+        style={"color": col, "fontSize": "15px"})
+    return _tpl(fig, h=240, legend=False), readout, col
+
+
+def panel_run_equity():
+    """The $1,000 PAPER equity chart with a time-window selector (12hr / 1D / 3D / 1W / 1M / All). Prefers the
+    timestamped bankroll_marks series; falls back to the daily equity_curve for long windows / sparse marks.
+    Shows the raw $ + % change over the selected window. PAPER only, never realized P&L."""
+    act = _run_meta("activation_date", "2026-06-19")
+    eq = _run_meta("equity", "1000")
+    dd = _run_meta("current_drawdown", "0.0")
+    pts, source = _equity_points()
+    cur_val = pts[-1]["equity"] if pts else None
     cur_str = f"${cur_val:,.2f}" if cur_val is not None else f"${eq}"
+    default_win = "1W"
+    fig, readout, _col = _equity_figure(default_win)
+    src_note = ("timestamped paper-equity marks" if source == "marks"
+                else ("daily settlement curve (timestamped marks still sparse — falling back)"
+                      if source == "curve" else "no equity data yet"))
+    selector = dcc.RadioItems(
+        id="run-equity-window",
+        options=[{"label": " " + lbl, "value": lbl} for lbl, _ in _EQ_WINDOWS],
+        value=default_win, className="sb-radio",
+        labelStyle={"display": "inline-block", "marginRight": "12px", "fontSize": "12px"},
+        style={"marginBottom": "6px"})
     return card([html.H3(f"Paper Equity — {cur_str}"),
-                 _cap(f"The $1,000 PAPER bankroll from activation {act}, now moving as activated PAPER signals "
-                      f"settle (it is no longer flat). Current paper equity {cur_str} (peak $1,000, "
-                      f"max paper drawdown {dd}%). LIVE real-deploy capital = $0 — promotion to REAL still "
-                      f"requires a forward-gate PASS. Paper only, never realized P&L."),
-                 graph(_tpl(fig, h=240, legend=False))])
+                 _cap(f"The $1,000 PAPER bankroll from activation {act}, moving as activated PAPER signals "
+                      f"settle. Current paper equity {cur_str} (peak $1,000, max paper drawdown {dd}%). Pick a "
+                      f"time window below; the readout shows the $ and % change over it. Source: {src_note}. "
+                      f"LIVE real-deploy capital = $0 — promotion to REAL still requires a forward-gate PASS. "
+                      f"Paper / hypothetical, never realized P&L."),
+                 selector,
+                 html.Div(readout, id="run-equity-readout", style={"marginBottom": "4px"}),
+                 dcc.Graph(id="run-equity-graph", figure=fig, config={"displayModeBar": False})])
 
 
 def panel_run_projection():
@@ -1509,42 +1613,47 @@ def panel_open_positions():
             return html.Span(["• ", html.Span(lbl, className="mono sub")],
                              title="accumulating price snapshots (grows each run)")
         return _spark(seq, height=22, fill=False)
-    # PER-DAY PRICE SWING (USER ASK 2026-06-21): for each open ticker, a compact per-calendar-day readout
-    # "6/21: 13.4 → 19.2  +5.8" (paid entry_c · that day's latest mark · delta), green up / red down. Source:
-    # pending_price_daily (curated). Honest: a PAPER mark of a public quote, UNREALIZED — never realized P&L.
+    # NET-PER-DAY PRICE SWING (USER ASK 2026-06-21, REWORKED to NET PER DAY): one row per calendar day,
+    # AGGREGATED across ALL open paper contracts — "6/21: paid $X.XX → now $Y.YY (+Z%)" (sum of entry cost of
+    # that day's open contracts vs sum of their current marks, plus net $ and %). Green up / red down. Source:
+    # pending_price_daily (curated, now net-per-day). Honest: a PAPER, UNREALIZED mark of public quotes.
     daily = table("pending_price_daily")
-    day_map: dict[str, list] = {}
-    if not daily.empty:
-        dd = daily.copy()
-        dd = dd.sort_values(["ticker", "day"])
-        for tkr, g in dd.groupby("ticker"):
-            day_map[tkr] = g.to_dict("records")
+    net_day_recs = []
+    if not daily.empty and {"day", "total_paid_c", "current_value_c"}.issubset(daily.columns):
+        net_day_recs = daily.sort_values("day").to_dict("records")
 
     def _mmdd(day):
         s = str(day)
         return f"{int(s[5:7])}/{int(s[8:10])}" if len(s) >= 10 else s
 
-    def _row_daily_swing(row):
-        recs = day_map.get(row.get("ticker"))
-        if not recs:
-            return html.Span("—", className="sub")
+    def _net_per_day_block():
+        if not net_day_recs:
+            return html.Div("Accumulating net-per-day marks (grows each run).", className="sub",
+                            style={"fontSize": "11px"})
         items = []
-        for r in recs:
-            ent = r.get("entry_c"); px = r.get("price_c"); dl = r.get("delta_c")
-            dcls = "pos" if (dl is not None and dl > 0) else ("neg" if (dl is not None and dl < 0) else "")
-            arrow = "▲" if (dl is not None and dl > 0) else ("▼" if (dl is not None and dl < 0) else "▬")
-            ent_s = "—" if _isnull(ent) else f"{ent:.1f}"
-            px_s = "—" if _isnull(px) else f"{px:.1f}"
-            dl_s = "" if _isnull(dl) else f" {arrow}{dl:+.1f}"
+        for r in net_day_recs:
+            paid = r.get("total_paid_c"); val = r.get("current_value_c")
+            dl = r.get("delta_c"); pct = r.get("pct"); nc = r.get("n_contracts")
+            up = (dl is not None and dl > 0)
+            down = (dl is not None and dl < 0)
+            dcls = "pos" if up else ("neg" if down else "")
+            arrow = "▲" if up else ("▼" if down else "▬")
+            paid_s = "—" if _isnull(paid) else f"${paid/100.0:,.2f}"
+            val_s = "—" if _isnull(val) else f"${val/100.0:,.2f}"
+            pct_s = "" if _isnull(pct) else f" ({pct:+.1f}%)"
+            dl_s = "" if _isnull(dl) else f"{arrow}${abs(dl)/100.0:,.2f}{pct_s}"
+            nc_s = "" if _isnull(nc) else f" · {int(nc)} open"
             items.append(html.Div([
                 html.Span(f"{_mmdd(r.get('day'))}: ", className="sub", style={"opacity": .75}),
-                html.Span(f"{ent_s}", className="mono sub", title="paid (entry, c)"),
-                html.Span(" → ", className="sub"),
-                html.Span(f"{px_s}c", className="mono"),
-                html.Span(dl_s, className=f"mono qb-edge {dcls}",
-                          style={"marginLeft": "4px", "fontSize": "10.5px"})],
-                style={"whiteSpace": "nowrap", "lineHeight": "1.45"}))
-        return html.Div(items, style={"fontSize": "11px"})
+                html.Span("paid ", className="sub", style={"fontSize": "10.5px"}),
+                html.Span(paid_s, className="mono sub", title="sum of entry cost, open contracts that day"),
+                html.Span(" → now ", className="sub", style={"fontSize": "10.5px"}),
+                html.Span(val_s, className="mono", title="sum of current side-held marks that day"),
+                html.Span("  " + dl_s, className=f"mono qb-edge {dcls}",
+                          style={"marginLeft": "6px", "fontSize": "11px"}),
+                html.Span(nc_s, className="sub", style={"fontSize": "10px", "opacity": .7})],
+                style={"whiteSpace": "nowrap", "lineHeight": "1.6"}))
+        return html.Div(items, style={"fontSize": "12px"})
 
     if has_mark:
         d = d.copy()
@@ -1553,11 +1662,6 @@ def panel_open_positions():
         if not has_mark:
             d = d.copy()
         d["trend"] = d.apply(_row_spark, axis=1)
-    has_daily = bool(day_map)
-    if has_daily:
-        if not (has_mark or has_series):
-            d = d.copy()
-        d["dayswing"] = d.apply(_row_daily_swing, axis=1)
     cols = ["target_date", "city", "market", "stream", "ticker", "side", "edge_c", "age_h"]
     rename = {"edge_c": "Model Edge", "age_h": "Age", "target_date": "Target Settle"}
     fmtmap = {"edge_c": _cents1, "age_h": lambda v: "—" if _isnull(v) else f"{v:.0f}h"}
@@ -1569,10 +1673,6 @@ def panel_open_positions():
         cols = cols + ["trend"]
         rename["trend"] = "Price Trend (paper)"
         fmtmap["trend"] = lambda v: v         # already an html element
-    if has_daily:
-        cols = cols + ["dayswing"]
-        rename["dayswing"] = "Per-Day Swing (paper)"
-        fmtmap["dayswing"] = lambda v: v      # already an html element
     show = present(d, drop=["_dt", "price_series", "entry", "entry_price", "current_price",
                             "mark_delta", "direction"],
                    rename=rename, fmt=fmtmap, order=cols)
@@ -1584,14 +1684,20 @@ def panel_open_positions():
                  _cap(f"{n} paper signals logged across the forward monitors but NOT yet settled, plotted by "
                       f"target settle date and model edge (circle = YES side, diamond = NO). The "
                       f"Entry → Current column marks each paper signal to the live public quote with a green "
-                      f"up / red down chip, and the Per-Day Swing column breaks that mark out by calendar day "
-                      f"(paid entry → that day's latest value · delta) — a PAPER, UNREALIZED mark, NOT real "
-                      f"money or realized P&L. Once they settle they feed the gate-progress counters above."),
+                      f"up / red down chip. The Net-Per-Day Swing below AGGREGATES across ALL open paper "
+                      f"contracts per calendar day (sum of entry cost vs sum of current marks) — a PAPER, "
+                      f"UNREALIZED mark, NOT real money or realized P&L. Once signals settle they feed the "
+                      f"gate-progress counters above."),
                  graph(_tpl(fig, h=300)) if not scat.empty else html.Div(),
+                 # NET-PER-DAY swing across all open contracts (USER ASK 2026-06-21)
+                 html.Div([html.Div("Net-Per-Day Swing (paper, unrealized — all open contracts)",
+                                     className="u-label", style={"margin": "6px 0 4px"}),
+                           _net_per_day_block()],
+                          style={"margin": "4px 0 10px"}),
                  # deliverable #3: show ALL pending rows (no row cap / no truncation footer)
                  pro_table(show, present_df=False,
                            align_left=("Side", "Market", "Stream", "Ticker",
-                                       "Entry → Current (paper mark)", "Per-Day Swing (paper)"))],
+                                       "Entry → Current (paper mark)"))],
                 id="open-positions-card")
 
 
@@ -2691,7 +2797,10 @@ def render_scalability():
                   "removed as tick-floor artifacts. ", html.B("Paper / public-data orderbook reads — no "
                   "auth, no orders, never realized P&L."),
                   f" {n_real} streams with a real curve; {n_accr} with accruing depth data."],
-                 className="sub")],
+                 className="sub"),
+        (html.Div(["⟳ Live from the curated fill tables — ", html.B(_scal_data_asof())],
+                  className="sub", style={"fontSize": "11px", "marginTop": "6px", "opacity": .85})
+         if _scal_data_asof() else html.Div())],
         style={"borderColor": "color-mix(in srgb, var(--amber) 30%, transparent)"})
     return html.Div([section("Scalability — Fill-Size vs Net Edge"),
                      html.Div([html.Div(intro, className="col-12")], className="grid12"),
@@ -2817,10 +2926,17 @@ def render_sandbox():
                   "moves). Your current Kelly pick is marked; the 0.50x ceiling and full-Kelly (1.0x) zone "
                   "are shaded. Paper model, never realized P&L."], className="sub"),
         dcc.Graph(id="sb-ruin", config={"displayModeBar": False})])
+    asof_note = _scal_data_asof()
     chart_cap = card([html.H3(["Capacity Ceiling vs Bankroll  ", info_dot(
             "Real markets have finite depth. As order size grows, VWAP slippage climbs along each stream's "
             "measured curve (Mosaic), so the net edge per contract degrades and crosses zero at the stream's "
             "capacity ceiling. Absolute-$ profit scales with bankroll only until depth binds, then PLATEAUS.")]),
+        # LIVE-DATA note (Task B): the scaling curves read from the materialized fill tables, so this moves as
+        # the depth archive + forward fill_curve logging grow. NOT a hardcoded date.
+        (html.Div(["⟳ Live from the curated fill tables — ", html.B(asof_note),
+                   ". Curves update as the depth archive + forward fill logging grow."],
+                  className="sub", style={"fontSize": "11px", "marginBottom": "6px", "opacity": .85})
+         if asof_note else html.Div()),
         html.Div(id="sb-cap-flag", style={"marginBottom": "8px"}),
         html.Div(["Monthly paper profit as bankroll grows: it rises with capital UNTIL real fill-depth caps "
                   "it, then flattens — modeled on the per-stream non-linear slippage curves (see the ",
@@ -2986,6 +3102,15 @@ def _route(active):
     return RENDER.get(active, render_overview)()
 
 
+# $1k paper-equity time-window selector (USER ASK 2026-06-21): re-window the equity series + readout on each
+# RadioItems pick (12hr / 1D / 3D / 1W / 1M / All). Keyed only on the selector -> does not re-render the page.
+@app.callback(Output("run-equity-graph", "figure"), Output("run-equity-readout", "children"),
+              Input("run-equity-window", "value"))
+def _run_equity_window(window):
+    fig, readout, _col = _equity_figure(window or "1W")
+    return fig, readout
+
+
 @app.callback(Output("tb-clock", "children"), Output("tb-tickers", "children"),
               Output("sb-uptime", "children"), Input("tick", "n_intervals"))
 def _live(_n):
@@ -3065,6 +3190,36 @@ def _scal_curves():
         g = d.groupby("size_ct")["slippage_vs_best_c"].mean().sort_index()
         out[arch] = [(float(s), float(v)) for s, v in g.items()]
     return out
+
+
+def _scal_data_asof():
+    """LIVE freshness signal for the sandbox scaling curves (USER ASK 2026-06-21, Task B): a short
+    'data as of <day> · N snapshots' string derived FROM the curated fill tables (NOT a hardcoded date), so
+    as the depth archive + forward fill_curve logging grow, the note moves. Pulls the materialize timestamp
+    from meta.generated_at_utc, the total logged-signal/snapshot count from fill_scalability.n_signals (the
+    real-curve streams), and how many streams have a real curve vs are still accruing. () if no data yet."""
+    sc = table("fill_scalability")
+    if sc.empty:
+        return ""
+    asof = meta_value("generated_at_utc", "")[:16].replace("T", " ")
+    n_snaps = 0
+    if "n_signals" in sc.columns:
+        try:
+            n_snaps = int(sc["n_signals"].fillna(0).astype(float).max())
+        except (ValueError, TypeError):
+            n_snaps = 0
+    n_real = int((sc.get("depth_state") == "real_curve").sum()) if "depth_state" in sc.columns else 0
+    n_real_streams = sc[sc.get("depth_state") == "real_curve"]["stream_id"].nunique() if (
+        "depth_state" in sc.columns and "stream_id" in sc.columns) else 0
+    n_accr_streams = sc[sc.get("depth_state") == "accruing"]["stream_id"].nunique() if (
+        "depth_state" in sc.columns and "stream_id" in sc.columns) else 0
+    bits = []
+    if asof:
+        bits.append(f"data as of {asof} UTC")
+    if n_snaps:
+        bits.append(f"{n_snaps:,} fill snapshots")
+    bits.append(f"{n_real_streams} stream(s) with a real curve · {n_accr_streams} accruing")
+    return " · ".join(bits)
 
 
 def _slip_at_size(curve, size):
