@@ -1144,6 +1144,10 @@ def panel_run_header():
     activated = _run_meta("activated_streams", "—")
     note_txt = _run_meta("ledger_note", "—")
     act_note = _run_meta("activation_note", "—")
+    try:
+        eq_f = float(str(eq).replace(",", ""))
+    except (TypeError, ValueError):
+        eq_f = 1000.0
 
     def tile(label, value, sub, accent=INK):
         return html.Div([html.Div(label, className="label"),
@@ -1152,7 +1156,8 @@ def panel_run_header():
                         className="card kpi")
     tiles = [
         tile("PAPER BANKROLL", "$1,000", "staged paper capital", INK),
-        tile("CURRENT EQUITY", f"${eq}", "flat — no backfill", GREEN if eq == "1000" else INK),
+        tile("CURRENT EQUITY", f"${eq}", f"paper · {dd}% drawdown",
+             GREEN if eq_f >= 1000 else RED),
         tile("ACTIVE · PAPER", f"${active_p}", f"{nactive} streams · paper, pre-gate", GREEN),
         tile("STAGED · $0 LIVE", f"${staged_z}", f"Kelly {kf}x · awaits gate", NEUTRAL),
         tile("LIVE REAL-DEPLOY", f"${live_real}", "no real money, no orders", AMBER),
@@ -1174,14 +1179,15 @@ def panel_run_header():
                           className="sub", style={"fontSize": "12.5px", "color": INK}),
                  html.Div([f"{nactive} warm-season-applicable edges ({activated}) are now ACTIVE in the "
                            f"$1,000 PAPER run ({act_note}, activated {act_date}) — paper allocation "
-                           f"${active_p}, equity flat at ${eq}. Paper projection (BACKTEST, not realized): "
+                           f"${active_p}, current paper equity ${eq} ({dd}% drawdown from the $1,000 peak as "
+                           f"early activated signals settled). Paper projection (BACKTEST, not realized): "
                            f"MEDIAN ", html.B(med_str), " vs STRESS ", html.B(stress_str),
                            " (~breakeven — the honest planning number if the underpowered warm edges are ~0). ",
                            html.B("Paper $1,000 only — no real money, no orders, $0 live real-deploy. "),
                            "The forward-validation gates (reconcile_forward_edges.py / FORWARD_PROTOCOL) are "
                            "UNCHANGED and still govern any REAL deployment. Activation does NOT mean these "
                            "edges PASSED their gates — each is still ACCUMULATING settled signals below. "
-                           "Equity stays flat $1,000 with no backfill and moves only as activated PAPER "
+                           "Equity starts at $1,000 (no backfill) and moves only as activated PAPER "
                            "signals settle. Never realized P&L."],
                           className="sub", style={"marginTop": "4px"})],
                 cls="run-note")
@@ -1205,33 +1211,46 @@ def panel_run_header():
 
 
 def panel_run_equity():
-    """Flat $1,000 PAPER equity curve from the activation date, no backfill. Source: bankroll_run (ledger curve)."""
+    """The $1,000 PAPER equity curve from the harness ledger (now LIVE/non-flat as activated paper signals
+    settle). Source: bankroll_run (ledger equity_curve). PAPER only, never realized P&L."""
     d = table("bankroll_run")
     act = _run_meta("activation_date", "2026-06-19")
+    eq = _run_meta("equity", "1000")
+    dd = _run_meta("current_drawdown", "0.0")
     fig = go.Figure()
+    cur_val = None
     if d.empty:
         # single flat point at $1,000 so the chart still renders honestly
         fig.add_scatter(x=["start"], y=[1000], mode="markers", marker=dict(color=GREEN, size=8),
                         hovertemplate="$1,000 (paper)<extra></extra>", showlegend=False)
+        lo, hi = 900, 1100
     else:
-        x = list(d["date"]); y = [float(v) for v in d["bankroll"]]
+        x = list(range(len(d)))                       # ordinal step index (curve has repeated same-day dates)
+        y = [float(v) for v in d["bankroll"]]
+        cur_val = y[-1] if y else None
         if len(x) == 1:               # render a flat segment so a single ledger row reads as a line
-            x = [x[0], x[0] + "  (today)"]
-            y = [y[0], y[0]]
+            x = [0, 1]; y = [y[0], y[0]]
+        # colour the curve by where it sits vs the $1,000 baseline (below = drawdown shade)
+        line_col = GREEN if (cur_val is not None and cur_val >= 1000) else RED
         fig.add_scatter(x=x, y=y, mode="lines+markers", name="paper equity",
-                        line=dict(color=GREEN, width=2.4), marker=dict(size=6, color=GREEN),
-                        hovertemplate="%{x}<br>$%{y:,.0f} (paper)<extra></extra>")
+                        line=dict(color=line_col, width=2.4), marker=dict(size=6, color=line_col),
+                        customdata=[str(v) for v in d["date"]],
+                        hovertemplate="%{customdata}<br>$%{y:,.2f} (paper)<extra></extra>")
+        span = (max(y) - min(y)) or 1.0
+        lo = min(min(y), 1000) - span * 0.6
+        hi = max(max(y), 1000) + span * 0.6
     fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
                   annotation_text="$1,000 baseline", annotation_position="bottom right",
                   annotation_font=dict(color=NEUTRAL, size=10))
     fig.update_layout(title=None)
-    fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f", range=[900, 1100])
-    fig.update_xaxes(title="")
-    return card([html.H3("Paper Equity — Flat at $1,000"),
-                 _cap(f"The $1,000 PAPER bankroll, flat from activation {act} (no backfill). Seven edges are "
-                      "ACTIVE in the paper run; the line moves as those activated PAPER signals SETTLE. "
-                      "LIVE real-deploy capital = $0 — promotion to REAL still requires a forward-gate PASS. "
-                      "Paper only, never realized P&L."),
+    fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.2f", range=[lo, hi])
+    fig.update_xaxes(title="settlement step", showticklabels=False)
+    cur_str = f"${cur_val:,.2f}" if cur_val is not None else f"${eq}"
+    return card([html.H3(f"Paper Equity — {cur_str}"),
+                 _cap(f"The $1,000 PAPER bankroll from activation {act}, now moving as activated PAPER signals "
+                      f"settle (it is no longer flat). Current paper equity {cur_str} (peak $1,000, "
+                      f"max paper drawdown {dd}%). LIVE real-deploy capital = $0 — promotion to REAL still "
+                      f"requires a forward-gate PASS. Paper only, never realized P&L."),
                  graph(_tpl(fig, h=240, legend=False))])
 
 
@@ -1490,6 +1509,43 @@ def panel_open_positions():
             return html.Span(["• ", html.Span(lbl, className="mono sub")],
                              title="accumulating price snapshots (grows each run)")
         return _spark(seq, height=22, fill=False)
+    # PER-DAY PRICE SWING (USER ASK 2026-06-21): for each open ticker, a compact per-calendar-day readout
+    # "6/21: 13.4 → 19.2  +5.8" (paid entry_c · that day's latest mark · delta), green up / red down. Source:
+    # pending_price_daily (curated). Honest: a PAPER mark of a public quote, UNREALIZED — never realized P&L.
+    daily = table("pending_price_daily")
+    day_map: dict[str, list] = {}
+    if not daily.empty:
+        dd = daily.copy()
+        dd = dd.sort_values(["ticker", "day"])
+        for tkr, g in dd.groupby("ticker"):
+            day_map[tkr] = g.to_dict("records")
+
+    def _mmdd(day):
+        s = str(day)
+        return f"{int(s[5:7])}/{int(s[8:10])}" if len(s) >= 10 else s
+
+    def _row_daily_swing(row):
+        recs = day_map.get(row.get("ticker"))
+        if not recs:
+            return html.Span("—", className="sub")
+        items = []
+        for r in recs:
+            ent = r.get("entry_c"); px = r.get("price_c"); dl = r.get("delta_c")
+            dcls = "pos" if (dl is not None and dl > 0) else ("neg" if (dl is not None and dl < 0) else "")
+            arrow = "▲" if (dl is not None and dl > 0) else ("▼" if (dl is not None and dl < 0) else "▬")
+            ent_s = "—" if _isnull(ent) else f"{ent:.1f}"
+            px_s = "—" if _isnull(px) else f"{px:.1f}"
+            dl_s = "" if _isnull(dl) else f" {arrow}{dl:+.1f}"
+            items.append(html.Div([
+                html.Span(f"{_mmdd(r.get('day'))}: ", className="sub", style={"opacity": .75}),
+                html.Span(f"{ent_s}", className="mono sub", title="paid (entry, c)"),
+                html.Span(" → ", className="sub"),
+                html.Span(f"{px_s}c", className="mono"),
+                html.Span(dl_s, className=f"mono qb-edge {dcls}",
+                          style={"marginLeft": "4px", "fontSize": "10.5px"})],
+                style={"whiteSpace": "nowrap", "lineHeight": "1.45"}))
+        return html.Div(items, style={"fontSize": "11px"})
+
     if has_mark:
         d = d.copy()
         d["mark"] = d.apply(_entry_to_current, axis=1)
@@ -1497,6 +1553,11 @@ def panel_open_positions():
         if not has_mark:
             d = d.copy()
         d["trend"] = d.apply(_row_spark, axis=1)
+    has_daily = bool(day_map)
+    if has_daily:
+        if not (has_mark or has_series):
+            d = d.copy()
+        d["dayswing"] = d.apply(_row_daily_swing, axis=1)
     cols = ["target_date", "city", "market", "stream", "ticker", "side", "edge_c", "age_h"]
     rename = {"edge_c": "Model Edge", "age_h": "Age", "target_date": "Target Settle"}
     fmtmap = {"edge_c": _cents1, "age_h": lambda v: "—" if _isnull(v) else f"{v:.0f}h"}
@@ -1508,6 +1569,10 @@ def panel_open_positions():
         cols = cols + ["trend"]
         rename["trend"] = "Price Trend (paper)"
         fmtmap["trend"] = lambda v: v         # already an html element
+    if has_daily:
+        cols = cols + ["dayswing"]
+        rename["dayswing"] = "Per-Day Swing (paper)"
+        fmtmap["dayswing"] = lambda v: v      # already an html element
     show = present(d, drop=["_dt", "price_series", "entry", "entry_price", "current_price",
                             "mark_delta", "direction"],
                    rename=rename, fmt=fmtmap, order=cols)
@@ -1519,13 +1584,14 @@ def panel_open_positions():
                  _cap(f"{n} paper signals logged across the forward monitors but NOT yet settled, plotted by "
                       f"target settle date and model edge (circle = YES side, diamond = NO). The "
                       f"Entry → Current column marks each paper signal to the live public quote with a green "
-                      f"up / red down chip — a PAPER, UNREALIZED mark, NOT real money or realized P&L. Once "
-                      f"they settle they feed the gate-progress counters above."),
+                      f"up / red down chip, and the Per-Day Swing column breaks that mark out by calendar day "
+                      f"(paid entry → that day's latest value · delta) — a PAPER, UNREALIZED mark, NOT real "
+                      f"money or realized P&L. Once they settle they feed the gate-progress counters above."),
                  graph(_tpl(fig, h=300)) if not scat.empty else html.Div(),
                  # deliverable #3: show ALL pending rows (no row cap / no truncation footer)
                  pro_table(show, present_df=False,
                            align_left=("Side", "Market", "Stream", "Ticker",
-                                       "Entry → Current (paper mark)"))],
+                                       "Entry → Current (paper mark)", "Per-Day Swing (paper)"))],
                 id="open-positions-card")
 
 
@@ -1874,11 +1940,70 @@ def panel_scalability_curve():
         real_curve = bool(crow["real_curve"].iloc[0]) if not crow.empty else (len(d) > 1)
         depth_state = (crow["depth_state"].iloc[0] if not crow.empty else
                        ("real_curve" if real_curve else "accruing"))
+        book_source = (crow["book_source"].iloc[0] if (not crow.empty and "book_source" in crow.columns
+                       and pd.notna(crow["book_source"].iloc[0]))
+                       else (d["book_source"].iloc[0] if ("book_source" in d.columns and
+                             pd.notna(d["book_source"].iloc[0])) else "accruing"))
         edge0 = float(d["model_edge_c_per_ct"].iloc[0])
         clr = _STREAM_COLOR.get(sid, GREEN)
         btext, bkind = _TIER_BADGE.get(tier, ("", "neut"))
 
-        if real_curve and len(d) > 1:
+        if real_curve and len(d) > 1 and book_source == "standing_book":
+            # ---- LAX/CHI-high: REAL STANDING-BOOK per-size curve from the 9-day depth archive (audit 2026-06-21).
+            # Honest: a periodic standing-book snapshot, NOT a lock-moment fill (badged STANDING). 99.9-100%
+            # fillable to 250ct at sub-1c slip on a positive net edge -> deep, no degenerate ceiling. ----
+            n_sig = int(d["n_signals"].iloc[-1]) if pd.notna(d["n_signals"].iloc[-1]) else 0
+            arch_days = (int(crow["archive_days"].iloc[0]) if (not crow.empty and
+                         "archive_days" in crow.columns and pd.notna(crow["archive_days"].iloc[0])) else None)
+            fpct250 = (float(crow["fill_pct_at_250"].iloc[0]) if (not crow.empty and
+                       "fill_pct_at_250" in crow.columns and pd.notna(crow["fill_pct_at_250"].iloc[0]))
+                       else None)
+            net250 = float(d[d["size_ct"] == 250]["net_edge_after_fills_c_per_ct"].iloc[0]) if (
+                250 in set(d["size_ct"])) else None
+            med250 = float(d[d["size_ct"] == 250]["slippage_vs_best_c"].iloc[0]) if (
+                250 in set(d["size_ct"])) else None
+            fig = go.Figure()
+            fig.add_scatter(x=d["size_ct"], y=d["net_edge_after_fills_c_per_ct"], mode="lines+markers",
+                            name="net edge after fills", line=dict(color=clr, width=2.8),
+                            marker=dict(size=6),
+                            hovertemplate="%{x:,} ct/market<br>net %{y:+.2f} c/ct<extra></extra>")
+            fig.add_scatter(x=d["size_ct"], y=d["slippage_vs_best_c"], mode="lines+markers",
+                            name="median standing-book slippage", line=dict(color=RED, width=1.7, dash="dot"),
+                            marker=dict(size=4), yaxis="y2",
+                            hovertemplate="%{x:,} ct/market<br>slippage %{y:.2f} c/ct<extra></extra>")
+            if "p75_slip_c" in d.columns and d["p75_slip_c"].notna().any():
+                fig.add_scatter(x=d["size_ct"], y=d["p75_slip_c"], mode="lines",
+                                name="p75 slippage", line=dict(color=RED_DK, width=1.0, dash="dash"),
+                                marker=dict(size=3), yaxis="y2",
+                                hovertemplate="%{x:,} ct/market<br>p75 slippage %{y:.2f} c/ct<extra></extra>")
+            fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dash"))
+            if edge0 > 0:
+                fig.add_hline(y=edge0, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
+                              annotation_text=f"model edge {edge0:+.1f}c (fixed)",
+                              annotation_position="top left", annotation_font=dict(color=DIM, size=9.5))
+            fig.update_xaxes(type="log", title="order size (contracts/market, log)")
+            fig.update_yaxes(title="net edge (c/ct)", ticksuffix="c")
+            fig.update_layout(yaxis2=dict(title="slippage (c/ct)", overlaying="y", side="right",
+                                          showgrid=False, tickfont=dict(size=11, color=DIM),
+                                          title_font=dict(size=11, color=DIM), ticksuffix="c"))
+            badges = [badge(btext, bkind), badge(f"REAL CURVE · n={n_sig:,}", "good"),
+                      badge("STANDING BOOK · not lock-moment", "warn")]
+            fpct_s = f"{fpct250:.1f}%" if fpct250 is not None else "~100%"
+            sub = (f"REAL per-size curve from the {arch_days or 9}-day periodic STANDING-book depth archive "
+                   f"(n≈{n_sig:,} hourly snapshots). {fpct_s} fillable to 250ct/market at "
+                   f"~{(med250 or 0):.2f}c median slippage — net stays "
+                   f"{('+%.1fc' % net250) if net250 is not None else 'positive'} at 250ct. HONEST: these are "
+                   f"STANDING-book reads (periodic snapshot), NOT decision/lock-moment fills; cent-floor & "
+                   f"near-certain books were excluded so no tick-floor ceiling.")
+            figs.append(html.Div([
+                html.Div([html.B(_scal_stream_label(sid)),
+                          html.Div(badges, style={"display": "flex", "gap": "5px", "flexWrap": "wrap"})],
+                         style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+                                "flexWrap": "wrap", "gap": "4px"}),
+                graph(_tpl(fig, h=250, legend=True)),
+                html.Div(sub, className="sub", style={"fontSize": "10.5px", "marginTop": "2px"})],
+                className="col-6"))
+        elif real_curve and len(d) > 1:
             # ---- NY-high: the REAL median per-size fill curve (audit 1) ----
             n_sig = int(d["n_signals"].iloc[0]) if pd.notna(d["n_signals"].iloc[0]) else 0
             med_book = float(crow["median_book_ct"].iloc[0]) if not crow.empty and pd.notna(
@@ -1976,14 +2101,16 @@ def panel_scalability_curve():
     children = [html.H3("Scalability Curve — Net Edge vs Order Size"),
                 _cap("Units: every contract count is PER-MARKET (per-strike, per-day). Each city lists ~2–3 "
                      "strikes/day, each its own market with its own book; MONTHLY throughput ≈ per-market "
-                     "depth × ~2–3 strikes/day × ~21 trading days. Only NY-high has a real logged lock-moment "
-                     "fill curve (median across all logged signals): the grey dotted line is the model edge "
-                     "(held fixed across sizes), the coloured line is net edge AFTER fills, and red (right "
-                     "axis) is median VWAP slippage — 250ct/market still fills at ~2c, so net stays clearly "
-                     "positive and capacity is HIGH (hundreds of ct/market). The other six streams have only "
-                     "a 25-contract fillability confirmation logged historically; their full slippage curve "
-                     "is ACCRUING (logging fixed 2026-06-21), so we show the honest 'confirmed ≥25ct' state "
-                     "and NO fabricated ceiling. Model edge held fixed = the FILLS side of capacity only. "
+                     "depth × ~2–3 strikes/day × ~21 trading days. All THREE deployed high cities now have a "
+                     "real per-size fill curve: NY-high from the median LOCK-MOMENT signal book, and LAX-high "
+                     "+ CHI-high from a 9-day periodic STANDING-book depth archive (99.9–100% fillable to "
+                     "250ct/market at sub-1c slippage — badged STANDING because these are periodic snapshots, "
+                     "NOT decision/lock-moment fills). The grey dotted line is the model edge (held fixed "
+                     "across sizes), the coloured line is net edge AFTER fills, and red (right axis) is VWAP "
+                     "slippage. The remaining streams (the daily-LOW books + MIA-high watch + the lock-in "
+                     "stream) are NOT in this archive — they keep the honest 'confirmed ≥25ct, curve ACCRUING' "
+                     "state with NO fabricated ceiling. Cent-floor & near-certain books are excluded, so no "
+                     "tick-floor ceiling can appear. Model edge held fixed = the FILLS side of capacity only. "
                      "Paper / public-data read — never realized P&L."),
                 html.Div(figs, className="grid12")]
     return card(children)
@@ -2061,13 +2188,14 @@ def panel_scalability_headroom():
     return card([html.H3("Bankroll Headroom — Where Depth Stops Linear Scaling"),
                  _cap("Contracts here are PER-MARKET (per-strike, per-day). The light ghost bar = contracts a "
                       "flat 5%-of-bankroll stake would want at each tier; the solid bar = what the book actually "
-                      "fills within the net-positive size. Only NY-high has a measured depth cap (its real "
-                      "median curve): where the solid bar is shorter (red ▲), DEPTH binds — more bankroll buys "
-                      "NO extra size and profit plateaus. The other six streams show only 'bankroll wants' "
-                      "(translucent) because their per-tier depth cap is still ACCRUING (≥25ct confirmed; full "
-                      "curve logged forward only since 2026-06-21) — we do not plot a fabricated cap. "
-                      "Illustrative flat 5% stake, NOT the live Kelly engine. Paper / public-data read — never "
-                      "realized P&L."),
+                      "fills within the net-positive size. All three deployed high cities have a measured depth "
+                      "cap now (NY-high from its lock-moment curve, LAX-high + CHI-high from the 9-day STANDING-"
+                      "book archive — periodic snapshot, not lock-moment): where the solid bar is shorter "
+                      "(red ▲), DEPTH binds — more bankroll buys NO extra size and profit plateaus. The "
+                      "remaining streams (daily-LOW books + MIA-high watch) show only 'bankroll wants' "
+                      "(translucent) because their per-tier depth cap is still ACCRUING (≥25ct confirmed) — we "
+                      "do not plot a fabricated cap. Illustrative flat 5% stake, NOT the live Kelly engine. "
+                      "Paper / public-data read — never realized P&L."),
                  html.Div(facets, className="grid12")])
 
 
@@ -2096,24 +2224,30 @@ def render_overview():
                           "net-positive settled paper signals."),
                      funnel_content])
     else:
-        # $1,000 staged run is now surfaced (its own page). Overview shows the HONEST flat-$1,000 staged
-        # curve + a pointer to the dedicated gate tracker. Equity is flat by construction (all streams $0 live).
-        x = list(br["date"]); y = [float(v) for v in br["bankroll"]]
+        # $1,000 staged run is now surfaced (its own page). Overview shows the HONEST paper equity curve
+        # (LIVE allocation $0; it moves only as activated PAPER signals settle) + a pointer to the gate tracker.
+        y = [float(v) for v in br["bankroll"]]
+        x = list(range(len(y)))
         if len(x) == 1:
-            x = [x[0], x[0] + "  (today)"]; y = [y[0], y[0]]
+            x = [0, 1]; y = [y[0], y[0]]
+        cur_val = y[-1] if y else 1000.0
+        line_col = GREEN if cur_val >= 1000 else RED
         fig = go.Figure()
-        fig.add_scatter(x=x, y=y, name="paper equity (staged)", mode="lines+markers",
-                        line=dict(color=NEUTRAL, width=2.4), marker=dict(size=6, color=NEUTRAL),
-                        hovertemplate="%{x}<br>$%{y:,.0f} (staged)<extra></extra>")
-        fig.add_hline(y=1000, line=dict(color=GREEN, width=1.2, dash="dot"),
-                      annotation_text="$1,000 staged baseline", annotation_position="bottom right",
-                      annotation_font=dict(color=GREEN, size=10))
-        fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f", range=[900, 1100])
-        fig.update_xaxes(title="")
-        bank = card([html.H3("$1,000 Staged Paper Run — Flat at $1,000"),
-                     _cap("LIVE allocation $0 — every edge is STAGED until its forward gate PASSES, so equity "
-                          "is flat by construction. See the $1,000 Run page for the full per-edge gate board. "
-                          "Paper only, never realized P&L."),
+        fig.add_scatter(x=x, y=y, name="paper equity", mode="lines+markers",
+                        line=dict(color=line_col, width=2.4), marker=dict(size=6, color=line_col),
+                        customdata=[str(v) for v in br["date"]] if len(br) == len(y) else None,
+                        hovertemplate="$%{y:,.2f} (paper)<extra></extra>")
+        fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
+                      annotation_text="$1,000 baseline", annotation_position="bottom right",
+                      annotation_font=dict(color=NEUTRAL, size=10))
+        span = (max(y) - min(y)) or 1.0
+        fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.2f",
+                         range=[min(min(y), 1000) - span * 0.6, max(max(y), 1000) + span * 0.6])
+        fig.update_xaxes(title="settlement step", showticklabels=False)
+        bank = card([html.H3(f"$1,000 Paper Run — ${cur_val:,.2f}"),
+                     _cap("LIVE allocation $0 — every edge is STAGED until its forward gate PASSES. The paper "
+                          "equity moves only as activated PAPER signals settle (no real money). See the "
+                          "$1,000 Run page for the full per-edge gate board. Paper only, never realized P&L."),
                      graph(_tpl(fig, h=240, legend=False))])
     # confirmed-cities mini panel
     rev = cs1[cs1["revived"] == 1] if not cs1.empty and "revived" in cs1 else cs1.iloc[0:0]
@@ -2546,16 +2680,17 @@ def render_scalability():
         html.Div("Scalability is a FILLS problem — and an HONESTY problem.", className="u-label",
                  style={"marginBottom": "6px"}),
         html.Div(["Each edge sits on a finite order book, and contract counts are ", html.B("per-market "
-                  "(per-strike, per-day)"), ". ", html.B("NY-high"), " is the only stream with real "
-                  "lock-moment fill data: its median curve fills 250ct/market at ~2c slippage on a ~12c edge, "
-                  "so its true capacity is HIGH (hundreds of ct/market) — the old '100ct' figure was a single "
-                  "near-close snapshot. The other six streams have only a 25-contract fillability confirmation "
-                  "logged historically; their full slippage curve is ", html.B("accruing forward"),
-                  " (monitor logging fixed 2026-06-21), so we show '≥25ct confirmed' and NO fabricated "
-                  "ceiling. Degenerate cent-floor longshot 'ceilings' (e.g. the old 174k/27k figures) have "
-                  "been removed as tick-floor artifacts. ", html.B("Paper / public-data orderbook reads — no "
+                  "(per-strike, per-day)"), ". All ", html.B("three deployed high cities"), " now have real "
+                  "fill data: ", html.B("NY-high"), " from its median LOCK-MOMENT signal book, and ",
+                  html.B("LAX-high + CHI-high"), " from a 9-day periodic STANDING-book depth archive — "
+                  "99.9–100% fillable to 250ct/market at sub-1c slippage (badged STANDING because these are "
+                  "periodic snapshots, NOT decision/lock-moment fills). The remaining streams (the daily-LOW "
+                  "books + MIA-high watch + the lock-in stream) are NOT in that archive; their full slippage "
+                  "curve is ", html.B("accruing forward"), ", so we show '≥25ct confirmed' and NO fabricated "
+                  "ceiling. Degenerate cent-floor longshot 'ceilings' (e.g. the old 174k/27k figures) stay "
+                  "removed as tick-floor artifacts. ", html.B("Paper / public-data orderbook reads — no "
                   "auth, no orders, never realized P&L."),
-                  f" {n_real} stream with a real curve; {n_accr} with accruing depth data."],
+                  f" {n_real} streams with a real curve; {n_accr} with accruing depth data."],
                  className="sub")],
         style={"borderColor": "color-mix(in srgb, var(--amber) 30%, transparent)"})
     return html.Div([section("Scalability — Fill-Size vs Net Edge"),
