@@ -13,6 +13,7 @@ Deploy:        gunicorn dashboard_app.app:server   (see README_DEPLOY.md)
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import dash
 import dash_auth
+import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from dash import Dash, dcc, html, dash_table, Input, Output, State, ALL, ctx
@@ -1826,6 +1828,20 @@ def staleness_chip():
 _TIER_BADGE = {"tradable": ("DEPLOYED · TRADABLE", "good"), "watch": ("WATCH", "warn"),
                "reference": ("REFERENCE (no model edge)", "neut")}
 
+# The 7 deployed $1,000-run streams (Mosaic one_k_run_stream_coverage). Order = high cities, then low.
+ONE_K_STREAMS = ["NY_high_S1", "LAX_high_S1", "CHI_high_S1",
+                 "AUS_low_S1", "LAX_low_S1", "DEN_low_S1", "MIA_low_S1"]
+# Documented backtest CIs for the snapshot daily-low streams that carry NO live monitor signal
+# (AUS/MIA n=0). Surfaced in tooltips so we never imply a confirmed edge. Source: AI_HANDOFF_SUMMARY
+# 2026-06-19 warm-season re-exam.
+_EDGE_CI_TEXT = {"AUS_low_S1": "+8.38c CI[+2.50,+14.81] (warm-robust, excl 0)",
+                 "MIA_low_S1": "+4.37c CI[-0.69,+8.98] (WATCH — CI touches 0)",
+                 "LAX_low_S1": "+3.69c (snapshot; no-tradable-path per Crucible within-cold decay)"}
+# Per-stream distinct color for the headroom chart (item 1) -- each stream gets ONE hue, no repeats.
+_STREAM_COLOR = {"NY_high_S1": "#00e08a", "LAX_high_S1": "#36c5f0", "CHI_high_S1": "#d9a23a",
+                 "AUS_low_S1": "#b07ff0", "LAX_low_S1": "#ff8a5b", "DEN_low_S1": "#7fd6a0",
+                 "MIA_low_S1": "#e85f8a"}
+
 
 def _scal_stream_label(stream_id):
     """Short human label for a Mosaic stream_id, e.g. 'NY_high_S1' -> 'NY high · S1'."""
@@ -1836,22 +1852,21 @@ def _scal_stream_label(stream_id):
 
 
 def panel_scalability_curve():
-    """Per-stream slippage(size) (rising cost) + net-edge-after-fills(size) (falling profit) on a LOG
-    size-axis, with a vertical marker at the real capacity ceiling. Streams with a dead-book/gap show the
-    gap honestly (no fabricated curve). The core Mosaic deliverable."""
+    """Per-stream slippage(size) (rising cost) + net-edge-after-fills(size) (falling profit), each on its
+    OWN x-range (item 2: NO shared log axis -> NY/CHI no longer crushed by the 174k LAX ceiling) extended
+    to show the REAL zero-crossing + ceiling marker (item 3). A 'model edge (fixed)' reference line and a
+    labelled GAP arrow at 1ct explain why net starts BELOW the model edge (item 4). Snapshot vs lock-moment
+    badge + documented-CI tooltip carried per stream (item 5). Covers all 7 $1k-run streams + watch/ref."""
     sc = table("fill_scalability")
     cap = table("fill_capacity")
     if sc.empty and cap.empty:
         return card([html.H3("Scalability Curve — Net Edge vs Order Size"),
                      empty_state("Fills when the fill-scalability experiment next runs.")])
     figs = []
-    # streams WITH a curve (ordered tradable first), then dead-book gaps as honest cards
-    sids = list(dict.fromkeys(sc["stream_id"].tolist())) if not sc.empty else []
-    tier_rank = {"tradable": 0, "watch": 1, "reference": 2}
-    if not sc.empty:
-        sids.sort(key=lambda s: tier_rank.get(
-            sc[sc["stream_id"] == s]["tradable_tier"].iloc[0], 3))
-    for sid in sids:
+    # Order: the 7 deployed $1k-run streams first (in the canonical order), then any other watch/reference.
+    present = list(dict.fromkeys(sc["stream_id"].tolist())) if not sc.empty else []
+    ordered = [s for s in ONE_K_STREAMS if s in present] + [s for s in present if s not in ONE_K_STREAMS]
+    for sid in ordered:
         d = sc[sc["stream_id"] == sid].sort_values("size_ct")
         if d.empty:
             continue
@@ -1859,39 +1874,83 @@ def panel_scalability_curve():
         crow = cap[cap["stream_id"] == sid] if not cap.empty else pd.DataFrame()
         ceil_ct = crow["capacity_ceiling_ct"].iloc[0] if not crow.empty else None
         open_ended = bool(crow["ceiling_open_ended"].iloc[0]) if not crow.empty else False
-        edge0 = d["model_edge_c_per_ct"].iloc[0]
+        zc = float(crow["zero_crossing_ct"].iloc[0]) if (not crow.empty and pd.notna(
+            crow["zero_crossing_ct"].iloc[0])) else None
+        book_ct = float(crow["total_observed_book_ct"].iloc[0]) if (not crow.empty and pd.notna(
+            crow["total_observed_book_ct"].iloc[0])) else None
+        is_lock = bool(crow["lock_moment"].iloc[0]) if not crow.empty else False
+        est_only = bool(crow["edge_estimate_only"].iloc[0]) if not crow.empty else False
+        edge0 = float(d["model_edge_c_per_ct"].iloc[0])
+        net1 = float(d.sort_values("size_ct")["net_edge_after_fills_c_per_ct"].iloc[0])  # net @ 1ct
+        fee1 = float(d.sort_values("size_ct")["fee_c_per_ct"].iloc[0])
+        clr = _STREAM_COLOR.get(sid, GREEN)
+
+        # ITEM 2/3: per-stream x-range. Cap at this stream's own zero-crossing (a touch beyond) so the BEND
+        # is visible at full width -- NOT the global 174k LAX ceiling. Deep books (LAX-high/DEN-low) still
+        # extend to ~1e5 to actually SHOW their crossing; thin books stay tight.
+        x_top = max((zc or 0) * 1.6, 1000.0)
+        x_top = min(x_top, 3e5)
         fig = go.Figure()
-        # net-edge-after-fills (profit, falling) -> green where >0, the headline line
+        # net-edge-after-fills (profit, falling) -> the headline line, per-stream hue
         fig.add_scatter(x=d["size_ct"], y=d["net_edge_after_fills_c_per_ct"], mode="lines+markers",
-                        name="net edge after fills", line=dict(color=GREEN, width=2.6),
+                        name="net edge after fills", line=dict(color=clr, width=2.8),
                         marker=dict(size=6),
-                        hovertemplate="%{x} ct<br>net %{y:+.1f} c/ct<extra></extra>")
+                        hovertemplate="%{x:,} ct<br>net %{y:+.1f} c/ct<extra></extra>")
         # slippage (cost, rising) on a secondary axis
         fig.add_scatter(x=d["size_ct"], y=d["slippage_vs_best_c"], mode="lines+markers",
-                        name="slippage vs best", line=dict(color=RED, width=1.8, dash="dot"),
-                        marker=dict(size=5), yaxis="y2",
-                        hovertemplate="%{x} ct<br>slippage %{y:.1f} c/ct<extra></extra>")
+                        name="slippage vs best", line=dict(color=RED, width=1.7, dash="dot"),
+                        marker=dict(size=4), yaxis="y2",
+                        hovertemplate="%{x:,} ct<br>slippage %{y:.1f} c/ct<extra></extra>")
         fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dash"))
-        # model-edge reference (held fixed) -> the flat ceiling the net line decays from
-        fig.add_hline(y=edge0, line=dict(color=NEUTRAL, width=1, dash="dot"),
-                      annotation_text=f"model edge {edge0:+.1f}c (fixed)",
-                      annotation_position="top left",
-                      annotation_font=dict(color=DIM, size=9))
-        if ceil_ct and ceil_ct > 0:
-            lbl = f"capacity ≥{ceil_ct:.0f}ct" if open_ended else f"capacity {ceil_ct:.0f}ct"
-            fig.add_vline(x=ceil_ct, line=dict(color=AMBER, width=1.6, dash="dash"),
-                          annotation_text=lbl, annotation_position="top right",
-                          annotation_font=dict(color=AMBER, size=10))
-        fig.update_xaxes(type="log", title="order size (contracts, log)", tickvals=[1, 10, 25, 50, 100, 250, 500, 1000])
+        # ITEM 4: model-edge reference line (held fixed) + a labelled gap from it to net@1ct.
+        if edge0 > 0:
+            fig.add_hline(y=edge0, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
+                          annotation_text=f"model edge {edge0:+.1f}c (fixed)",
+                          annotation_position="top left", annotation_font=dict(color=DIM, size=9.5))
+            # gap arrow at the left edge: even 1 contract pays fee + half-spread + min slippage
+            x0 = float(d["size_ct"].min())
+            fig.add_annotation(x=math.log10(x0), y=(edge0 + net1) / 2.0, ax=math.log10(x0), ay=0,
+                               xref="x", yref="y", axref="x", ayref="y", showarrow=True,
+                               arrowhead=2, arrowsize=1, arrowwidth=1.4, arrowcolor=AMBER,
+                               text=f"−{edge0 - net1:.0f}c<br>fee+spread", font=dict(size=9, color=AMBER),
+                               xanchor="left", align="left", standoff=2)
+        # ITEM 3: real zero-crossing marker (Mosaic's exact crossing) + book-depth context.
+        if zc is not None and zc > 0:
+            within = (book_ct is None) or (zc <= book_ct)
+            zlbl = (f"net→0 at ~{zc:,.0f}ct" if zc < 1000 else f"net→0 at ~{zc/1000:,.1f}k ct")
+            fig.add_vline(x=zc, line=dict(color=AMBER, width=1.6, dash="dash"),
+                          annotation_text=zlbl, annotation_position="top right",
+                          annotation_font=dict(color=AMBER, size=9.5))
+        fig.update_xaxes(type="log", title="order size (contracts, log)", range=[0, math.log10(x_top)])
         fig.update_yaxes(title="net edge (c/ct)", ticksuffix="c")
         fig.update_layout(yaxis2=dict(title="slippage (c/ct)", overlaying="y", side="right",
                                       showgrid=False, tickfont=dict(size=11, color=DIM),
                                       title_font=dict(size=11, color=DIM), ticksuffix="c"))
         btext, bkind = _TIER_BADGE.get(tier, ("", "neut"))
+        # ITEM 5: snapshot vs lock-moment + documented-estimate badges
+        badges = [badge(btext, bkind)]
+        if est_only:
+            badges.append(badge("EST. EDGE (n=0 signals)", "warn"))
+        badges.append(badge("LOCK-ANCHORED" if is_lock else "SNAPSHOT", "neut" if is_lock else "warn"))
+        # honest per-stream sub-caption: depth-binding or not (item 3), + CI for snapshot estimates (item 5)
+        deep = (ceil_ct is not None and ceil_ct >= 10000) or open_ended
+        if deep:
+            sub = (f"Depth is NOT a binding constraint here — net stays positive to ~{zc:,.0f}ct "
+                   f"(book {book_ct:,.0f}ct at the 1c floor). No realistic $1k–$50k bankroll reaches it.")
+        elif zc is not None:
+            sub = f"Net crosses zero at ~{zc:,.0f}ct (real observed book {book_ct:,.0f}ct) — this is the true capacity."
+        else:
+            sub = "Capacity from the preset size grid."
+        if sid in _EDGE_CI_TEXT:
+            sub += f"  Edge = documented backtest estimate: {_EDGE_CI_TEXT[sid]}."
         figs.append(html.Div([
-            html.Div([html.B(_scal_stream_label(sid)), badge(btext, bkind)],
-                     style={"display": "flex", "justifyContent": "space-between", "alignItems": "center"}),
-            graph(_tpl(fig, h=260, legend=True))], className="col-6"))
+            html.Div([html.B(_scal_stream_label(sid)),
+                      html.Div(badges, style={"display": "flex", "gap": "5px", "flexWrap": "wrap"})],
+                     style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+                            "flexWrap": "wrap", "gap": "4px"}),
+            graph(_tpl(fig, h=250, legend=True)),
+            html.Div(sub, className="sub", style={"fontSize": "10.5px", "marginTop": "2px"})],
+            className="col-6"))
     # dead-book / gap streams (honest, no curve)
     gaps = []
     if not cap.empty:
@@ -1904,12 +1963,16 @@ def panel_scalability_curve():
                          style={"fontSize": "11px", "marginTop": "4px"})],
                 className="col-6 card", style={"borderColor": "color-mix(in srgb, var(--amber) 25%, transparent)"}))
     children = [html.H3("Scalability Curve — Net Edge vs Order Size"),
-                _cap("Per stream: as you scale order SIZE (log x-axis), VWAP slippage RISES (red, right axis) "
-                     "and the net edge after fills FALLS (green) from the fixed model edge, crossing zero at the "
-                     "stream's real capacity ceiling (amber marker). This is the honest 'fills' side of capacity. "
-                     "Model edge is HELD FIXED across sizes — this isolates the FILL cost only, NOT whether the "
-                     "edge itself erodes as everyone scales in. Re-fetched standing snapshot, not always the "
-                     "lock-moment book. Paper / public-data read — never realized P&L."),
+                _cap("One panel per stream, each on its OWN size axis so the bend reads at full width. "
+                     "The grey dotted line is the model edge (HELD FIXED across sizes); the coloured line is "
+                     "the net edge AFTER fills. They do not meet even at 1 contract — the amber arrow is the "
+                     "fee + half-spread + minimum slippage that every fill pays, so net starts below gross. "
+                     "VWAP slippage (red, right axis) rises with size; net crosses zero at the amber marker = "
+                     "the real observed-book capacity. Deep longshot books (LAX-high, DEN-low) only bend far "
+                     "past any realistic bankroll — flagged 'depth not binding'. Streams tagged SNAPSHOT are a "
+                     "standing re-fetch, not a lock-moment book; EST. EDGE streams use a documented backtest "
+                     "number (no live signal logged). Model edge fixed = the FILLS side of capacity only. "
+                     "Paper / public-data read — never realized P&L."),
                 html.Div(figs, className="grid12")]
     if gaps:
         children += [html.Div("Dead-book / gap streams (shown honestly, no curve fabricated):",
@@ -1919,38 +1982,65 @@ def panel_scalability_curve():
 
 
 def panel_scalability_headroom():
-    """Per-bankroll-tier headroom bars: where DEPTH binds before BANKROLL would, per stream. The literal
-    'more money != linearly more profit' view. Illustrative flat-5% stake (Mosaic), NOT the live Kelly engine."""
+    """ITEM 1 redesign: the old chart gave three cities the SAME colour (coloured by depth_binds, not by
+    stream) so it was unreadable. Now FACETED by stream: one small grouped-bar panel per $1k-run stream,
+    each in its OWN distinct colour, with bankroll-WANTED (light, what 5%-of-bankroll implies) next to
+    DEPTH-CAPPED (solid, what the book actually fills) per tier. Where the solid bar is SHORTER than the
+    light one, DEPTH binds (a red ▲ marks it); where they match, BANKROLL binds (room to scale). The
+    depth-binds-vs-bankroll-binds story now reads at a glance, per stream."""
     hr = table("fill_headroom")
     if hr.empty:
         return card([html.H3("Bankroll Headroom — Where Depth Stops Linear Scaling"),
                      empty_state("Fills when the fill-scalability experiment next runs.")])
-    fig = go.Figure()
-    tiers = [1000, 5000, 10000, 25000, 50000]
-    sids = list(dict.fromkeys(hr["stream_id"].tolist()))
-    for sid in sids:
+    present = list(dict.fromkeys(hr["stream_id"].tolist()))
+    ordered = [s for s in ONE_K_STREAMS if s in present] + [s for s in present if s not in ONE_K_STREAMS]
+    facets = []
+    for sid in ordered:
         d = hr[hr["stream_id"] == sid].sort_values("bankroll_usd")
         if d.empty:
             continue
-        # depth-capped contracts per tier, colored by whether depth binds (red=capped, green=room)
-        colors = [RED if b else GREEN for b in d["depth_binds"]]
-        fig.add_bar(x=[f"${int(b/1000)}k" for b in d["bankroll_usd"]],
-                    y=d["depth_capped_ct"], name=_scal_stream_label(sid),
-                    marker_color=colors,
-                    customdata=list(zip(d["bankroll_implied_ct"], d["depth_binds"])),
-                    hovertemplate=("%{x} · " + _scal_stream_label(sid) +
-                                   "<br>depth-capped %{y:.0f} ct"
-                                   "<br>bankroll wants %{customdata[0]:.0f} ct"
-                                   "<br>depth binds: %{customdata[1]}<extra></extra>"))
-    fig.update_layout(barmode="group", title=None)
-    fig.update_yaxes(title="tradable size (contracts, depth-capped)", type="log")
-    fig.update_xaxes(title="bankroll tier (illustrative 5% stake)")
+        clr = _STREAM_COLOR.get(sid, GREEN)
+        xs = [f"${int(b/1000)}k" for b in d["bankroll_usd"]]
+        want = list(d["bankroll_implied_ct"])
+        got = list(d["depth_capped_ct"])
+        binds = list(d["depth_binds"])
+        fig = go.Figure()
+        # what bankroll WANTS (light ghost bar)
+        fig.add_bar(x=xs, y=want, name="bankroll wants",
+                    marker=dict(color="rgba(174,184,192,0.22)", line=dict(width=0)),
+                    hovertemplate="%{x}<br>bankroll wants %{y:,.0f} ct<extra></extra>")
+        # what DEPTH lets you fill (solid, stream colour)
+        fig.add_bar(x=xs, y=got, name="depth-capped (fillable)",
+                    marker=dict(color=clr, line=dict(width=0)),
+                    hovertemplate="%{x}<br>fillable %{y:,.0f} ct<extra></extra>")
+        # red ▲ where DEPTH binds (you wanted more than the book gives)
+        bx = [x for x, b in zip(xs, binds) if b]
+        by = [g for g, b in zip(got, binds) if b]
+        if bx:
+            fig.add_scatter(x=bx, y=by, mode="markers", name="depth binds",
+                            marker=dict(symbol="triangle-up", size=10, color=RED,
+                                        line=dict(width=1, color="#fff")),
+                            hovertemplate="%{x}<br>DEPTH binds — more bankroll buys no extra size<extra></extra>")
+        fig.update_layout(barmode="overlay", title=None, bargap=0.35)
+        fig.update_yaxes(title="contracts", type="log")
+        fig.update_xaxes(title="")
+        n_bind = sum(1 for b in binds if b)
+        story = (f"depth binds at {n_bind}/{len(binds)} tiers" if n_bind
+                 else "bankroll binds at every tier — room to scale")
+        facets.append(html.Div([
+            html.Div([html.B(_scal_stream_label(sid)),
+                      html.Span(story, className="sub", style={"fontSize": "10px",
+                                "color": RED if n_bind else GREEN})],
+                     style={"display": "flex", "justifyContent": "space-between", "alignItems": "baseline"}),
+            graph(_tpl(fig, h=200, legend=False))], className="col-4"))
     return card([html.H3("Bankroll Headroom — Where Depth Stops Linear Scaling"),
-                 _cap("For each stream and bankroll tier, the contracts you could actually fill (depth-capped). "
-                      "GREEN bars = bankroll still binds (room to scale); RED bars = the order-book DEPTH binds "
-                      "first, so more bankroll buys NO extra size — profit plateaus. Uses an illustrative flat 5% "
-                      "stake (NOT the live Kelly engine). Paper / public-data read — never realized P&L."),
-                 graph(_tpl(fig, h=340, legend=True))])
+                 _cap("One panel per stream (each its own colour). The light ghost bar = contracts a flat 5% "
+                      "of bankroll would buy at this tier; the solid coloured bar = what the order book actually "
+                      "fills. When the solid bar is shorter (red ▲), DEPTH binds — more bankroll buys NO extra "
+                      "size and profit plateaus. When they match, bankroll still binds (room to scale). "
+                      "Illustrative flat 5% stake, NOT the live Kelly engine. Paper / public-data read — never "
+                      "realized P&L."),
+                 html.Div(facets, className="grid12")])
 
 
 # ============================== PAGES ==============================
@@ -2489,10 +2579,21 @@ def render_sandbox():
                  "climbs steeply. No ROI cap; the warnings escalate honestly.", className="sub",
                  style={"margin": "8px 0 2px", "fontSize": "11px"}),
         html.Div(style={"height": "10px"}),
-        field("sb-slip", "Slippage assumption (c/contract)", 1.0, 0.5, 0, 3),
-        html.Div("Slippage shaves each stream's net c/contract. Win rate is NOT a user lever — it is a "
-                 "fixed constant from our backtest already embedded in each stream's net c/contract; the "
-                 "Kelly fraction governs stake size and therefore the risk band below.", className="sub",
+        field("sb-slip", "Base slippage (c/contract)", 1.0, 0.5, 0, 3),
+        # ITEM 6: slippage-vs-bankroll mode. DEFAULT = 'off' (base behavior, no bankroll dependence).
+        html.Div("Slippage model", className="sb-field-lbl u-label", style={"margin": "12px 0 6px"}),
+        dcc.RadioItems(id="sb-slip-mode",
+                       options=[{"label": " Off (base — fixed)", "value": "off"},
+                                {"label": " Auto-scale with bankroll", "value": "auto"},
+                                {"label": " Manual override", "value": "manual"}],
+                       value="off", className="sb-radio",
+                       labelStyle={"display": "block", "fontSize": "12px", "margin": "2px 0"}),
+        field("sb-slip-manual", "Manual slippage (c/contract, manual mode)", 4.0, 0.5, 0, 40),
+        html.Div(["Off = base: per-contract slippage is the fixed value above (depth still capped by each "
+                  "stream's measured book). Auto = per-contract slippage RISES with order size as bankroll "
+                  "grows, along Mosaic's per-stream slippage(size) curve. Manual = force a single flat "
+                  "slippage you set. Win rate is NOT a user lever — it is already embedded in each stream's "
+                  "net c/contract."], className="sub",
                  style={"marginTop": "8px", "fontSize": "11px"})],
         style={"flex": "1", "minWidth": "270px"})
 
@@ -2531,6 +2632,19 @@ def render_sandbox():
         dcc.Graph(id="sb-dist", config={"displayModeBar": False})])
     chart_break = card([html.H3("Profit Breakdown by Stream"),
         dcc.Graph(id="sb-chart", config={"displayModeBar": False})])
+    # ITEM 7: Kelly fraction vs P(month<0) and P(ruin) -- the risk story behind the 0.25/0.35/0.50 sweep.
+    chart_ruin = card([html.H3(["Ruin & Losing-Month Risk vs Kelly Fraction  ", info_dot(
+            "Sweeps the Kelly fraction through the SAME Monte-Carlo engine that drives the equity fan. "
+            "P(month < 0) = chance a single month ends below where it started. P(ruin) = chance equity ever "
+            "draws down past the ruin threshold (default 50%) within 12 months. Both climb with the fraction "
+            "— this is the risk behind picking 0.25x / 0.35x / 0.50x. Paper model, never realized P&L.")]),
+        html.Div(["P(ruin) climbs steeply as you lever up — ~0 below 0.50x, rising sharply through full "
+                  "Kelly. P(month < 0) stays roughly flat (~15%) because the sweep's median and downside "
+                  "scale together, so a worse month is offset by a larger upside — the leverage cost shows "
+                  "up as RUIN risk, not as more losing months. Your current Kelly pick is marked; the 0.50x "
+                  "ceiling and full-Kelly (1.0x) zone are shaded. Paper model, never realized P&L."],
+                 className="sub"),
+        dcc.Graph(id="sb-ruin", config={"displayModeBar": False})])
     chart_cap = card([html.H3(["Capacity Ceiling vs Bankroll  ", info_dot(
             "Real markets have finite depth. As order size grows, VWAP slippage climbs along each stream's "
             "measured curve (Mosaic), so the net edge per contract degrades and crosses zero at the stream's "
@@ -2565,6 +2679,7 @@ def render_sandbox():
                  className="grid12"),
         html.Div([html.Div(chart_dist, className="col-6"), html.Div(chart_break, className="col-6")],
                  className="grid12"),
+        html.Div([html.Div(chart_ruin, className="col-12")], className="grid12"),
         html.Div([html.Div(chart_cap, className="col-12")], className="grid12"),
         html.Div([html.Div(disclaimer, className="col-12")], className="grid12")])
 
@@ -2899,13 +3014,14 @@ def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
     Output("sb-kelly-band", "children"), Output("sb-note", "children"), Output("sb-risk-metrics", "children"),
     Output("sb-chart", "figure"), Output("sb-fan", "figure"), Output("sb-rr", "figure"),
     Output("sb-dist", "figure"), Output("sb-cap", "figure"), Output("sb-cap-flag", "children"),
+    Output("sb-ruin", "figure"),
     Input("sb-rmse", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
     Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
     Input("sb-lock", "value"), Input("sb-lockpm", "value"),
     Input("sb-bankroll", "value"), Input("sb-kelly", "value"),
-    Input("sb-slip", "value"))
+    Input("sb-slip", "value"), Input("sb-slip-mode", "value"), Input("sb-slip-manual", "value"))
 def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
-             bankroll, kelly, slip):
+             bankroll, kelly, slip, slip_mode, slip_manual):
     import numpy as _np
     blank = _tpl(go.Figure(), h=300)
     try:
@@ -2914,9 +3030,11 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         lock_c = float(lock_c); lockpm = max(0.0, float(lockpm))
         bankroll = max(0.0, float(bankroll)); kelly = float(kelly)
         slip = max(0.0, float(slip))
+        slip_mode = slip_mode if slip_mode in ("off", "auto", "manual") else "off"
+        slip_manual = max(0.0, float(slip_manual)) if slip_manual is not None else 0.0
     except (TypeError, ValueError):
         return ("—", "—", {"color": DIM}, "", "Enter valid numbers in every field.", "",
-                blank, blank, blank, blank, blank, "")
+                blank, blank, blank, blank, blank, "", blank)
     kelly = min(KELLY_MAX, max(0.25, kelly))
 
     # ---- TRANSPARENT PER-STREAM PROFIT MODEL (FIX 1, 2026-06-19). Profit is now a DIRECT function of the
@@ -2929,10 +3047,16 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
     # the numbers stay grounded; it just no longer overrides the per-stream economics. Win rate is NOT a
     # lever (FIX 2): each stream's net c/contract ALREADY embeds win/loss from the backtest -> dropped.
     k = kelly_interp(kelly)
-    # per-stream NET edge after slippage (the backtest net c/contract already embeds the win rate)
-    s1_edge_c = max(0.0, S1_EDGE_K * (MKT_SD - rmse) - slip)
-    low_edge_c = max(0.0, low_c - slip)
-    lock_edge_c = max(0.0, lock_c - slip)
+    # GROSS per-stream model edge (before any slippage). The win rate is already embedded in the backtest
+    # net c/contract; slippage is applied per-mode below (item 6).
+    s1_gross_c = max(0.0, S1_EDGE_K * (MKT_SD - rmse))
+    low_gross_c = max(0.0, low_c)
+    lock_gross_c = max(0.0, lock_c)
+    # per-stream NET edge after the BASE slippage (used by the depth-ceiling/optimal-fill math, which is
+    # mode-agnostic and conservative -- the base slip floor)
+    s1_edge_c = max(0.0, s1_gross_c - slip)
+    low_edge_c = max(0.0, low_gross_c - slip)
+    lock_edge_c = max(0.0, lock_gross_c - slip)
     # contracts per trade: CALIBRATED so the DEFAULT scenario (deployed 7-stream book) at 0.50x Kelly on
     # $1,000 reproduces the activated-book median (~14.63%/m) -- the headline stays GROUNDED to the real number,
     # it does NOT run away. From that anchor it scales LINEARLY with Kelly fraction and bankroll, and is
@@ -2952,9 +3076,27 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
     # plateau). This is the honest 'more size != linearly more profit' mechanism. Falls back to the flat edge
     # if the curated curves are absent.
     _curves = _scal_curves()
-    s1_net_at = _net_edge_at_size(s1_edge_c, _curves.get("high"), s1_ct) if _curves.get("high") else s1_edge_c
-    low_net_at = _net_edge_at_size(low_edge_c, _curves.get("low"), low_ct) if _curves.get("low") else low_edge_c
-    lock_net_at = _net_edge_at_size(lock_edge_c, _curves.get("high"), lock_ct) if _curves.get("high") else lock_edge_c
+
+    # ---- ITEM 6: slippage model selector ----
+    # off (base): per-contract slippage = the fixed base value above; the per-stream Mosaic curve still
+    #             governs depth (net goes <=0 past the real ceiling), but slippage does NOT scale with size.
+    # auto:       slippage RISES with order size (which grows with bankroll) along Mosaic's slippage(size)
+    #             curve -> the honest bankroll-dependent friction. base slip is added as a floor.
+    # manual:     a single flat slippage the user sets, applied to every size (curve disabled).
+    def _eff_slip(curve, size):
+        if slip_mode == "manual":
+            return slip_manual
+        if slip_mode == "auto":
+            return slip + _slip_at_size(curve, size)        # base + measured size-dependent VWAP slippage
+        return slip                                          # off (base): fixed, no size/bankroll dependence
+
+    def _net_at(gross_edge_c, curve, size):
+        """Net c/ct at this size under the selected slippage model = gross model edge - effective slippage."""
+        return gross_edge_c - _eff_slip(curve, size)
+
+    s1_net_at = _net_at(s1_gross_c, _curves.get("high"), s1_ct)
+    low_net_at = _net_at(low_gross_c, _curves.get("low"), low_ct)
+    lock_net_at = _net_at(lock_gross_c, _curves.get("high"), lock_ct)
     s1_net_at = max(0.0, s1_net_at); low_net_at = max(0.0, low_net_at); lock_net_at = max(0.0, lock_net_at)
     # monthly $ per stream = net_edge_at_size($) * trades/mo * markets * contracts/trade (size-degraded edge)
     s1_monthly = (s1_net_at / 100.0) * s1tr * cities * s1_ct
@@ -3200,9 +3342,54 @@ def _sandbox(rmse, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
             f"dollars. Model edge is held FIXED across sizes "
             f"(this is the FILLS side of capacity only). Paper/backtest — NOT a guarantee, never realized P&L; "
             f"LIVE capital today = $0 until the forward gates PASS.")
+    if slip_mode != "off":
+        _sm = ("AUTO" if slip_mode == "auto" else "MANUAL")
+        note += (f"  Slippage model = {_sm}: " + ("per-contract slippage scales up with order size as "
+                 "bankroll grows along Mosaic's measured slippage(size) curve (base slip is the floor)."
+                 if slip_mode == "auto" else
+                 f"a flat {slip_manual:.1f}c/contract override on every fill (the curve is disabled)."))
+
+    # ---- (e) ITEM 7: P(month<0) and P(ruin) vs Kelly fraction ----
+    # Sweep the Kelly fraction through the SAME MC engine as the equity fan: at each fraction take the sweep's
+    # median/p5 to back out monthly mu/sigma, simulate 12-month paths, and measure P(any month <0) and
+    # P(ever drawing down past the ruin threshold). This is the risk story behind 0.25x/0.35x/0.50x.
+    RUIN_DD = 0.50                                            # ruin = a >=50% peak-to-trough drawdown
+    rng2 = _np.random.default_rng(98765)
+    fr_grid = _np.round(_np.arange(0.25, 1.001, 0.05), 2)
+    p_neg, p_ruin = [], []
+    for f in fr_grid:
+        kf = kelly_interp(float(f))
+        mu = kf["med"] / 100.0
+        sig = max(1e-4, (kf["med"] - kf["p5"]) / 100.0 / 1.645)
+        dr = rng2.normal(mu, sig, size=(3000, 12))
+        eqp = _np.cumprod(1.0 + _np.clip(dr, -0.95, None), axis=1)
+        peak = _np.maximum.accumulate(eqp, axis=1)
+        dd = (peak - eqp) / peak
+        p_neg.append(float((dr < 0).mean()))                 # fraction of monthly returns below 0
+        p_ruin.append(float((dd.max(axis=1) >= RUIN_DD).mean()))
+    ruin = go.Figure()
+    ruin.add_scatter(x=fr_grid, y=[p * 100 for p in p_neg], mode="lines+markers", name="P(month < 0)",
+                     line=dict(color=AMBER, width=2.4), marker=dict(size=6),
+                     hovertemplate="Kelly %{x:.2f}x<br>P(month<0) %{y:.0f}%<extra></extra>")
+    ruin.add_scatter(x=fr_grid, y=[p * 100 for p in p_ruin], mode="lines+markers",
+                     name=f"P(ruin, ≥{int(RUIN_DD*100)}% DD in 12mo)",
+                     line=dict(color=RED, width=2.6), marker=dict(size=6),
+                     hovertemplate="Kelly %{x:.2f}x<br>P(ruin) %{y:.1f}%<extra></extra>")
+    ruin.add_vrect(x0=0.50, x1=0.75, fillcolor="rgba(217,162,58,.08)", line_width=0)
+    ruin.add_vrect(x0=0.75, x1=1.00, fillcolor="rgba(234,57,67,.08)", line_width=0)
+    ruin.add_vline(x=kelly, line=dict(color=GREEN, width=1.6, dash="dash"),
+                   annotation_text=f"your pick {kelly:.2f}x", annotation_position="top",
+                   annotation_font=dict(color=GREEN, size=10))
+    ruin.add_vline(x=0.50, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
+                   annotation_text="0.50x ceiling", annotation_position="bottom right",
+                   annotation_font=dict(color=DIM, size=9))
+    ruin.update_layout(title=None)
+    ruin.update_xaxes(title="Kelly fraction", dtick=0.25)
+    ruin.update_yaxes(title="probability (%)", ticksuffix="%", rangemode="tozero")
+
     return (f"${total:,.0f}", f"{roi:+.1f}%", {"color": roi_color}, kelly_band, note, metrics,
             _tpl(fig, h=300, legend=False), _tpl(fan, h=300), _tpl(rr, h=300, legend=False), dist,
-            _tpl(cap, h=320), cap_flag)
+            _tpl(cap, h=320), cap_flag, _tpl(ruin, h=300, legend=True))
 
 
 def _sev_color(sev):
