@@ -271,6 +271,155 @@ def panel_pit():
                  graph(_tpl(fig, h=320, legend=False))])
 
 
+# ============================================================================================
+# PER-STREAM CALIBRATION (Bayes feed 2026-06-21 -> table "calibration_streams"). Leak-free walk-forward
+# PIT / coverage / over-confidence diagnostics of the DEPLOYED forecast, one panel per stream via a
+# dropdown, plus an at-a-glance confidence-chip grid across all 10 streams. PAPER/backtest only.
+# ============================================================================================
+def _conf_chip(direction, s_star):
+    """Confidence chip from (direction, s*): green=calibrated, red=overconfident/too-narrow,
+    amber=underconfident/too-wide. s* shown to 2dp. Returns an html.Span styled inline."""
+    d = (direction or "").lower()
+    s = ("" if _isnull(s_star) else f"s*={float(s_star):.2f} — ")
+    if "over" in d or "narrow" in d:
+        col, bg, txt = RED, "rgba(255,77,94,.10)", f"{s}overconfident (too narrow)"
+    elif "under" in d or "wide" in d:
+        col, bg, txt = AMBER, "rgba(217,162,58,.12)", f"{s}underconfident (too wide)"
+    else:  # WELL_CALIBRATED / calibrated
+        col, bg, txt = GREEN, "rgba(0,224,138,.10)", f"{s}well calibrated"
+    return html.Span(txt, style={"display": "inline-block", "padding": "3px 9px", "borderRadius": "5px",
+                                 "fontSize": "11.5px", "fontFamily": "JetBrains Mono, monospace",
+                                 "color": col, "background": bg, "border": f"1px solid {col}55"})
+
+
+def _stream_label(stream):
+    """'NY_high' -> 'NY · high'."""
+    parts = (stream or "").rsplit("_", 1)
+    return f"{parts[0]} · {parts[1]}" if len(parts) == 2 else str(stream)
+
+
+def _calib_pit_figure(row):
+    """PIT histogram (10 bins) for ONE stream from its pit_bins JSON + uniform line + KS-p annotation.
+    Mint bars inside a flat-uniform read, amber bars outside (the per-stream KS p is the honest signal)."""
+    import json as _json
+    try:
+        bins = _json.loads(row["pit_bins"]) if isinstance(row["pit_bins"], str) else list(row["pit_bins"])
+    except Exception:
+        bins = []
+    n = int(sum(bins)) if bins else 0
+    exp = n / 10.0 if n else 0.0
+    labels = [f"{i/10:.1f}-{(i+1)/10:.1f}" for i in range(len(bins))]
+    # honest per-bin colour: deviation beyond a sqrt(exp) Poisson-ish ribbon -> amber, else mint.
+    tol = (exp ** 0.5) * 1.6 if exp else 0.0
+    colors = [MINT if (exp - tol <= c <= exp + tol) else AMBER for c in bins]
+    fig = go.Figure()
+    fig.add_bar(x=labels, y=bins, marker_color=colors, width=0.82, name="observed",
+                hovertemplate="bin %{x}<br>%{y} of " + str(n) + "<extra></extra>")
+    if n:
+        fig.add_scatter(x=labels, y=[exp] * len(bins), mode="lines", name="uniform",
+                        line=dict(color=DIM, width=1.4, dash="dash"), hoverinfo="skip")
+    ksp = row.get("pit_ks_p")
+    if not _isnull(ksp):
+        unif = bool(int(row.get("pit_uniform") or 0))
+        fig.add_annotation(xref="paper", yref="paper", x=0.99, y=0.97, xanchor="right", yanchor="top",
+                           showarrow=False, align="right",
+                           text=(f"KS p = {float(ksp):.3f}<br>"
+                                 f"<span style='color:{GREEN if unif else AMBER}'>"
+                                 f"{'uniform (not rejected)' if unif else 'flags non-uniform'}</span>"),
+                           font=dict(size=11, color=DIM),
+                           bordercolor=GRIDCOL, borderwidth=1, borderpad=4, bgcolor=PANEL)
+    fig.update_yaxes(title="count")
+    fig.update_xaxes(title="PIT bin (predicted CDF at the observed temp)")
+    return _tpl(fig, h=300, legend=False)
+
+
+def _calib_cov_figure(row):
+    """Coverage readout: empirical cov80/cov90 vs nominal 0.80 / 0.90 as horizontal bars."""
+    cov80, cov90 = row.get("cov80"), row.get("cov90")
+    cats, emp, nom = [], [], []
+    for lab, val, target in (("90% interval", cov90, 0.90), ("80% interval", cov80, 0.80)):
+        if not _isnull(val):
+            cats.append(lab); emp.append(float(val)); nom.append(target)
+    fig = go.Figure()
+    if cats:
+        # bar = empirical coverage; colour green if within ~3pts of nominal else amber (mild miscoverage).
+        bcol = [GREEN if abs(e - t) <= 0.03 else AMBER for e, t in zip(emp, nom)]
+        fig.add_bar(y=cats, x=emp, orientation="h", marker_color=bcol, width=0.5, name="empirical",
+                    text=[f"{e*100:.1f}%" for e in emp], textposition="outside",
+                    textfont=dict(color=INK, size=12),
+                    hovertemplate="%{y}<br>empirical %{x:.1%}<extra></extra>")
+        # nominal target markers
+        for lab, t in zip(cats, nom):
+            fig.add_scatter(y=[lab], x=[t], mode="markers", name="nominal",
+                            marker=dict(symbol="line-ns", size=22, color=DIM,
+                                        line=dict(width=2, color=DIM)),
+                            hovertemplate=f"nominal {t:.0%}<extra></extra>", showlegend=False)
+    fig.update_xaxes(title="coverage", range=[0, 1.0], tickformat=".0%")
+    fig.update_yaxes(title="")
+    return _tpl(fig, h=180, legend=False)
+
+
+def panel_calibration_streams():
+    """PER-STREAM calibration deck: a stream dropdown drives a PIT histogram + coverage bars + a
+    confidence chip; below, an at-a-glance chip grid across all 10 deployed streams. Source:
+    calibration_streams (Bayes leak-free WF feed). PAPER/backtest -- no realized P&L."""
+    d = table("calibration_streams")
+    if d.empty:
+        return card([html.H3("Per-Stream Calibration — PIT & Coverage"),
+                     empty_state("Fills from the per-stream walk-forward calibration feed.")])
+    d = d.copy()
+    streams = list(d["stream"])
+    default = "NY_high" if "NY_high" in streams else streams[0]
+
+    # at-a-glance chip grid (all streams), so the reader sees every stream's verdict without clicking.
+    chips = []
+    for _, r in d.iterrows():
+        chips.append(html.Div([
+            html.Span(_stream_label(r["stream"]), style={"color": INK, "fontSize": "12px",
+                                                          "fontFamily": "JetBrains Mono, monospace",
+                                                          "marginRight": "8px", "minWidth": "78px",
+                                                          "display": "inline-block"}),
+            _conf_chip(r.get("direction"), r.get("s_star"))],
+            style={"padding": "4px 0"}))
+    chip_grid = html.Div(chips, style={"display": "grid",
+                                       "gridTemplateColumns": "repeat(auto-fit, minmax(260px, 1fr))",
+                                       "gap": "2px 18px", "marginTop": "8px"})
+
+    return card([
+        html.H3("Per-Stream Calibration — PIT, Coverage & Confidence"),
+        _cap("Leak-free WALK-FORWARD calibration of the DEPLOYED forecast per stream (Bayes 2026-06-21): "
+             "HIGH books = members + S2X, LOW books = the Kelvin ridge-EMOS pool. PIT = predicted CDF at "
+             "the realized temperature; a calibrated model is flat at the dashed uniform line and its "
+             "intervals cover at the nominal rate. Sigma is well calibrated across all streams — NO "
+             "rescale is deployed (the variance lever was tested per stream and is dead, s*≈1). "
+             "Paper/backtest research only."),
+        html.Div([
+            html.Span("Stream", style={"color": DIM, "fontSize": "12px", "marginRight": "8px"}),
+            dcc.Dropdown(id="calib-stream", options=[{"label": _stream_label(s), "value": s} for s in streams],
+                         value=default, clearable=False, style={"width": "220px"},
+                         className="calib-dd")],
+            style={"display": "flex", "alignItems": "center", "marginBottom": "8px"}),
+        html.Div(id="calib-chip", style={"marginBottom": "6px"}),
+        graph_holder("calib-pit"),
+        html.Div("Interval coverage — empirical vs nominal (the tick marks)", className="sub",
+                 style={"margin": "8px 0 2px"}),
+        graph_holder("calib-cov"),
+        html.Div(id="calib-meta", className="sub", style={"marginTop": "8px"}),
+        html.Hr(style={"border": "none", "borderTop": f"1px solid {GRIDCOL}", "margin": "14px 0 8px"}),
+        html.Div("All deployed streams — calibration verdict", className="sub",
+                 style={"marginBottom": "2px", "color": INK}),
+        chip_grid,
+        _cap("FLAG (honesty): LAX·high and CHI·high model Brier TRAILS the market on overall skill — their "
+             "edge lives only on the tradable-disagreement subset, not on calibration. Do not read these "
+             "panels as 'every stream beats the market'."),
+    ])
+
+
+def graph_holder(gid):
+    """An empty dcc.Graph the calibration callback fills (keeps the dropdown from re-rendering the page)."""
+    return dcc.Graph(id=gid, config={"displayModeBar": False})
+
+
 def panel_brier_decomp():
     """MURPHY BRIER DECOMPOSITION (Part B): our Brier vs the market's, split into reliability / resolution /
     uncertainty. Stacked bars per book; shows WHY we beat the market (low reliability = calibrated, positive
@@ -2824,10 +2973,11 @@ def render_accuracy():
                      card([html.H3("RMSE Detail (°F)"),
                            dt(present(r, order=["city", "members_rmse", "s2x_rmse", "warm", "cold", "n"]),
                               present_df=False)]),
+                     html.Div([html.Div(panel_calibration_streams(), className="col-7"),
+                               html.Div(panel_emos_skill(), className="col-5")], className="grid12"),
                      html.Div([html.Div(panel_pit(), className="col-6"),
-                               html.Div(panel_emos_skill(), className="col-6")], className="grid12"),
-                     html.Div([html.Div(panel_brier_decomp(), className="col-7"),
-                               html.Div(panel_lead_decay(), className="col-5")], className="grid12"),
+                               html.Div(panel_brier_decomp(), className="col-6")], className="grid12"),
+                     html.Div([html.Div(panel_lead_decay(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_fan(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_surprise(), className="col-12")], className="grid12")])
 
@@ -3098,7 +3248,9 @@ def render_risk():
 def render_methodology():
     m = table("methodology")
     return html.Div([section("Methodology & Provenance"),
-                     card(dt(m, page_size=20) if not m.empty else html.Div("—", className="sub"))])
+                     card(dt(m, page_size=20) if not m.empty else html.Div("—", className="sub")),
+                     html.Div([html.Div(panel_calibration_streams(), className="col-12")],
+                              className="grid12", style={"marginTop": "10px"})])
 
 
 RENDER = {"overview": render_overview, "markets": render_markets, "bankroll": render_bankroll,
@@ -3212,6 +3364,35 @@ def _route(active):
 def _run_equity_window(window):
     fig, readout, _col = _equity_figure(window or "1W")
     return fig, readout
+
+
+# Per-stream calibration deck (Bayes feed): the dropdown drives the chip + PIT + coverage + meta line.
+# Keyed only on the dropdown -> does NOT re-render the page on the 60s tick.
+@app.callback(Output("calib-chip", "children"), Output("calib-pit", "figure"),
+              Output("calib-cov", "figure"), Output("calib-meta", "children"),
+              Input("calib-stream", "value"))
+def _calib_stream(stream):
+    d = table("calibration_streams")
+    empty = go.Figure()
+    if d.empty or stream is None:
+        return "", _tpl(empty, h=300), _tpl(empty, h=180), ""
+    sel = d[d["stream"] == stream]
+    if sel.empty:
+        return "", _tpl(empty, h=300), _tpl(empty, h=180), ""
+    row = sel.iloc[0]
+    chip = _conf_chip(row.get("direction"), row.get("s_star"))
+    pit = _calib_pit_figure(row)
+    cov = _calib_cov_figure(row)
+    # honest meta line: folds, residual RMSE, mean sigma, coverage, window.
+    def _n(v, f="{:.2f}"):
+        return "—" if _isnull(v) else f.format(float(v))
+    meta = (f"{_stream_label(stream)} ({str(row.get('market') or '').upper()}) · "
+            f"n={int(row.get('n_folds') or 0)} WF folds · "
+            f"residual RMSE {_n(row.get('rmse_resid_F'))}°F · mean σ {_n(row.get('mean_sd_F'))}°F · "
+            f"cov80 {_n(row.get('cov80'), '{:.1%}')} (nom 80%) / cov90 {_n(row.get('cov90'), '{:.1%}')} "
+            f"(nom 90%) · {row.get('date_start')} → {row.get('date_end')}. Leak-free walk-forward, "
+            f"paper/backtest.")
+    return chip, pit, cov, meta
 
 
 @app.callback(Output("tb-clock", "children"), Output("tb-tickers", "children"),
