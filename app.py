@@ -1266,6 +1266,28 @@ def _run_meta(key, default="—"):
     return str(r["value"].iloc[0]) if not r.empty else default
 
 
+def _latest_equity():
+    """The CURRENT $1k paper equity (RESET 2026-06-21): the LATEST point of the rebased realized+unrealized
+    bankroll_equity_timeline (equity = $1,000 - invested + current value of open positions, marked to public
+    quotes). Falls back to the ledger's realized run_meta['equity'] only if the timeline is empty. Returns a
+    float. PAPER, unrealized mark, never realized P&L."""
+    tl = table("bankroll_equity_timeline")
+    if not tl.empty and "equity" in tl.columns:
+        t = tl.copy()
+        if "ts" in t.columns:
+            t["__dt"] = pd.to_datetime(t["ts"], utc=True, errors="coerce")
+            t = t.dropna(subset=["__dt"]).sort_values("__dt")
+        if not t.empty:
+            try:
+                return float(t["equity"].iloc[-1])
+            except (TypeError, ValueError):
+                pass
+    try:
+        return float(str(_run_meta("equity", "1000")).replace(",", ""))
+    except (TypeError, ValueError):
+        return 1000.0
+
+
 _GATE_STATUS_STYLE = {
     "DEPLOYED-live":      ("good", GREEN, "DEPLOYED · LIVE"),
     "DEPLOYED-tradable":  ("good", GREEN, "DEPLOYED · TRADABLE"),
@@ -1280,32 +1302,36 @@ def panel_run_header():
     in the paper run NOW, user-activated ahead of the gate), STAGED (the $0-live Kelly stakes the gate still
     governs), and LIVE REAL-DEPLOY ($0 — no real money). Plus equity (flat $1,000) + gates passing + the
     honest pre-gate-activation callout. HONEST: activation is PAPER, ahead of the forward gate; gates UNCHANGED."""
-    eq = _run_meta("equity", "1000")
-    start = _run_meta("harness_start_date")
-    act_date = _run_meta("activation_date", start)
+    # RESET 2026-06-21: the run restarted fresh at $1,000 ("the algorithm changed"; prior track archived).
+    reset_date = _run_meta("reset_date", "2026-06-21")
     active_p = _run_meta("active_paper_allocation_dollars", "0.00")
     staged_z = _run_meta("staged_zero_allocation_dollars", _run_meta("staged_total_dollars", "—"))
     live_real = _run_meta("live_real_deploy_allocation_dollars", _run_meta("live_allocation_dollars", "0"))
-    dd = _run_meta("current_drawdown", "0.0")
     npass = _run_meta("n_gates_pass", "0"); ngate = _run_meta("n_gates", "0")
     nactive = _run_meta("n_active_paper_streams", "0")
     kf = _run_meta("kelly_fraction", "0.50")
     activated = _run_meta("activated_streams", "—")
-    note_txt = _run_meta("ledger_note", "—")
     act_note = _run_meta("activation_note", "—")
-    try:
-        eq_f = float(str(eq).replace(",", ""))
-    except (TypeError, ValueError):
-        eq_f = 1000.0
+    # HEADLINE EQUITY = latest rebased timeline (realized $1,000 baseline + unrealized MTM), NOT the flat
+    # ledger 'equity' field. Live = $1,000 - invested + current value of open positions (public-quote mark).
+    eq_f = _latest_equity()
+    eq = f"{eq_f:,.2f}"
+    delta = eq_f - 1000.0
+    dd = f"{(min(delta, 0.0) / 1000.0 * 100.0):.1f}"   # paper drawdown from the $1,000 reset baseline
+    dd_clause = (f"currently {'+' if delta >= 0 else '−'}${abs(delta):,.2f} ({delta/1000.0*100.0:+.1f}%) "
+                 f"vs the $1,000 reset baseline" if abs(delta) >= 0.005
+                 else "currently at the $1,000 reset baseline")
 
     def tile(label, value, sub, accent=INK):
         return html.Div([html.Div(label, className="label"),
                          html.Div([html.Span(value, className="val mono", style={"color": accent})]),
                          html.Div(sub, className="sub", style={"fontSize": "10.5px", "marginTop": "2px"})],
                         className="card kpi")
+    delta_sub = (f"paper · {'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs $1,000"
+                 if abs(delta) >= 0.005 else "paper · at $1,000 baseline")
     tiles = [
-        tile("PAPER BANKROLL", "$1,000", "staged paper capital", INK),
-        tile("CURRENT EQUITY", f"${eq}", f"paper · {dd}% drawdown",
+        tile("PAPER BANKROLL", "$1,000", f"reset baseline {reset_date}", INK),
+        tile("CURRENT EQUITY", f"${eq}", delta_sub,
              GREEN if eq_f >= 1000 else RED),
         tile("ACTIVE · PAPER", f"${active_p}", f"{nactive} streams · paper, pre-gate", GREEN),
         tile("STAGED · $0 LIVE", f"${staged_z}", f"Kelly {kf}x · awaits gate", NEUTRAL),
@@ -1324,20 +1350,22 @@ def panel_run_header():
     med_str = f"{100*med_mo:+.2f}%/mo" if med_mo is not None else "—"
     stress_str = f"{100*stress_mo:+.2f}%/mo" if stress_mo is not None else "—"
     note = card([html.Div([html.Span("●", style={"color": GREEN, "marginRight": "7px"}),
-                           html.B("Activated in the PAPER run by user decision — AHEAD of the forward gate.")],
+                           html.B(f"Fresh start: the $1,000 paper run RESET on {reset_date} (the algorithm "
+                                  f"changed; the prior track is archived).")],
                           className="sub", style={"fontSize": "12.5px", "color": INK}),
-                 html.Div([f"{nactive} warm-season-applicable edges ({activated}) are now ACTIVE in the "
-                           f"$1,000 PAPER run ({act_note}, activated {act_date}) — paper allocation "
-                           f"${active_p}, current paper equity ${eq} ({dd}% drawdown from the $1,000 peak as "
-                           f"early activated signals settled). Paper projection (BACKTEST, not realized): "
-                           f"MEDIAN ", html.B(med_str), " vs STRESS ", html.B(stress_str),
+                 html.Div([f"The run rebaselined to $1,000 on {reset_date}; only settlements resolving on or "
+                           f"after that date count. {nactive} warm-season-applicable edges ({activated}) are "
+                           f"ACTIVE in the PAPER run ({act_note}) — paper allocation ${active_p}. Current paper "
+                           f"equity ${eq} = $1,000 baseline − invested + the current value of open positions "
+                           f"(unrealized public-quote mark-to-market), {dd_clause}. Paper projection (BACKTEST, "
+                           f"not realized): MEDIAN ", html.B(med_str), " vs STRESS ", html.B(stress_str),
                            " (~breakeven — the honest planning number if the underpowered warm edges are ~0). ",
                            html.B("Paper $1,000 only — no real money, no orders, $0 live real-deploy. "),
                            "The forward-validation gates (reconcile_forward_edges.py / FORWARD_PROTOCOL) are "
                            "UNCHANGED and still govern any REAL deployment. Activation does NOT mean these "
                            "edges PASSED their gates — each is still ACCUMULATING settled signals below. "
-                           "Equity starts at $1,000 (no backfill) and moves only as activated PAPER "
-                           "signals settle. Never realized P&L."],
+                           f"Equity rebased to $1,000 on {reset_date} (no backfill) and moves with open-book "
+                           "mark-to-market plus post-reset settlements. Never realized P&L."],
                           className="sub", style={"marginTop": "4px"})],
                 cls="run-note")
     # plain-language legend defining ACTIVE PAPER vs STAGED (deliverable #2)
@@ -1509,13 +1537,14 @@ def panel_run_equity():
     """The $1,000 PAPER equity chart with a time-window selector (12hr / 1D / 3D / 1W / 1M / All). Prefers the
     timestamped bankroll_marks series; falls back to the daily equity_curve for long windows / sparse marks.
     Shows the raw $ + % change over the selected window. PAPER only, never realized P&L."""
-    act = _run_meta("activation_date", "2026-06-19")
-    eq = _run_meta("equity", "1000")
-    dd = _run_meta("current_drawdown", "0.0")
+    reset_date = _run_meta("reset_date", "2026-06-21")
     pts, source = _equity_points()
-    cur_val = pts[-1]["equity"] if pts else None
-    cur_str = f"${cur_val:,.2f}" if cur_val is not None else f"${eq}"
-    default_win = "1W"
+    cur_val = pts[-1]["equity"] if pts else _latest_equity()
+    cur_str = f"${cur_val:,.2f}"
+    delta = (cur_val - 1000.0) if cur_val is not None else 0.0
+    dd = f"{min(delta, 0.0) / 1000.0 * 100.0:.1f}"
+    # post-reset the meaningful default window is intraday (the timeline starts at the reset, ~today)
+    default_win = "1D"
     fig, readout, _col = _equity_figure(default_win)
     src_note = ("LIVE realized + unrealized mark-to-market timeline (moves with public quotes ~10x/day)"
                 if source == "timeline"
@@ -1529,15 +1558,118 @@ def panel_run_equity():
         labelStyle={"display": "inline-block", "marginRight": "12px", "fontSize": "12px"},
         style={"marginBottom": "6px"})
     return card([html.H3(f"Paper Equity — {cur_str}"),
-                 _cap(f"The $1,000 PAPER bankroll from activation {act}. PAPER equity = realized P&L + the "
-                      f"UNREALIZED mark-to-market of open paper positions (public quotes) — so the curve moves "
-                      f"CONTINUOUSLY with quotes, not just at settlements. Current paper equity {cur_str} "
-                      f"(peak $1,000, max paper drawdown {dd}%). Pick a time window below; the readout shows the "
-                      f"$ and % change over it. Source: {src_note}. LIVE real-deploy capital = $0 — promotion to "
-                      f"REAL still requires a forward-gate PASS. Paper / hypothetical, never realized P&L."),
+                 _cap(f"The $1,000 PAPER bankroll, RESET to $1,000 on {reset_date} (the algorithm changed; the "
+                      f"prior track is archived). PAPER equity = $1,000 reset baseline − invested + the current "
+                      f"value of open positions (unrealized public-quote mark-to-market) — so the curve moves "
+                      f"CONTINUOUSLY with quotes from a $1,000 start, not just at settlements. Current paper "
+                      f"equity {cur_str} ({'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs the $1,000 baseline; "
+                      f"max paper drawdown {dd}%). Pick a time window below; the readout shows the $ and % change "
+                      f"over it. Source: {src_note}. LIVE real-deploy capital = $0 — promotion to REAL still "
+                      f"requires a forward-gate PASS. Paper / hypothetical, never realized P&L."),
                  selector,
                  html.Div(readout, id="run-equity-readout", style={"marginBottom": "4px"}),
                  dcc.Graph(id="run-equity-graph", figure=fig, config={"displayModeBar": False})])
+
+
+# ---- TASK B (2026-06-21): value-vs-paid intraday curve per RESOLUTION DATE, with a current/next toggle ----
+def _resolution_dates():
+    """The DISTINCT resolution_date values from resolution_day_curve, sorted ASCENDING. first = current day,
+    second = next day. Data-derived (never hardcoded). Returns a list of YYYY-MM-DD strings (possibly empty)."""
+    d = table("resolution_day_curve")
+    if d.empty or "resolution_date" not in d.columns:
+        return []
+    vals = sorted(str(v) for v in d["resolution_date"].dropna().unique())
+    return vals
+
+
+def _resolution_options():
+    """RadioItems options for the toggle: 'Current day (<date>)' / 'Next day (<date>)' derived from the sorted
+    distinct resolution_date values. Any beyond the first two are labeled 'Resolving <date>'."""
+    dates = _resolution_dates()
+    labels = ["Current day", "Next day"]
+    opts = []
+    for i, dt in enumerate(dates):
+        lab = labels[i] if i < len(labels) else "Resolving"
+        opts.append({"label": f" {lab} ({dt})", "value": dt})
+    return opts
+
+
+def _resolution_day_figure(resolution_date):
+    """Two-line chart over ts for one resolution_date: cumulative VALUE (prominent) vs cumulative PAID (cost
+    basis, reference), with a green area where value>paid and red where value<paid. Cents -> dollars. PAPER:
+    value = public-quote mark (or settled payout once resolved), not realized P&L."""
+    d = table("resolution_day_curve")
+    fig = go.Figure()
+    if d.empty or resolution_date is None or "resolution_date" not in d.columns:
+        return _tpl(fig, h=300, legend=False)
+    sel = d[d["resolution_date"].astype(str) == str(resolution_date)].copy()
+    if sel.empty or "ts" not in sel.columns:
+        return _tpl(fig, h=300, legend=False)
+    sel["dt"] = pd.to_datetime(sel["ts"], utc=True, errors="coerce")
+    sel = sel.dropna(subset=["dt"]).sort_values("dt")
+    if sel.empty:
+        return _tpl(fig, h=300, legend=False)
+    xs = list(sel["dt"])
+    paid = [float(v) / 100.0 for v in sel["cumulative_paid_c"]]      # cents -> dollars
+    value = [float(v) / 100.0 for v in sel["cumulative_value_c"]]
+    nent = [int(v) if pd.notna(v) else 0 for v in sel.get("n_entered", [0] * len(sel))]
+    # PAID reference line first (so VALUE draws on top). The shaded area between them is built by drawing the
+    # PAID line, then VALUE with fill='tonexty'. Plotly fills with one color, so split into green/red segments
+    # by drawing two overlaid value traces masked to value>=paid (green) and value<paid (red).
+    fig.add_scatter(x=xs, y=paid, name="cumulative paid (cost basis)", mode="lines",
+                    line=dict(color=NEUTRAL, width=1.8, dash="dot"),
+                    hoverinfo="skip", showlegend=True)
+    # green fill where value >= paid
+    green_y = [v if v >= p else p for v, p in zip(value, paid)]
+    fig.add_scatter(x=xs, y=green_y, mode="lines", line=dict(width=0), showlegend=False,
+                    hoverinfo="skip", fill="tonexty",
+                    fillcolor="rgba(0,224,138,0.18)")
+    # red fill where value < paid (re-draw paid as the base, then value clipped to the under-water region)
+    fig.add_scatter(x=xs, y=paid, mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip")
+    red_y = [v if v < p else p for v, p in zip(value, paid)]
+    fig.add_scatter(x=xs, y=red_y, mode="lines", line=dict(width=0), showlegend=False,
+                    hoverinfo="skip", fill="tonexty", fillcolor="rgba(255,77,94,0.18)")
+    # the prominent VALUE line on top, color = green if currently above paid else red
+    up = value[-1] >= paid[-1]
+    cd = [[f"${p:,.2f}", f"${v:,.2f}", f"{'+' if (v - p) >= 0 else '−'}${abs(v - p):,.2f}", n]
+          for p, v, n in zip(paid, value, nent)]
+    fig.add_scatter(x=xs, y=value, name="cumulative value (mark/payout)", mode="lines",
+                    line=dict(color=(GREEN if up else RED), width=2.6), customdata=cd,
+                    hovertemplate=("%{x|%Y-%m-%d %H:%M} UTC<br>value %{customdata[1]} · paid %{customdata[0]}"
+                                   "<br>delta %{customdata[2]} · entered %{customdata[3]}<extra></extra>"))
+    allv = paid + value
+    span = (max(allv) - min(allv)) or 1.0
+    fig.update_yaxes(title="cumulative $ (paper)", tickprefix="$", tickformat=",.2f",
+                     range=[min(allv) - span * 0.15, max(allv) + span * 0.25])
+    fig.update_xaxes(title=None, tickformat="%b %d %H:%M", type="date")
+    return _tpl(fig, h=300, legend=True)
+
+
+def panel_resolution_day_curve():
+    """Cumulative VALUE vs PAID for the positions resolving on a chosen date, over the day-before -> resolution
+    day. Toggle (RadioItems) between the data-derived resolution dates (current / next). PAPER: value = public-
+    quote mark (or settled payout once resolved), not realized P&L."""
+    dates = _resolution_dates()
+    opts = _resolution_options()
+    if not dates:
+        return card([html.H3("Positions Resolving — Cumulative Value vs Paid"),
+                     empty_state("Fills from the resolution_day_curve table once positions are entered.")])
+    default = dates[0]
+    fig = _resolution_day_figure(default)
+    toggle = dcc.RadioItems(
+        id="resday-toggle",
+        options=opts, value=default, className="sb-radio",
+        labelStyle={"display": "inline-block", "marginRight": "14px", "fontSize": "12px"},
+        style={"marginBottom": "6px"})
+    return card([html.H3(id="resday-title", children=f"Positions resolving {default}: cumulative value vs paid"),
+                 _cap("For the selected resolution date: the cumulative VALUE of the positions resolving that "
+                      "day (the prominent line — fluctuates with public quotes, or the settled payout once "
+                      "resolved) vs the cumulative PRICE PAID (cost basis, the dotted reference — steps up as "
+                      "positions are entered). The band is GREEN when value > paid and RED when value < paid. "
+                      "Spans 12:01 AM the day before through 11:59 PM the resolution day. PAPER: value = public-"
+                      "quote mark (or settled payout once resolved), not realized P&L; $0 real, no orders."),
+                 toggle,
+                 dcc.Graph(id="resday-graph", figure=fig, config={"displayModeBar": False})])
 
 
 def panel_run_projection():
@@ -1607,8 +1739,9 @@ def panel_run_projection():
                  _cap("Paper projection (model estimate, NOT realized). Monte-Carlo of the activated 7-edge "
                       "book at 0.50x Kelly; the P5 / median / P95 BANDS propagate MONTHLY-RETURN VARIANCE ONLY "
                       "(they assume the edges hold, and widen with time). The dashed amber STRESS line is "
-                      "different: it propagates EDGE UNCERTAINTY by compounding the stress %/mo. The run "
-                      "started 2026-06-19 at $1,000 and is flat so far (YOU ARE HERE). Inputs: median "
+                      "different: it propagates EDGE UNCERTAINTY by compounding the stress %/mo. The run RESET "
+                      f"to $1,000 on {_run_meta('reset_date', '2026-06-21')} (algorithm changed; prior track "
+                      "archived) — month 0 = $1,000 (YOU ARE HERE). Inputs: median "
                       f"{100*med_mo:+.1f}%/mo, P5 {100*p5_mo:+.1f}%/mo, P95 {100*p95_mo:+.1f}%/mo -> after 12 "
                       f"paper months the median path reaches ${end_med:,.0f} (P5 ${end_p5:,.0f} / P95 "
                       f"${end_p95:,.0f}).{stress_txt} Activated AHEAD of the forward gate; paper $1,000 only, "
@@ -1949,15 +2082,19 @@ def panel_research_edge_signals():
 
 
 def render_bankroll():
-    return html.Div([section("$1,000 Staged Paper Run — Honest Gate Tracker"),
-                     html.Div(["The $1,000 paper bankroll and the pre-registered gates that govern it. ",
-                               html.B("LIVE capital today = $0"), " — every edge is STAGED until its forward "
-                               "gate passes. No orders, no account, no real money anywhere. Every figure is "
-                               "paper/backtest/forward, never realized P&L."], className="sub",
+    reset_date = _run_meta("reset_date", "2026-06-21")
+    return html.Div([section("$1,000 Paper Run — Honest Gate Tracker"),
+                     html.Div([f"The $1,000 paper bankroll, RESET fresh to $1,000 on {reset_date} (the algorithm "
+                               "changed; the prior track is archived), and the pre-registered gates that govern "
+                               "it. ", html.B("LIVE capital today = $0"), " — every edge is STAGED until its "
+                               "forward gate passes. No orders, no account, no real money anywhere. Every figure "
+                               "is paper/backtest/forward, never realized P&L."], className="sub",
                               style={"marginBottom": "12px"}),
                      panel_run_header(),
                      html.Div([html.Div(panel_run_equity(), className="col-5"),
                                html.Div(panel_staged_alloc(), className="col-7")], className="grid12",
+                              style={"marginTop": "10px"}),
+                     html.Div([html.Div(panel_resolution_day_curve(), className="col-12")], className="grid12",
                               style={"marginTop": "10px"}),
                      html.Div([html.Div(panel_run_projection(), className="col-12")], className="grid12",
                               style={"marginTop": "10px"}),
@@ -2584,7 +2721,8 @@ def render_overview():
         x = list(range(len(y)))
         if len(x) == 1:
             x = [0, 1]; y = [y[0], y[0]]
-        cur_val = y[-1] if y else 1000.0
+        # headline = latest rebased timeline equity (realized + unrealized MTM); step-curve below = realized only
+        cur_val = _latest_equity()
         line_col = GREEN if cur_val >= 1000 else RED
         fig = go.Figure()
         fig.add_scatter(x=x, y=y, name="paper equity", mode="lines+markers",
@@ -3364,6 +3502,16 @@ def _route(active):
 def _run_equity_window(window):
     fig, readout, _col = _equity_figure(window or "1W")
     return fig, readout
+
+
+# Value-vs-paid resolution-day toggle (TASK B, 2026-06-21): swap the cumulative value/paid curve + title to the
+# selected resolution_date. Keyed only on the toggle -> does not re-render the page.
+@app.callback(Output("resday-graph", "figure"), Output("resday-title", "children"),
+              Input("resday-toggle", "value"))
+def _resday_toggle(resolution_date):
+    dates = _resolution_dates()
+    rd = resolution_date or (dates[0] if dates else None)
+    return _resolution_day_figure(rd), f"Positions resolving {rd}: cumulative value vs paid"
 
 
 # Per-stream calibration deck (Bayes feed): the dropdown drives the chip + PIT + coverage + meta line.
