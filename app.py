@@ -1219,9 +1219,23 @@ _EQ_INTRADAY = {"12hr", "1D"}                  # show HH:MM tick labels; longer 
 
 def _equity_points():
     """Return (points, source) for the $1k paper-equity chart. points = list of dicts with a real datetime x:
-    {dt (pandas Timestamp), equity, drawdown}. PREFER the timestamped bankroll_marks (fine-grained, time-aware);
-    if marks are SPARSE (<2) fall back to the settlement-keyed bankroll_run (equity_curve), spacing its rows
-    one-day apart so the long windows still render a line. source tags which fed the chart (shown in the cap)."""
+    {dt (pandas Timestamp), equity, drawdown}. PREFER the timestamped LIVE bankroll_equity_timeline (realized +
+    unrealized mark-to-market, ~10x/day -> a SMOOTH intraday curve); else the realized-only bankroll_marks;
+    else the settlement-keyed bankroll_run (equity_curve), spaced one-day apart so long windows still render.
+    source tags which fed the chart (shown in the cap)."""
+    # ---- preferred: the continuous realized+unrealized MTM timeline (FIX 1, 2026-06-21). Moves with quotes. ----
+    tl = table("bankroll_equity_timeline")
+    if not tl.empty and len(tl) >= 2 and "ts" in tl.columns:
+        t = tl.copy()
+        t["dt"] = pd.to_datetime(t["ts"], utc=True, errors="coerce")
+        t = t.dropna(subset=["dt"]).sort_values("dt")
+        pts = [{"dt": r["dt"], "equity": float(r["equity"]),
+                "drawdown": None,
+                "realized": (None if pd.isna(r.get("realized")) else float(r["realized"])),
+                "unrealized": (None if pd.isna(r.get("unrealized")) else float(r["unrealized"]))}
+               for _, r in t.iterrows()]
+        if len(pts) >= 2:
+            return pts, "timeline"
     marks = table("bankroll_marks")
     if not marks.empty and len(marks) >= 2 and "ts" in marks.columns:
         m = marks.copy()
@@ -1297,14 +1311,30 @@ def _equity_figure(window_label):
     raw = last_eq - first_eq
     pct = (100.0 * raw / first_eq) if first_eq else 0.0
     col = GREEN if raw >= 0 else RED
-    # hover: precise datetime + equity + drawdown
-    cd = [[("—" if dd is None else f"{100.0*dd:.2f}%")] for dd in dds]
+    # SMOOTH spline for the live realized+unrealized timeline; hv-step for realized-only marks; linear else.
+    if source == "timeline":
+        line_kw = dict(color=col, width=2.4, shape="spline", smoothing=0.4)
+    elif source == "marks":
+        line_kw = dict(color=col, width=2.4, shape="hv")
+    else:
+        line_kw = dict(color=col, width=2.4, shape="linear")
+    # hover: precise datetime + equity, + realized/unrealized split when the live timeline feeds it
+    if source == "timeline":
+        cd = [[("—" if p.get("realized") is None else f"${p['realized']:,.2f}"),
+               ("—" if p.get("unrealized") is None else f"${p['unrealized']:,.2f}")] for p in win]
+        hovertmpl = ("%{x|%Y-%m-%d %H:%M} UTC<br>$%{y:,.2f} paper equity"
+                     "<br>realized %{customdata[0]} · unrealized MTM %{customdata[1]}<extra></extra>")
+    else:
+        cd = [[("—" if dd is None else f"{100.0*dd:.2f}%")] for dd in dds]
+        hovertmpl = ("%{x|%Y-%m-%d %H:%M} UTC<br>$%{y:,.2f} (paper)"
+                     "<br>drawdown %{customdata[0]}<extra></extra>")
     mode = "lines+markers" if len(win) > 1 else "markers"
+    # for the dense intraday timeline drop the per-point markers so the spline reads cleanly
+    if source == "timeline" and len(win) > 40:
+        mode = "lines"
     fig.add_scatter(x=xs, y=ys, mode=mode, name="paper equity",
-                    line=dict(color=col, width=2.4, shape="hv" if source == "marks" else "linear"),
-                    marker=dict(size=6, color=col), customdata=cd,
-                    hovertemplate="%{x|%Y-%m-%d %H:%M} UTC<br>$%{y:,.2f} (paper)"
-                                  "<br>drawdown %{customdata[0]}<extra></extra>")
+                    line=line_kw, marker=dict(size=6, color=col), customdata=cd,
+                    hovertemplate=hovertmpl)
     fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
                   annotation_text="$1,000 baseline", annotation_position="bottom right",
                   annotation_font=dict(color=NEUTRAL, size=10))
@@ -1338,9 +1368,11 @@ def panel_run_equity():
     cur_str = f"${cur_val:,.2f}" if cur_val is not None else f"${eq}"
     default_win = "1W"
     fig, readout, _col = _equity_figure(default_win)
-    src_note = ("timestamped paper-equity marks" if source == "marks"
-                else ("daily settlement curve (timestamped marks still sparse — falling back)"
-                      if source == "curve" else "no equity data yet"))
+    src_note = ("LIVE realized + unrealized mark-to-market timeline (moves with public quotes ~10x/day)"
+                if source == "timeline"
+                else ("timestamped realized paper-equity marks" if source == "marks"
+                      else ("daily settlement curve (timestamped marks still sparse — falling back)"
+                            if source == "curve" else "no equity data yet")))
     selector = dcc.RadioItems(
         id="run-equity-window",
         options=[{"label": " " + lbl, "value": lbl} for lbl, _ in _EQ_WINDOWS],
@@ -1348,11 +1380,12 @@ def panel_run_equity():
         labelStyle={"display": "inline-block", "marginRight": "12px", "fontSize": "12px"},
         style={"marginBottom": "6px"})
     return card([html.H3(f"Paper Equity — {cur_str}"),
-                 _cap(f"The $1,000 PAPER bankroll from activation {act}, moving as activated PAPER signals "
-                      f"settle. Current paper equity {cur_str} (peak $1,000, max paper drawdown {dd}%). Pick a "
-                      f"time window below; the readout shows the $ and % change over it. Source: {src_note}. "
-                      f"LIVE real-deploy capital = $0 — promotion to REAL still requires a forward-gate PASS. "
-                      f"Paper / hypothetical, never realized P&L."),
+                 _cap(f"The $1,000 PAPER bankroll from activation {act}. PAPER equity = realized P&L + the "
+                      f"UNREALIZED mark-to-market of open paper positions (public quotes) — so the curve moves "
+                      f"CONTINUOUSLY with quotes, not just at settlements. Current paper equity {cur_str} "
+                      f"(peak $1,000, max paper drawdown {dd}%). Pick a time window below; the readout shows the "
+                      f"$ and % change over it. Source: {src_note}. LIVE real-deploy capital = $0 — promotion to "
+                      f"REAL still requires a forward-gate PASS. Paper / hypothetical, never realized P&L."),
                  selector,
                  html.Div(readout, id="run-equity-readout", style={"marginBottom": "4px"}),
                  dcc.Graph(id="run-equity-graph", figure=fig, config={"displayModeBar": False})])
@@ -1557,6 +1590,13 @@ def panel_open_positions():
         return card([html.H3("Pending Paper Trades"),
                      empty_state("No open paper signals — all logged signals have settled.")])
     d = d.copy()
+    # FIX 4 (2026-06-21): the $1,000 run pending list shows ONLY the deployed in-book streams (S1 high NY/LAX/
+    # CHI + daily-low S1). S3/S3early (in_1k_book==False) are research signals surfaced in their own panel.
+    if "in_1k_book" in d.columns:
+        d = d[d["in_1k_book"] == True].copy()        # noqa: E712 -- explicit bool match
+    if d.empty:
+        return card([html.H3("Pending Paper Trades"),
+                     empty_state("No open $1,000-book paper signals — all in-book signals have settled.")])
     import pandas as _pd
     d["_dt"] = _pd.to_datetime(d["target_date"], errors="coerce")
     scat = d.dropna(subset=["_dt"])
@@ -1674,7 +1714,7 @@ def panel_open_positions():
         rename["trend"] = "Price Trend (paper)"
         fmtmap["trend"] = lambda v: v         # already an html element
     show = present(d, drop=["_dt", "price_series", "entry", "entry_price", "current_price",
-                            "mark_delta", "direction"],
+                            "mark_delta", "direction", "in_1k_book"],
                    rename=rename, fmt=fmtmap, order=cols)
     n = len(d)
     return card([html.H3(["Pending Paper Trades — Open, Unsettled Signals  ", info_dot(
@@ -1701,6 +1741,64 @@ def panel_open_positions():
                 id="open-positions-card")
 
 
+def panel_research_edge_signals():
+    """RESEARCH-EDGE signals that are NOT in the $1,000 book (FIX 4, 2026-06-21): the open S3 / S3early
+    near-money signals (in_1k_book==False). Kept VISIBLE for transparency but clearly separated from the
+    $1k run so the two are never conflated. Source: open_positions (in_1k_book==False). Paper / unrealized
+    mark of public quotes, never realized P&L. Empty -> a short note."""
+    d = table("open_positions")
+    if d.empty or "in_1k_book" not in d.columns:
+        return card([html.H3("Research Edge Signals — S3 / S3early + watch streams (NOT in the $1,000 book)"),
+                     empty_state("No open research-edge signals right now.")])
+    d = d[d["in_1k_book"] == False].copy()           # noqa: E712 -- explicit bool match
+    if d.empty:
+        return card([html.H3("Research Edge Signals — S3 / S3early + watch streams (NOT in the $1,000 book)"),
+                     empty_state("No open research-edge signals right now.")])
+
+    def _entry_to_current(row):
+        ep = row.get("entry_price"); cp = row.get("current_price"); md = row.get("mark_delta")
+        dirn = row.get("direction")
+        ep_s = "—" if _isnull(ep) else f"{ep:.0f}c"
+        if _isnull(cp):
+            return html.Span([html.Span(ep_s, className="mono"),
+                              html.Span(" → —", className="sub")], title="live quote unavailable")
+        arrow = "▲" if dirn == "up" else ("▼" if dirn == "down" else "▬")
+        chip_cls = "pos" if dirn == "up" else ("neg" if dirn == "down" else "")
+        dtxt = "" if _isnull(md) else f" {md:+.0f}c"
+        return html.Span([html.Span(f"{ep_s} → ", className="mono sub"),
+                          html.Span(f"{cp:.0f}c", className="mono"),
+                          html.Span(f"  {arrow}{dtxt}", className=f"mono qb-edge {chip_cls}",
+                                    style={"marginLeft": "4px", "fontSize": "11px"})])
+    has_mark = "current_price" in d.columns
+    if has_mark:
+        d["mark"] = d.apply(_entry_to_current, axis=1)
+    cols = ["target_date", "city", "market", "stream", "ticker", "side", "edge_c", "age_h"]
+    rename = {"edge_c": "Model Edge", "age_h": "Age", "target_date": "Target Settle"}
+    fmtmap = {"edge_c": _cents1, "age_h": lambda v: "—" if _isnull(v) else f"{v:.0f}h"}
+    if has_mark:
+        cols = cols + ["mark"]
+        rename["mark"] = "Entry → Current (paper mark)"
+        fmtmap["mark"] = lambda v: v
+    show = present(d, drop=["_dt", "price_series", "entry", "entry_price", "current_price",
+                            "mark_delta", "direction", "in_1k_book"],
+                   rename=rename, fmt=fmtmap, order=cols)
+    n = len(d)
+    return card([html.H3(["Research Edge Signals — S3 / S3early + watch streams (NOT in the $1,000 book)  ", info_dot(
+                    "Signals the monitors log but that are NOT deployed in the $1,000 paper run: S3 / S3early "
+                    "near-money research edges plus any non-deployed WATCH stream (e.g. MIA-high S1). Shown "
+                    "here for transparency, kept SEPARATE from the run's pending list and net-per-day so they "
+                    "are never conflated with the $1k book. Paper / unrealized mark of public quotes — no "
+                    "orders, no account, never realized P&L.")]),
+                 _cap(f"{n} open paper signals outside the $1,000 book (S3 / S3early + non-deployed watch). "
+                      f"These do "
+                      f"NOT affect the $1,000 paper equity, the gate board, or the net-per-day swing — they are "
+                      f"a separate research stream. Paper / unrealized, never realized P&L."),
+                 pro_table(show, present_df=False,
+                           align_left=("Side", "Market", "Stream", "Ticker",
+                                       "Entry → Current (paper mark)"))],
+                id="research-edge-signals-card")
+
+
 def render_bankroll():
     return html.Div([section("$1,000 Staged Paper Run — Honest Gate Tracker"),
                      html.Div(["The $1,000 paper bankroll and the pre-registered gates that govern it. ",
@@ -1715,7 +1813,8 @@ def render_bankroll():
                      html.Div([html.Div(panel_run_projection(), className="col-12")], className="grid12",
                               style={"marginTop": "10px"}),
                      html.Div([html.Div(panel_gate_board(), className="col-12")], className="grid12"),
-                     html.Div([html.Div(panel_open_positions(), className="col-12")], className="grid12")])
+                     html.Div([html.Div(panel_open_positions(), className="col-12")], className="grid12"),
+                     html.Div([html.Div(panel_research_edge_signals(), className="col-12")], className="grid12")])
 
 
 def card(children, cls="", **kw):
@@ -2354,7 +2453,11 @@ def render_overview():
                      _cap("LIVE allocation $0 — every edge is STAGED until its forward gate PASSES. The paper "
                           "equity moves only as activated PAPER signals settle (no real money). See the "
                           "$1,000 Run page for the full per-edge gate board. Paper only, never realized P&L."),
-                     graph(_tpl(fig, h=240, legend=False))])
+                     graph(_tpl(fig, h=240, legend=False)),
+                     _cap("X-axis = settlement step — each point is one paper signal SETTLING and booking its "
+                          "P&L; the curve advances one step per settled contract, NOT by calendar time. Smooth "
+                          "because settlements are evenly spaced here. (The $1,000 Run page plots the same "
+                          "equity against real datetime, including the unrealized mark of open positions.)")])
     # confirmed-cities mini panel
     rev = cs1[cs1["revived"] == 1] if not cs1.empty and "revived" in cs1 else cs1.iloc[0:0]
     chips = [badge(f"{r['city']}  +{r['s1_net_c']:.1f}c", "good") for _, r in rev.iterrows()] or [badge("NY", "good")]
