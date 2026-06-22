@@ -409,9 +409,14 @@ def panel_calibration_streams():
         html.Div("All deployed streams — calibration verdict", className="sub",
                  style={"marginBottom": "2px", "color": INK}),
         chip_grid,
-        _cap("FLAG (honesty): LAX·high and CHI·high model Brier TRAILS the market on overall skill — their "
-             "edge lives only on the tradable-disagreement subset, not on calibration. Do not read these "
-             "panels as 'every stream beats the market'."),
+        _cap("NOTE (Crucible red-team 2026-06-21): the earlier 'LAX·high Brier trails market' flag was a "
+             "wrong-pool artifact — measured on the base-5 set, not the deployed full pool. On the full pool "
+             "LAX·high model BEATS the market (.10651 vs .10683) and its +5.9c subset edge survives Bonferroni; "
+             "it stays tradable all-season. CHI·high still trails (.11626 vs .11534) and its edge is COLD-"
+             "concentrated, so it is restricted to cold-season trading. Its warm leg is UNCONFIRMED (not a "
+             "confirmed loser — the warm loss is year-concentrated in 2025; 2026 is mildly positive; the honest "
+             "date-clustered CI touches 0) → traded as a warm watch-track, not booked. The s* calibration is "
+             "fine everywhere; an edge can live on the tradable-disagreement subset without leading on Brier."),
     ])
 
 
