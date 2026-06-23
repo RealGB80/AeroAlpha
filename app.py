@@ -1658,30 +1658,52 @@ def _resolution_day_figure(resolution_date):
     return _tpl(fig, h=300, legend=True)
 
 
+def _resday_metric(lbl, val, color=INK, big=False):
+    return html.Div([html.Div(lbl, className="u-label", style={"fontSize": "10px"}),
+                     html.Div(val, className="mono",
+                              style={"fontSize": "22px" if big else "19px", "fontWeight": "800",
+                                     "color": color})],
+                    style={"flex": "1", "minWidth": "100px" if big else "94px"})
+
+
+def _resday_metric_row(s, big=False):
+    """The paid / current-value / net+% / positions / contracts metric row for a summary dict s."""
+    net_col = GREEN if s["net"] >= 0 else RED
+    pct_s = "" if s["pct"] is None else f" ({s['pct']:+.1f}%)"
+    ct_s = "—" if s.get("n_ct") is None else f"{s['n_ct']:,.0f}"
+    return html.Div([
+        _resday_metric("Paid (cost basis)", f"${s['paid']:,.2f}", big=big),
+        _resday_metric("Current value", f"${s['value']:,.2f}", net_col, big=big),
+        _resday_metric("Net (paper)", f"{'+' if s['net'] >= 0 else '−'}${abs(s['net']):,.2f}{pct_s}",
+                       net_col, big=big),
+        _resday_metric("Positions", f"{s['n_pos']}", big=big),
+        _resday_metric("Contracts", ct_s, big=big)],
+        style={"display": "flex", "flexWrap": "wrap", "gap": "10px", "margin": "4px 0 10px"})
+
+
+def _resday_book_summary(dates):
+    """Book-level totals across ALL open resolution dates (sum of each day's paid/value/positions/contracts)."""
+    tot = {"paid": 0.0, "value": 0.0, "n_pos": 0, "n_ct": 0.0, "any": False}
+    for dt in dates:
+        s = _resday_summary(dt)
+        if not s:
+            continue
+        tot["any"] = True
+        tot["paid"] += s["paid"]; tot["value"] += s["value"]; tot["n_pos"] += s["n_pos"]
+        tot["n_ct"] += (s["n_ct"] or 0.0)
+    if not tot["any"]:
+        return None
+    tot["net"] = tot["value"] - tot["paid"]
+    tot["pct"] = (tot["net"] / tot["paid"] * 100.0) if tot["paid"] > 0 else None
+    return tot
+
+
 def _resday_section(resolution_date, idx):
     """One FULL section per resolution date: header + day tag, a summary metric row (paid / current value /
     net / positions / contracts) and the full cumulative value-vs-paid chart."""
     s = _resday_summary(resolution_date)
     tag = "TODAY" if idx == 0 else ("NEXT DAY" if idx == 1 else "")
-
-    def _metric(lbl, val, color=INK):
-        return html.Div([html.Div(lbl, className="u-label", style={"fontSize": "10px"}),
-                         html.Div(val, className="mono",
-                                  style={"fontSize": "19px", "fontWeight": "800", "color": color})],
-                        style={"flex": "1", "minWidth": "94px"})
-    if s:
-        net_col = GREEN if s["net"] >= 0 else RED
-        pct_s = "" if s["pct"] is None else f" ({s['pct']:+.1f}%)"
-        ct_s = "—" if s["n_ct"] is None else f"{s['n_ct']:,.0f}"
-        metrics = html.Div([
-            _metric("Paid (cost basis)", f"${s['paid']:,.2f}"),
-            _metric("Current value", f"${s['value']:,.2f}", net_col),
-            _metric("Net (paper)", f"{'+' if s['net'] >= 0 else '−'}${abs(s['net']):,.2f}{pct_s}", net_col),
-            _metric("Positions", f"{s['n_pos']}"),
-            _metric("Contracts", ct_s)],
-            style={"display": "flex", "flexWrap": "wrap", "gap": "10px", "margin": "4px 0 10px"})
-    else:
-        metrics = html.Div()
+    metrics = _resday_metric_row(s) if s else html.Div()
     hdr = html.Div([html.H3(f"Resolving {resolution_date}",
                             style={"display": "inline-block", "margin": "0 8px 0 0"}),
                     (badge(tag, "good" if idx == 0 else "neut") if tag else html.Span())],
@@ -1691,21 +1713,32 @@ def _resday_section(resolution_date, idx):
 
 
 def panel_resolution_day_curve():
-    """Per-resolution-day FULL SECTIONS (USER ASK 2026-06-22; was a single current/next toggle): for EACH open
-    resolution date, a header + summary (paid / current value / net / positions / contracts) + the full
-    cumulative value-vs-paid chart over [day-before 00:01 -> resolution-day 23:59]. PAPER: value = public-quote
-    mark (or settled payout once resolved), not realized P&L."""
+    """Per-resolution-day FULL SECTIONS (USER ASK 2026-06-22; was a single current/next toggle): a BOOK-TOTAL
+    header (all open resolution days) + for EACH open resolution date a header + summary (paid / current value /
+    net / positions / contracts) + the full cumulative value-vs-paid chart over [day-before 00:01 ->
+    resolution-day 23:59]. PAPER: value = public-quote mark (or settled payout once resolved), not realized P&L."""
     dates = _resolution_dates()
     if not dates:
         return card([html.H3("Positions Resolving — Cumulative Value vs Paid"),
                      empty_state("Fills from the resolution_day_curve table once positions are entered.")])
-    intro = _cap("One section PER resolution date. The prominent line = cumulative VALUE of the positions "
-                 "resolving that day (fluctuates with public quotes, or the settled payout once resolved); the "
-                 "dotted line = cumulative PRICE PAID (cost basis, steps up as positions are entered). Band is "
-                 "GREEN when value > paid, RED when under. Each spans 12:01 AM the day before through 11:59 PM "
-                 "the resolution day. PAPER / UNREALIZED — $0 real, no orders.")
+    intro = _cap("A BOOK TOTAL across all open resolution days, then one section PER resolution date. The "
+                 "prominent line = cumulative VALUE of the positions resolving that day (fluctuates with public "
+                 "quotes, or the settled payout once resolved); the dotted line = cumulative PRICE PAID (cost "
+                 "basis, steps up as positions are entered). Band is GREEN when value > paid, RED when under. "
+                 "Each spans 12:01 AM the day before through 11:59 PM the resolution day. PAPER / UNREALIZED — "
+                 "$0 real, no orders.")
+    bs = _resday_book_summary(dates)
+    book = []
+    if bs:
+        book = [card([html.Div([html.H3("All open resolution days — book total",
+                                        style={"display": "inline-block", "margin": "0 8px 0 0"}),
+                                badge(f"{len(dates)} days", "neut")],
+                               style={"display": "flex", "alignItems": "baseline", "marginBottom": "2px"}),
+                      _resday_metric_row(bs, big=True)],
+                     style={"marginBottom": "12px",
+                            "borderColor": "color-mix(in srgb, var(--mint) 35%, transparent)"})]
     sections = [_resday_section(dt, i) for i, dt in enumerate(dates)]
-    return html.Div([section("Positions Resolving — Value vs Paid (per day)"), intro] + sections)
+    return html.Div([section("Positions Resolving — Value vs Paid (per day)"), intro] + book + sections)
 
 
 def panel_run_projection():
