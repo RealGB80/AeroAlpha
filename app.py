@@ -375,7 +375,7 @@ def panel_calibration_streams():
     chips = []
     for _, r in d.iterrows():
         chips.append(html.Div([
-            html.Span(_stream_label(r["stream"]), style={"color": INK, "fontSize": "12px",
+            html.Span(_stream_label(r["stream"]), style={"color": "var(--ink)", "fontSize": "12px",
                                                           "fontFamily": "JetBrains Mono, monospace",
                                                           "marginRight": "8px", "minWidth": "78px",
                                                           "display": "inline-block"}),
@@ -407,7 +407,7 @@ def panel_calibration_streams():
         html.Div(id="calib-meta", className="sub", style={"marginTop": "8px"}),
         html.Hr(style={"border": "none", "borderTop": f"1px solid {GRIDCOL}", "margin": "14px 0 8px"}),
         html.Div("All deployed streams — calibration verdict", className="sub",
-                 style={"marginBottom": "2px", "color": INK}),
+                 style={"marginBottom": "2px", "color": "var(--ink)"}),
         chip_grid,
         _cap("NOTE (Crucible red-team 2026-06-21): the earlier 'LAX·high Brier trails market' flag was a "
              "wrong-pool artifact — measured on the base-5 set, not the deployed full pool. On the full pool "
@@ -1327,7 +1327,7 @@ def panel_run_header():
                  f"vs the $1,000 reset baseline" if abs(delta) >= 0.005
                  else "currently at the $1,000 reset baseline")
 
-    def tile(label, value, sub, accent=INK):
+    def tile(label, value, sub, accent="var(--ink)"):
         return html.Div([html.Div(label, className="label"),
                          html.Div([html.Span(value, className="val mono", style={"color": accent})]),
                          html.Div(sub, className="sub", style={"fontSize": "10.5px", "marginTop": "2px"})],
@@ -1335,7 +1335,7 @@ def panel_run_header():
     delta_sub = (f"paper · {'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs $1,000"
                  if abs(delta) >= 0.005 else "paper · at $1,000 baseline")
     tiles = [
-        tile("PAPER BANKROLL", "$1,000", f"reset baseline {reset_date}", INK),
+        tile("PAPER BANKROLL", "$1,000", f"reset baseline {reset_date}", "var(--ink)"),
         tile("CURRENT EQUITY", f"${eq}", delta_sub,
              GREEN if eq_f >= 1000 else RED),
         tile("ACTIVE · PAPER", f"${active_p}", f"{nactive} streams · paper, pre-gate", GREEN),
@@ -1357,7 +1357,7 @@ def panel_run_header():
     note = card([html.Div([html.Span("●", style={"color": GREEN, "marginRight": "7px"}),
                            html.B(f"Fresh start: the $1,000 paper run RESET on {reset_date} (the algorithm "
                                   f"changed; the prior track is archived).")],
-                          className="sub", style={"fontSize": "12.5px", "color": INK}),
+                          className="sub", style={"fontSize": "12.5px", "color": "var(--ink)"}),
                  html.Div([f"The run rebaselined to $1,000 on {reset_date}; only settlements resolving on or "
                            f"after that date count. {nactive} warm-season-applicable edges ({activated}) are "
                            f"ACTIVE in the PAPER run ({act_note}) — paper allocation ${active_p}. Current paper "
@@ -1690,7 +1690,7 @@ def _resolution_day_figure(resolution_date):
     return _tpl(fig, h=300, legend=True)
 
 
-def _resday_metric(lbl, val, color=INK, big=False):
+def _resday_metric(lbl, val, color="var(--ink)", big=False):
     return html.Div([html.Div(lbl, className="u-label", style={"fontSize": "10px"}),
                      html.Div(val, className="mono",
                               style={"fontSize": "22px" if big else "19px", "fontWeight": "800",
@@ -1977,9 +1977,24 @@ def panel_open_positions():
     # CHI + daily-low S1). S3/S3early (in_1k_book==False) are research signals surfaced in their own panel.
     if "in_1k_book" in d.columns:
         d = d[d["in_1k_book"] == True].copy()        # noqa: E712 -- explicit bool match
+    # HELD = FUNDED only (2026-06-22): contracts/paid are set ONLY for positions the harness allocated a stake
+    # to. Deployed-but-UNFUNDED daily-low signals (e.g. NY/CHI/PHIL-low — tradable but NOT in the activated $1k
+    # book) previously showed a "—" for contracts. We DON'T hold them, so drop them from the held list and note
+    # the count below (they still settle/score normally; this is display only).
+    unfunded_n = 0
+    unfunded_label = ""
+    if "contracts" in d.columns:
+        _unf = d[d["contracts"].isna()]
+        unfunded_n = int(len(_unf))
+        if unfunded_n:
+            unfunded_label = ", ".join(sorted({f"{c}-{str(m).lower()}"
+                                               for c, m in zip(_unf["city"], _unf["market"])}))
+        d = d[d["contracts"].notna()].copy()
     if d.empty:
         return card([html.H3("Pending Paper Trades"),
-                     empty_state("No open $1,000-book paper signals — all in-book signals have settled.")])
+                     empty_state("No funded open positions in the $1,000 book right now."
+                                 + (f"  ({unfunded_n} deployed-but-unfunded daily-low signal(s) tracked: "
+                                    f"{unfunded_label}.)" if unfunded_n else ""))])
     import pandas as _pd
     d["_dt"] = _pd.to_datetime(d["target_date"], errors="coerce")
     scat = d.dropna(subset=["_dt"])
@@ -2131,7 +2146,13 @@ def panel_open_positions():
                  # deliverable #3: show ALL pending rows (no row cap / no truncation footer)
                  pro_table(show, present_df=False,
                            align_left=("Side", "Market", "Stream", "Ticker",
-                                       "Entry → Current (paper mark)"))],
+                                       "Entry → Current (paper mark)")),
+                 # FUNDED-only note (2026-06-22): explain the deployed-but-unfunded daily-low signals we dropped
+                 (html.Div([html.B(f"{unfunded_n} deployed daily-low signal(s) "),
+                            f"({unfunded_label}) are logged and tradable but NOT funded in this $1,000 run — no "
+                            f"stake is allocated, so they're not held above. They still settle and score."],
+                           className="sub", style={"fontSize": "11px", "marginTop": "8px", "opacity": .85})
+                  if unfunded_n else html.Div())],
                 id="open-positions-card")
 
 
@@ -2947,7 +2968,7 @@ def panel_city_source_attribution():
         chips = ([src_chip(s, "active") for s in actives["source"]] +
                  [src_chip(s, "reference") for s in refs["source"]])
         blocks.append(html.Div([
-            html.Div([html.Span(f"{city} ", style={"fontWeight": "700", "color": INK}),
+            html.Div([html.Span(f"{city} ", style={"fontWeight": "700", "color": "var(--ink)"}),
                       html.Span(mkt_lbl, className="sub"),
                       html.Span(f"  ·  {len(actives)} active "
                                 f"({'expanded pool' if pool == 'full' else 'core 5 members'})",

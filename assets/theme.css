@@ -483,3 +483,20 @@ a, a:visited { color: var(--cyan); }
    NOT the axis/tick/legend text (those live in .infolayer, untouched) */
 .js-plotly-plot .scatterlayer,
 .js-plotly-plot .barlayer { filter: var(--glow-chart); }
+
+/* ---- dcc.Dropdown (react-select) theming (2026-06-22): without this its text defaults to dark #333,
+   nearly unreadable in DARK mode. Flip text/menu to var(--ink) so it reads in BOTH themes. ---- */
+.Select-control { background: var(--bg2) !important; border-color: var(--border) !important; }
+.Select-control:hover { border-color: var(--border-hi) !important; }
+.Select--single > .Select-control .Select-value .Select-value-label,
+.Select-value-label, .Select-placeholder, .Select-input > input,
+.Select-control .Select-value-label { color: var(--ink) !important; }
+.Select-menu-outer { background: var(--bg2) !important; border: 1px solid var(--border) !important; }
+.Select-option { background: var(--bg2) !important; color: var(--ink) !important; }
+.Select-option.is-focused { background: var(--panel-2) !important; color: var(--ink) !important; }
+.Select-option.is-selected { background: color-mix(in srgb, var(--accent) 18%, transparent) !important;
+                             color: var(--ink) !important; }
+.Select-arrow { border-top-color: var(--dim) !important; }
+.is-focused:not(.is-open) > .Select-control { border-color: var(--accent) !important; box-shadow: none !important; }
+/* RadioItems / Checklist label text -> theme ink (equity-window + sandbox slip-mode selectors) */
+.sb-radio label, .dash-radio-items label, .dash-checklist label { color: var(--ink); }
