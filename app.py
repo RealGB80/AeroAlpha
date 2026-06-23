@@ -1587,16 +1587,24 @@ def _resolution_dates():
     return vals
 
 
-def _resolution_options():
-    """RadioItems options for the toggle: 'Current day (<date>)' / 'Next day (<date>)' derived from the sorted
-    distinct resolution_date values. Any beyond the first two are labeled 'Resolving <date>'."""
-    dates = _resolution_dates()
-    labels = ["Current day", "Next day"]
-    opts = []
-    for i, dt in enumerate(dates):
-        lab = labels[i] if i < len(labels) else "Resolving"
-        opts.append({"label": f" {lab} ({dt})", "value": dt})
-    return opts
+def _resday_summary(resolution_date):
+    """Latest-ts totals for one resolution date from resolution_day_curve: dict(paid$, value$, net$, pct,
+    n_pos, n_ct) or None. The last ts row holds the current cumulative paid / value / contracts."""
+    d = table("resolution_day_curve")
+    if d.empty or "resolution_date" not in d.columns or "ts" not in d.columns:
+        return None
+    sel = d[d["resolution_date"].astype(str) == str(resolution_date)]
+    if sel.empty:
+        return None
+    last = sel.sort_values("ts").iloc[-1]
+    paid = float(last.get("cumulative_paid_c") or 0.0) / 100.0
+    value = float(last.get("cumulative_value_c") or 0.0) / 100.0
+    npos = int(last.get("n_entered") or 0)
+    nct = (float(last.get("n_contracts"))
+           if ("n_contracts" in sel.columns and pd.notna(last.get("n_contracts"))) else None)
+    net = value - paid
+    pct = (net / paid * 100.0) if paid > 0 else None
+    return {"paid": paid, "value": value, "net": net, "pct": pct, "n_pos": npos, "n_ct": nct}
 
 
 def _resolution_day_figure(resolution_date):
@@ -1650,31 +1658,54 @@ def _resolution_day_figure(resolution_date):
     return _tpl(fig, h=300, legend=True)
 
 
+def _resday_section(resolution_date, idx):
+    """One FULL section per resolution date: header + day tag, a summary metric row (paid / current value /
+    net / positions / contracts) and the full cumulative value-vs-paid chart."""
+    s = _resday_summary(resolution_date)
+    tag = "TODAY" if idx == 0 else ("NEXT DAY" if idx == 1 else "")
+
+    def _metric(lbl, val, color=INK):
+        return html.Div([html.Div(lbl, className="u-label", style={"fontSize": "10px"}),
+                         html.Div(val, className="mono",
+                                  style={"fontSize": "19px", "fontWeight": "800", "color": color})],
+                        style={"flex": "1", "minWidth": "94px"})
+    if s:
+        net_col = GREEN if s["net"] >= 0 else RED
+        pct_s = "" if s["pct"] is None else f" ({s['pct']:+.1f}%)"
+        ct_s = "—" if s["n_ct"] is None else f"{s['n_ct']:,.0f}"
+        metrics = html.Div([
+            _metric("Paid (cost basis)", f"${s['paid']:,.2f}"),
+            _metric("Current value", f"${s['value']:,.2f}", net_col),
+            _metric("Net (paper)", f"{'+' if s['net'] >= 0 else '−'}${abs(s['net']):,.2f}{pct_s}", net_col),
+            _metric("Positions", f"{s['n_pos']}"),
+            _metric("Contracts", ct_s)],
+            style={"display": "flex", "flexWrap": "wrap", "gap": "10px", "margin": "4px 0 10px"})
+    else:
+        metrics = html.Div()
+    hdr = html.Div([html.H3(f"Resolving {resolution_date}",
+                            style={"display": "inline-block", "margin": "0 8px 0 0"}),
+                    (badge(tag, "good" if idx == 0 else "neut") if tag else html.Span())],
+                   style={"display": "flex", "alignItems": "baseline", "marginBottom": "2px"})
+    return card([hdr, metrics, graph(_resolution_day_figure(resolution_date))],
+                style={"marginBottom": "10px"})
+
+
 def panel_resolution_day_curve():
-    """Cumulative VALUE vs PAID for the positions resolving on a chosen date, over the day-before -> resolution
-    day. Toggle (RadioItems) between the data-derived resolution dates (current / next). PAPER: value = public-
-    quote mark (or settled payout once resolved), not realized P&L."""
+    """Per-resolution-day FULL SECTIONS (USER ASK 2026-06-22; was a single current/next toggle): for EACH open
+    resolution date, a header + summary (paid / current value / net / positions / contracts) + the full
+    cumulative value-vs-paid chart over [day-before 00:01 -> resolution-day 23:59]. PAPER: value = public-quote
+    mark (or settled payout once resolved), not realized P&L."""
     dates = _resolution_dates()
-    opts = _resolution_options()
     if not dates:
         return card([html.H3("Positions Resolving — Cumulative Value vs Paid"),
                      empty_state("Fills from the resolution_day_curve table once positions are entered.")])
-    default = dates[0]
-    fig = _resolution_day_figure(default)
-    toggle = dcc.RadioItems(
-        id="resday-toggle",
-        options=opts, value=default, className="sb-radio",
-        labelStyle={"display": "inline-block", "marginRight": "14px", "fontSize": "12px"},
-        style={"marginBottom": "6px"})
-    return card([html.H3(id="resday-title", children=f"Positions resolving {default}: cumulative value vs paid"),
-                 _cap("For the selected resolution date: the cumulative VALUE of the positions resolving that "
-                      "day (the prominent line — fluctuates with public quotes, or the settled payout once "
-                      "resolved) vs the cumulative PRICE PAID (cost basis, the dotted reference — steps up as "
-                      "positions are entered). The band is GREEN when value > paid and RED when value < paid. "
-                      "Spans 12:01 AM the day before through 11:59 PM the resolution day. PAPER: value = public-"
-                      "quote mark (or settled payout once resolved), not realized P&L; $0 real, no orders."),
-                 toggle,
-                 dcc.Graph(id="resday-graph", figure=fig, config={"displayModeBar": False})])
+    intro = _cap("One section PER resolution date. The prominent line = cumulative VALUE of the positions "
+                 "resolving that day (fluctuates with public quotes, or the settled payout once resolved); the "
+                 "dotted line = cumulative PRICE PAID (cost basis, steps up as positions are entered). Band is "
+                 "GREEN when value > paid, RED when under. Each spans 12:01 AM the day before through 11:59 PM "
+                 "the resolution day. PAPER / UNREALIZED — $0 real, no orders.")
+    sections = [_resday_section(dt, i) for i, dt in enumerate(dates)]
+    return html.Div([section("Positions Resolving — Value vs Paid (per day)"), intro] + sections)
 
 
 def panel_run_projection():
@@ -1989,9 +2020,18 @@ def panel_open_positions():
         if not has_mark:
             d = d.copy()
         d["trend"] = d.apply(_row_spark, axis=1)
-    cols = ["target_date", "city", "market", "stream", "ticker", "side", "edge_c", "age_h"]
-    rename = {"edge_c": "Model Edge", "age_h": "Age", "target_date": "Target Settle"}
-    fmtmap = {"edge_c": _cents1, "age_h": lambda v: "—" if _isnull(v) else f"{v:.0f}h"}
+    # contracts/paid_c are added by the producer (2026-06-22); guard so the app degrades gracefully if it
+    # deploys before the producer re-materializes the new columns into the cloud table.
+    _has_size = "contracts" in d.columns and "paid_c" in d.columns
+    cols = ["target_date", "city", "market", "stream", "ticker", "side", "edge_c"]
+    if _has_size:
+        cols += ["contracts", "paid_c"]
+    cols += ["age_h"]
+    rename = {"edge_c": "Model Edge", "age_h": "Age", "target_date": "Target Settle",
+              "contracts": "Contracts", "paid_c": "Paid ($)"}
+    fmtmap = {"edge_c": _cents1, "age_h": lambda v: "—" if _isnull(v) else f"{v:.0f}h",
+              "contracts": lambda v: "—" if _isnull(v) else f"{float(v):,.0f}",
+              "paid_c": lambda v: "—" if _isnull(v) else f"${float(v) / 100.0:,.2f}"}
     if has_mark:
         cols = cols + ["mark"]
         rename["mark"] = "Entry → Current (paper mark)"
@@ -2009,7 +2049,9 @@ def panel_open_positions():
                     "column is a PAPER MARK, UNREALIZED — not real money, not realized P&L, not a real "
                     "position. No orders, no account. Current = live public YES-mid for the side held.")]),
                  _cap(f"{n} paper signals logged across the forward monitors but NOT yet settled, plotted by "
-                      f"target settle date and model edge (circle = YES side, diamond = NO). The "
+                      f"target settle date and model edge (circle = YES side, diamond = NO). "
+                      f"Contracts = the staged $1,000-harness size and Paid ($) = the cost basis per position "
+                      f"(contracts × entry price; paper stake, no real orders). The "
                       f"Entry → Current column marks each paper signal to the live public quote with a green "
                       f"up / red down chip. The Net-Per-Day Swing below AGGREGATES across ALL open paper "
                       f"contracts per calendar day (sum of entry cost vs sum of current marks) — a PAPER, "
@@ -3517,14 +3559,8 @@ def _run_equity_window(window):
     return fig, readout
 
 
-# Value-vs-paid resolution-day toggle (TASK B, 2026-06-21): swap the cumulative value/paid curve + title to the
-# selected resolution_date. Keyed only on the toggle -> does not re-render the page.
-@app.callback(Output("resday-graph", "figure"), Output("resday-title", "children"),
-              Input("resday-toggle", "value"))
-def _resday_toggle(resolution_date):
-    dates = _resolution_dates()
-    rd = resolution_date or (dates[0] if dates else None)
-    return _resolution_day_figure(rd), f"Positions resolving {rd}: cumulative value vs paid"
+# (2026-06-22) The resolution-day current/next TOGGLE was replaced by full per-date SECTIONS rendered
+# statically in panel_resolution_day_curve (_resday_section), so this callback + its component IDs are gone.
 
 
 # Per-stream calibration deck (Bayes feed): the dropdown drives the chip + PIT + coverage + meta line.
