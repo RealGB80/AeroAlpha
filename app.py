@@ -1399,6 +1399,28 @@ _EQ_WINDOW_HOURS = {lbl: hrs for lbl, hrs in _EQ_WINDOWS}
 _EQ_INTRADAY = {"12hr", "1D"}                  # show HH:MM tick labels; longer windows show dates
 
 
+def _downsample_list(seq, max_n):
+    """PERF (2026-06-22): downsample a list to <= max_n items, KEEPING the first and last (even index
+    sampling). A chart can't show more than a few hundred points on screen anyway, and the dense series
+    bloat the to_json payload + browser render. Visual shape is preserved."""
+    n = len(seq)
+    if n <= max_n or max_n < 2:
+        return seq
+    import numpy as _np
+    idx = sorted(set(int(i) for i in _np.linspace(0, n - 1, max_n).round()))
+    return [seq[i] for i in idx]
+
+
+def _downsample_df(df, max_n):
+    """Same idea for a DataFrame (keeps first+last rows via even index sampling)."""
+    n = len(df)
+    if n <= max_n or max_n < 2:
+        return df
+    import numpy as _np
+    idx = sorted(set(int(i) for i in _np.linspace(0, n - 1, max_n).round()))
+    return df.iloc[idx]
+
+
 def _equity_points():
     """Return (points, source) for the $1k paper-equity chart. points = list of dicts with a real datetime x:
     {dt (pandas Timestamp), equity, drawdown}. PREFER the timestamped LIVE bankroll_equity_timeline (realized +
@@ -1408,14 +1430,22 @@ def _equity_points():
     # ---- preferred: the continuous realized+unrealized MTM timeline (FIX 1, 2026-06-21). Moves with quotes. ----
     tl = table("bankroll_equity_timeline")
     if not tl.empty and len(tl) >= 2 and "ts" in tl.columns:
+        # PERF (2026-06-22): VECTORIZED build (was a per-row iterrows over ~27k rows = seconds/render).
         t = tl.copy()
         t["dt"] = pd.to_datetime(t["ts"], utc=True, errors="coerce")
-        t = t.dropna(subset=["dt"]).sort_values("dt")
-        pts = [{"dt": r["dt"], "equity": float(r["equity"]),
-                "drawdown": None,
-                "realized": (None if pd.isna(r.get("realized")) else float(r["realized"])),
-                "unrealized": (None if pd.isna(r.get("unrealized")) else float(r["unrealized"]))}
-               for _, r in t.iterrows()]
+        t["equity"] = pd.to_numeric(t["equity"], errors="coerce")
+        t = t.dropna(subset=["dt", "equity"]).sort_values("dt")
+        has_r = "realized" in t.columns
+        has_u = "unrealized" in t.columns
+        if has_r:
+            t["realized"] = pd.to_numeric(t["realized"], errors="coerce")
+        if has_u:
+            t["unrealized"] = pd.to_numeric(t["unrealized"], errors="coerce")
+        recs = t.to_dict("records")
+        pts = [{"dt": r["dt"], "equity": r["equity"], "drawdown": None,
+                "realized": (r["realized"] if has_r and not pd.isna(r["realized"]) else None),
+                "unrealized": (r["unrealized"] if has_u and not pd.isna(r["unrealized"]) else None)}
+               for r in recs]
         if len(pts) >= 2:
             return pts, "timeline"
     marks = table("bankroll_marks")
@@ -1486,6 +1516,7 @@ def _equity_figure(window_label):
             win = pts[-2:] if len(pts) >= 2 else pts[-1:]
     else:
         win = pts
+    win = _downsample_list(win, 600)   # PERF: cap plotted points (keeps first/last -> raw/% change exact)
     xs = [p["dt"] for p in win]
     ys = [p["equity"] for p in win]
     dds = [p["drawdown"] for p in win]
@@ -1622,6 +1653,7 @@ def _resolution_day_figure(resolution_date):
     sel = sel.dropna(subset=["dt"]).sort_values("dt")
     if sel.empty:
         return _tpl(fig, h=300, legend=False)
+    sel = _downsample_df(sel, 500)     # PERF: cap dense grids (today's curve was ~12.5k pts x 5 traces)
     xs = list(sel["dt"])
     paid = [float(v) / 100.0 for v in sel["cumulative_paid_c"]]      # cents -> dollars
     value = [float(v) / 100.0 for v in sel["cumulative_value_c"]]
