@@ -3447,11 +3447,14 @@ def render_sandbox():
     _sb_med = (float(_sb_rp["mc_median_mo"].dropna().iloc[0])
                if (not _sb_rp.empty and "mc_median_mo" in _sb_rp and _sb_rp["mc_median_mo"].notna().any())
                else None)
-    _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the live deployed median"
+    _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the older Kelly-MC median"
     edge_inputs = card([html.H3("Edges & Flow"),
-        html.Div(f"Defaults reproduce the live deployed $1,000 book: {_sb_nact} activated streams, "
-                 f"${_sb_stake} staked at 0.50x Kelly → {_sb_med_str} (matches the live projection). "
-                 f"The lab aggregates streams generically; every field below moves the scenario.",
+        html.Div([f"Defaults = the live deployed $1,000 book: {_sb_nact} activated streams, ${_sb_stake} "
+                  f"staked at 0.50x Kelly. The per-trade sizing is anchored to the original 7-stream sub-book "
+                  f"and HELD FIXED, so profit SCALES with every field — adding NY-low (the 8th stream) lifts "
+                  f"the modeled default ABOVE the older 7-stream Kelly-MC projection (", html.B(_sb_med_str),
+                  f"), which has not yet been re-run with NY-low. The result below is this book's modeled "
+                  f"return; nothing is pinned to a target."],
                  className="sub", style={"margin": "0 0 8px", "fontSize": "11px"}),
         html.Div("Day-ahead S1 (high)", className="sub",
                  style={"margin": "2px 0 2px", "color": MINT, "fontWeight": "700"}),
@@ -3829,10 +3832,15 @@ DEPTH_CAP = 250        # contracts fillable within slippage (measured median; fl
 # net at net_opt (~2.9c high / ~5.6c low).
 S1_HIGH_EDGE_DEFAULT = 4.9     # gross raw-backtest c/ct -> ~2.9c net_opt after the 2c fill cost (NY/LAX/CHI mean)
 LOW_EDGE_DEFAULT = 7.6         # gross raw-backtest c/ct -> ~5.6c net_opt after the 2c fill cost (5 low streams, incl NY-low)
-# CALIBRATED contracts-per-trade so the DEFAULT scenario (3 high + 5 low, 0.50x Kelly, $1,000) reproduces the
-# DEPLOYED activated-book median (~+14.63%/m). RE-SOLVED 2026-06-24 to 2.42 (was 2.81) after the edge defaults
-# became the accurate raw means + lowcities 4->5 (NY-low added) + fill cost 1c->2c -> verified roi=14.63%/m.
-SANDBOX_CT_CAL = 2.4162
+# Per-trade contract SIZING, anchored ONCE to the deployed sub-book and then HELD FIXED -- it is NOT re-pinned
+# when the scenario grows (doing so would suppress real scaling, the bug a user caught 2026-06-24). Anchor:
+# the 7-stream sub-book (3 high + 4 warm low) at its accurate net edges, 0.50x Kelly on $1,000, reproduces
+# that sub-book's Kelly-MC median (~14.6%/m, run_projection's kelly_activated_book artifact, n_streams=7).
+# CT_CAL=2.81 fits that anchor. From there, profit SCALES with the inputs: adding NY-low (-> 8 streams) lifts
+# the default to ~17%/m (NY-low's real contribution, which the 7-stream MC projection does NOT yet include);
+# raising edges/cities scales it further. The run_projection MC is still the older 7-stream artifact -> the
+# sandbox 8-stream default (~17%) is HIGHER than that projection by design until the MC is re-run with NY-low.
+SANDBOX_CT_CAL = 2.81
 
 # ---- NON-LINEAR per-stream slippage(size) curves (AUDIT-CORRECTED 2026-06-21) ----
 # The ONLY stream with a real logged per-size fill curve is NY-high (median across n logged lock-moment
