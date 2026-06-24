@@ -1399,6 +1399,18 @@ _EQ_WINDOW_HOURS = {lbl: hrs for lbl, hrs in _EQ_WINDOWS}
 _EQ_INTRADAY = {"12hr", "1D"}                  # show HH:MM tick labels; longer windows show dates
 
 
+_DISPLAY_TZ = "America/New_York"   # all $1k-page time displays are ET (EDT/EST), not UTC (2026-06-24)
+
+
+def _to_et_naive(ts):
+    """A UTC timestamp (tz-aware, or naive assumed-UTC) -> tz-naive America/New_York, so Plotly shows the ET
+    wall-clock literally. Handles DST automatically (EDT in summer, EST in winter)."""
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    return t.tz_convert(_DISPLAY_TZ).tz_localize(None)
+
+
 def _downsample_list(seq, max_n):
     """PERF (2026-06-22): downsample a list to <= max_n items, KEEPING the first and last (even index
     sampling). A chart can't show more than a few hundred points on screen anyway, and the dense series
@@ -1517,7 +1529,7 @@ def _equity_figure(window_label):
     else:
         win = pts
     win = _downsample_list(win, 600)   # PERF: cap plotted points (keeps first/last -> raw/% change exact)
-    xs = [p["dt"] for p in win]
+    xs = [_to_et_naive(p["dt"]) for p in win]   # ET wall-clock display (was UTC)
     ys = [p["equity"] for p in win]
     dds = [p["drawdown"] for p in win]
     first_eq, last_eq = ys[0], ys[-1]
@@ -1535,11 +1547,11 @@ def _equity_figure(window_label):
     if source == "timeline":
         cd = [[("—" if p.get("realized") is None else f"${p['realized']:,.2f}"),
                ("—" if p.get("unrealized") is None else f"${p['unrealized']:,.2f}")] for p in win]
-        hovertmpl = ("%{x|%Y-%m-%d %H:%M} UTC<br>$%{y:,.2f} paper equity"
+        hovertmpl = ("%{x|%Y-%m-%d %H:%M} ET<br>$%{y:,.2f} paper equity"
                      "<br>realized %{customdata[0]} · unrealized MTM %{customdata[1]}<extra></extra>")
     else:
         cd = [[("—" if dd is None else f"{100.0*dd:.2f}%")] for dd in dds]
-        hovertmpl = ("%{x|%Y-%m-%d %H:%M} UTC<br>$%{y:,.2f} (paper)"
+        hovertmpl = ("%{x|%Y-%m-%d %H:%M} ET<br>$%{y:,.2f} (paper)"
                      "<br>drawdown %{customdata[0]}<extra></extra>")
     mode = "lines+markers" if len(win) > 1 else "markers"
     # for the dense intraday timeline drop the per-point markers so the spline reads cleanly
@@ -1653,6 +1665,7 @@ def _resolution_day_figure(resolution_date):
     sel = sel.dropna(subset=["dt"]).sort_values("dt")
     if sel.empty:
         return _tpl(fig, h=300, legend=False)
+    sel["dt"] = sel["dt"].dt.tz_convert(_DISPLAY_TZ).dt.tz_localize(None)   # ET wall-clock display (was UTC)
     sel = _downsample_df(sel, 500)     # PERF: cap dense grids (today's curve was ~12.5k pts x 5 traces)
     xs = list(sel["dt"])
     paid = [float(v) / 100.0 for v in sel["cumulative_paid_c"]]      # cents -> dollars
@@ -1680,7 +1693,7 @@ def _resolution_day_figure(resolution_date):
           for p, v, n in zip(paid, value, nent)]
     fig.add_scatter(x=xs, y=value, name="cumulative value (mark/payout)", mode="lines",
                     line=dict(color=(GREEN if up else RED), width=2.6), customdata=cd,
-                    hovertemplate=("%{x|%Y-%m-%d %H:%M} UTC<br>value %{customdata[1]} · paid %{customdata[0]}"
+                    hovertemplate=("%{x|%Y-%m-%d %H:%M} ET<br>value %{customdata[1]} · paid %{customdata[0]}"
                                    "<br>delta %{customdata[2]} · entered %{customdata[3]}<extra></extra>"))
     allv = paid + value
     span = (max(allv) - min(allv)) or 1.0
@@ -1757,7 +1770,7 @@ def panel_resolution_day_curve():
                  "prominent line = cumulative VALUE of the positions resolving that day (fluctuates with public "
                  "quotes, or the settled payout once resolved); the dotted line = cumulative PRICE PAID (cost "
                  "basis, steps up as positions are entered). Band is GREEN when value > paid, RED when under. "
-                 "Each spans 12:01 AM the day before through 11:59 PM the resolution day. PAPER / UNREALIZED — "
+                 "Each spans 12:01 AM the day before through 11:59 PM the resolution day (ET). PAPER / UNREALIZED — "
                  "$0 real, no orders.")
     bs = _resday_book_summary(dates)
     book = []
@@ -2051,42 +2064,36 @@ def panel_open_positions():
             return html.Span(["• ", html.Span(lbl, className="mono sub")],
                              title="accumulating price snapshots (grows each run)")
         return _spark(seq, height=22, fill=False)
-    # NET-PER-DAY PRICE SWING (USER ASK 2026-06-21, REWORKED to NET PER DAY): one row per calendar day,
-    # AGGREGATED across ALL open paper contracts — "6/21: paid $X.XX → now $Y.YY (+Z%)" (sum of entry cost of
-    # that day's open contracts vs sum of their current marks, plus net $ and %). Green up / red down. Source:
-    # pending_price_daily (curated, now net-per-day). Honest: a PAPER, UNREALIZED mark of public quotes.
-    daily = table("pending_price_daily")
-    net_day_recs = []
-    if not daily.empty and {"day", "total_paid_c", "current_value_c"}.issubset(daily.columns):
-        net_day_recs = daily.sort_values("day").to_dict("records")
-
+    # NET-PER-DAY SWING (USER ASK 2026-06-24: make it match the per-resolution-day charts EXACTLY). Built from
+    # the SAME source as those charts -- _resday_summary(date) (last-ts cumulative paid vs value from
+    # resolution_day_curve) -- so the numbers are identical to the section headers below by construction.
     def _mmdd(day):
         s = str(day)
         return f"{int(s[5:7])}/{int(s[8:10])}" if len(s) >= 10 else s
 
     def _net_per_day_block():
-        if not net_day_recs:
+        recs = [(dt, _resday_summary(dt)) for dt in _resolution_dates()]
+        recs = [(dt, s) for dt, s in recs if s]
+        if not recs:
             return html.Div("Accumulating net-per-day marks (grows each run).", className="sub",
                             style={"fontSize": "11px"})
         items = []
-        for r in net_day_recs:
-            paid = r.get("total_paid_c"); val = r.get("current_value_c")
-            dl = r.get("delta_c"); pct = r.get("pct"); nc = r.get("n_contracts")
-            up = (dl is not None and dl > 0)
-            down = (dl is not None and dl < 0)
+        for dt, s in recs:
+            paid, val, net, pct, nct = s["paid"], s["value"], s["net"], s["pct"], s["n_ct"]
+            up = net > 0; down = net < 0
             dcls = "pos" if up else ("neg" if down else "")
             arrow = "▲" if up else ("▼" if down else "▬")
-            paid_s = "—" if _isnull(paid) else f"${paid/100.0:,.2f}"
-            val_s = "—" if _isnull(val) else f"${val/100.0:,.2f}"
-            pct_s = "" if _isnull(pct) else f" ({pct:+.1f}%)"
-            dl_s = "" if _isnull(dl) else f"{arrow}${abs(dl)/100.0:,.2f}{pct_s}"
-            nc_s = "" if _isnull(nc) else f" · {int(nc)} open"
+            pct_s = "" if pct is None else f" ({pct:+.1f}%)"
+            dl_s = f"{arrow}${abs(net):,.2f}{pct_s}"
+            nc_s = "" if nct is None else f" · {int(nct)} ct"
             items.append(html.Div([
-                html.Span(f"{_mmdd(r.get('day'))}: ", className="sub", style={"opacity": .75}),
+                html.Span(f"{_mmdd(dt)}: ", className="sub", style={"opacity": .75}),
                 html.Span("paid ", className="sub", style={"fontSize": "10.5px"}),
-                html.Span(paid_s, className="mono sub", title="sum of entry cost, open contracts that day"),
+                html.Span(f"${paid:,.2f}", className="mono sub",
+                          title="cumulative cost basis of positions resolving that day (= the chart)"),
                 html.Span(" → now ", className="sub", style={"fontSize": "10.5px"}),
-                html.Span(val_s, className="mono", title="sum of current side-held marks that day"),
+                html.Span(f"${val:,.2f}", className="mono",
+                          title="cumulative current value (= the per-resolution-day chart)"),
                 html.Span("  " + dl_s, className=f"mono qb-edge {dcls}",
                           style={"marginLeft": "6px", "fontSize": "11px"}),
                 html.Span(nc_s, className="sub", style={"fontSize": "10px", "opacity": .7})],
