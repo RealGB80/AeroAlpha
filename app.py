@@ -2052,9 +2052,10 @@ def panel_staged_alloc():
     active_total = float(d[d["is_active"]]["alloc"].sum())
     staged_total = float(d[~d["is_active"]]["alloc"].sum())
     return card([html.H3("Per-Stream Allocation — Active (Paper) vs Staged"),
-                 _cap(f"GREEN = ACTIVE in the $1,000 PAPER run (${active_total:,.2f} total, user-activated "
-                      f"ahead of the gate); NEUTRAL = STAGED at $0 live (${staged_total:,.2f} the gate still "
-                      f"governs). Cold-season daily-low streams (PHIL/AUS/MIA) carry the largest STAGED stakes. "
+                 _cap(f"GREEN = ACTIVE in the $1,000 PAPER run (${active_total:,.2f} total — warm streams "
+                      f"user-activated ahead of the gate, plus any cold stream auto-staged once the season "
+                      f"turns AND its gate passes); NEUTRAL = STAGED at $0 live (${staged_total:,.2f}, the gate "
+                      f"still governs). The cold-season daily-low streams carry the largest STAGED stakes. "
                       f"All are $0 REAL today — REAL deploy needs a gate PASS. Paper model, never realized P&L."),
                  graph(_tpl(fig, h=320, legend=False))])
 
@@ -3378,11 +3379,14 @@ def render_forward():
                                      "S1-high (NY deployed), multi-city S1-high (LAX/CHI), S1_LOW_NYC (A3, "
                                      "MIN_N=150), and the A4 daily-low multi-city cold sub-gates — PHIL/AUS/MIA "
                                      "(cold n≥110 + non-degradation + fresh forward CI-excludes-0 + fills "
-                                     "clause) with DEN/LAX WATCH (no tradable path). A4.1 (2026-06-20) adds a "
-                                     "WARM-season TRACKING gate for the user-activated LAX/DEN/MIA warm streams "
-                                     "(break-even floor, n_warm≥90, WATCH-only — promotion needs a Verity k=9 "
-                                     "re-rule + Aegis). New-city S1-high expansion: SEA-high is a WATCH "
-                                     "candidate (fails the k=6 Bonferroni bar); SFO/DAL/BOS/PHX ruled out. "
+                                     "clause) with DEN/LAX WATCH (no tradable path), plus PHX-low (A4.2 — the "
+                                     "STRONGEST cold candidate, +17.65c, at the stricter 99.44% k=9 bar). A4.1 "
+                                     "(2026-06-20) adds a WARM-season TRACKING gate for the user-activated "
+                                     "LAX/DEN/MIA warm streams (break-even floor, n_warm≥90, WATCH-only — "
+                                     "promotion needs a Verity k=9 re-rule + Aegis). New-city S1-HIGH expansion: "
+                                     "SEA-high is a WATCH candidate (fails the k=6 Bonferroni bar); SFO/DAL/BOS "
+                                     "and PHX-HIGH ruled out for S1-high (PHX-LOW above is a separate, strong "
+                                     "cold edge — not ruled out). "
                                      "Same gate table as the $1,000 Run board, so the two pages agree. All "
                                      "ACCUMULATING — not yet a proven live edge."],
                                     className="sub"),
@@ -3432,13 +3436,22 @@ def render_sandbox():
         return html.Div([html.Label(label), dcc.Input(**kw)], className="sb-field")
 
     # ---- column 1: edge & flow inputs ----
-    # DEFAULTS = the DEPLOYED $1,000 run's 7-stream activated book (deliverable #6): 3 high-S1 cities
-    # (NY/LAX/CHI) + 4 daily-low WARM cities (AUS/LAX/DEN/MIA), ~84/82 trades/mo, low edge ~7.7c (the mean
-    # of the 4 warm daily-low nets), $30.29 staked at 0.50x Kelly. Lock-in is NOT in the activated book
-    # (deprioritized speed race) -> defaults to 0 locks/mo so it doesn't inflate the deployed view. With
-    # SANDBOX_CT_CAL recalibrated, the lab OPENS showing the real deployed median (~+14.63%/m).
+    # DEFAULTS reproduce the DEPLOYED $1,000 activated book (3 high-S1 NY/LAX/CHI + NY-low all-season + the 4
+    # warm daily-low AUS/LAX/DEN/MIA). The stream count + staked $ + median are read LIVE from run_meta /
+    # run_projection (DYNAMIC -- never goes stale when the book changes, e.g. NY-low added 2026-06-22 took it
+    # 7->8 streams / $30.29->$35.95). Lock-in is NOT in the activated book (deprioritized speed race) -> 0
+    # locks/mo default. SANDBOX_CT_CAL anchors the default scenario to the live deployed median (~+14.63%/m).
+    _sb_nact = _run_meta("n_active_paper_streams", "8")
+    _sb_stake = _run_meta("active_paper_allocation_dollars", "35.95")
+    _sb_rp = table("run_projection")
+    _sb_med = (float(_sb_rp["mc_median_mo"].dropna().iloc[0])
+               if (not _sb_rp.empty and "mc_median_mo" in _sb_rp and _sb_rp["mc_median_mo"].notna().any())
+               else None)
+    _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the live deployed median"
     edge_inputs = card([html.H3("Edges & Flow"),
-        html.Div("Defaults = the deployed $1,000 run (7-stream activated book, $30.29 staked, 0.50x Kelly).",
+        html.Div(f"Defaults reproduce the live deployed $1,000 book: {_sb_nact} activated streams, "
+                 f"${_sb_stake} staked at 0.50x Kelly → {_sb_med_str} (matches the live projection). "
+                 f"The lab aggregates streams generically; every field below moves the scenario.",
                  className="sub", style={"margin": "0 0 8px", "fontSize": "11px"}),
         html.Div("Day-ahead S1 (high)", className="sub",
                  style={"margin": "2px 0 2px", "color": MINT, "fontWeight": "700"}),
