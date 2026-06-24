@@ -1293,6 +1293,32 @@ def _latest_equity():
         return 1000.0
 
 
+def _latest_cash_positions():
+    """Latest (cash, positions, realized, unrealized) from bankroll_equity_timeline. cash = uninvested bankroll
+    ($1,000 + realized - cost of open positions); positions = current MARKET value of open holdings (cost +
+    unrealized). cash + positions = equity. Falls back to (equity, 0, ...) if the columns are absent."""
+    tl = table("bankroll_equity_timeline")
+    eq = _latest_equity()
+    if tl.empty:
+        return eq, 0.0, 0.0, 0.0
+    t = tl.copy()
+    if "ts" in t.columns:
+        t["__dt"] = pd.to_datetime(t["ts"], utc=True, errors="coerce")
+        t = t.dropna(subset=["__dt"]).sort_values("__dt")
+    if t.empty:
+        return eq, 0.0, 0.0, 0.0
+    row = t.iloc[-1]
+
+    def _f(col, default=0.0):
+        try:
+            return float(row[col]) if col in t.columns and pd.notna(row[col]) else default
+        except (TypeError, ValueError):
+            return default
+    cash = _f("cash", eq)
+    positions = _f("positions", 0.0)
+    return cash, positions, _f("realized"), _f("unrealized")
+
+
 _GATE_STATUS_STYLE = {
     "DEPLOYED-live":      ("good", GREEN, "DEPLOYED · LIVE"),
     "DEPLOYED-tradable":  ("good", GREEN, "DEPLOYED · TRADABLE"),
@@ -1334,10 +1360,15 @@ def panel_run_header():
                         className="card kpi")
     delta_sub = (f"paper · {'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs $1,000"
                  if abs(delta) >= 0.005 else "paper · at $1,000 baseline")
+    cash_f, pos_f, _rz, _ur = _latest_cash_positions()
+    cash_pct = (cash_f / eq_f * 100.0) if eq_f else 0.0
+    pos_pct = (pos_f / eq_f * 100.0) if eq_f else 0.0
     tiles = [
         tile("PAPER BANKROLL", "$1,000", f"reset baseline {reset_date}", "var(--ink)"),
         tile("CURRENT EQUITY", f"${eq}", delta_sub,
              GREEN if eq_f >= 1000 else RED),
+        tile("CASH", f"${cash_f:,.2f}", f"{cash_pct:.0f}% · uninvested bankroll", "var(--ink)"),
+        tile("IN POSITIONS", f"${pos_f:,.2f}", f"{pos_pct:.0f}% · market value of open holds", NEUTRAL),
         tile("ACTIVE · PAPER", f"${active_p}", f"{nactive} streams · paper, pre-gate", GREEN),
         tile("STAGED · $0 LIVE", f"${staged_z}", f"Kelly {kf}x · awaits gate", NEUTRAL),
         tile("LIVE REAL-DEPLOY", f"${live_real}", "no real money, no orders", AMBER),
@@ -1617,6 +1648,56 @@ def panel_run_equity():
                  selector,
                  html.Div(readout, id="run-equity-readout", style={"marginBottom": "4px"}),
                  dcc.Graph(id="run-equity-graph", figure=fig, config={"displayModeBar": False})])
+
+
+def panel_equity_composition():
+    """CASH vs IN-POSITIONS split of the $1k paper net equity (USER ASK 2026-06-24), with the realized/
+    unrealized breakdown. Cash = uninvested bankroll = $1,000 + realized - cost of open positions; positions =
+    current MARKET value of open holds = cost + unrealized. cash + positions = net equity. PAPER, no real money."""
+    cash, positions, realized, unreal = _latest_cash_positions()
+    eq = cash + positions
+    if eq <= 0:
+        return card([html.H3("Cash vs Positions"), _cap("No equity data yet.")])
+    fig = go.Figure(go.Pie(
+        labels=["Cash", "In positions"], values=[max(cash, 0.0), max(positions, 0.0)],
+        hole=0.64, sort=False, direction="clockwise",
+        marker=dict(colors=[GREEN_DK, NEUTRAL], line=dict(color=PANEL, width=2)),
+        textinfo="percent", textfont=dict(size=12, color="#0b0f12"),
+        hovertemplate="%{label}<br>$%{value:,.2f} · %{percent}<extra></extra>"))
+    fig.add_annotation(text=f"<b>${eq:,.0f}</b><br><span style='font-size:10px'>net equity</span>",
+                       showarrow=False, font=dict(size=17, color=INK))
+    fig = _tpl(fig, h=230, legend=False)
+    fig.update_layout(margin=dict(l=8, r=8, t=8, b=8))
+
+    def _row(label, amount, color, note):
+        return html.Div([
+            html.Span("●  ", style={"color": color, "fontSize": "14px"}),
+            html.Span(label, style={"fontWeight": "700", "minWidth": "104px", "display": "inline-block"}),
+            html.Span(f"{'+' if amount >= 0 else '−'}${abs(amount):,.2f}", className="mono",
+                      style={"color": color, "fontWeight": "800", "marginRight": "8px"}),
+            html.Span(note, className="sub")],
+            style={"marginBottom": "7px", "fontSize": "13px"})
+
+    cash_pct = cash / eq * 100.0
+    pos_pct = positions / eq * 100.0
+    rz_col = GREEN if realized >= 0 else RED
+    ur_col = GREEN if unreal >= 0 else RED
+    legend = html.Div([
+        _row("Cash", cash, GREEN_DK, f"{cash_pct:.0f}% · uninvested bankroll (not in any trade)"),
+        _row("In positions", positions, NEUTRAL, f"{pos_pct:.0f}% · live market value of open holds"),
+        html.Div(style={"height": "1px", "background": "var(--grid)", "margin": "8px 0"}),
+        _row("Realized", realized, rz_col, "locked in on SETTLED markets — final, cannot change"),
+        _row("Unrealized", unreal, ur_col, "paper mark on OPEN holds — moves with quotes until settled")],
+        style={"flex": "1", "minWidth": "260px", "paddingLeft": "8px"})
+    body = html.Div([html.Div(graph(fig), style={"flex": "0 0 250px", "minWidth": "220px"}), legend],
+                    style={"display": "flex", "alignItems": "center", "gap": "16px", "flexWrap": "wrap"})
+    return card([html.H3("Cash vs Positions"),
+                 _cap("How the $1,000 paper net equity splits. CASH = uninvested bankroll ($1,000 + realized − "
+                      "cost of open positions). IN POSITIONS = current market value of what we hold (cost + "
+                      "unrealized). The two always sum to net equity. REALIZED P&L is locked in once a market "
+                      "SETTLES; UNREALIZED is the still-moving paper mark on positions we still hold (not real "
+                      "until they settle). Paper only — never real money."),
+                 body])
 
 
 # ---- TASK B (2026-06-21): value-vs-paid intraday curve per RESOLUTION DATE, with a current/next toggle ----
@@ -2233,6 +2314,8 @@ def render_bankroll():
                      panel_run_header(),
                      html.Div([html.Div(panel_run_equity(), className="col-5"),
                                html.Div(panel_staged_alloc(), className="col-7")], className="grid12",
+                              style={"marginTop": "10px"}),
+                     html.Div([html.Div(panel_equity_composition(), className="col-12")], className="grid12",
                               style={"marginTop": "10px"}),
                      html.Div([html.Div(panel_resolution_day_curve(), className="col-12")], className="grid12",
                               style={"marginTop": "10px"}),
