@@ -3447,14 +3447,14 @@ def render_sandbox():
     _sb_med = (float(_sb_rp["mc_median_mo"].dropna().iloc[0])
                if (not _sb_rp.empty and "mc_median_mo" in _sb_rp and _sb_rp["mc_median_mo"].notna().any())
                else None)
-    _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the older Kelly-MC median"
+    _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the live Kelly-MC median"
     edge_inputs = card([html.H3("Edges & Flow"),
         html.Div([f"Defaults = the live deployed $1,000 book: {_sb_nact} activated streams, ${_sb_stake} "
-                  f"staked at 0.50x Kelly. The per-trade sizing is anchored to the original 7-stream sub-book "
-                  f"and HELD FIXED, so profit SCALES with every field — adding NY-low (the 8th stream) lifts "
-                  f"the modeled default ABOVE the older 7-stream Kelly-MC projection (", html.B(_sb_med_str),
-                  f"), which has not yet been re-run with NY-low. The result below is this book's modeled "
-                  f"return; nothing is pinned to a target."],
+                  f"staked at 0.50x Kelly. The per-trade sizing is anchored to the live Kelly-Monte-Carlo "
+                  f"median (", html.B(_sb_med_str), f", the Projection panel — now the full 8-stream book "
+                  f"incl NY-low), so the default MATCHES that projection. From there profit SCALES with every "
+                  f"field: add a city/edge and it rises above the anchor, drop one and it falls. Nothing is "
+                  f"pinned — change any input and the result moves."],
                  className="sub", style={"margin": "0 0 8px", "fontSize": "11px"}),
         html.Div("Day-ahead S1 (high)", className="sub",
                  style={"margin": "2px 0 2px", "color": MINT, "fontWeight": "700"}),
@@ -3832,15 +3832,15 @@ DEPTH_CAP = 250        # contracts fillable within slippage (measured median; fl
 # net at net_opt (~2.9c high / ~5.6c low).
 S1_HIGH_EDGE_DEFAULT = 4.9     # gross raw-backtest c/ct -> ~2.9c net_opt after the 2c fill cost (NY/LAX/CHI mean)
 LOW_EDGE_DEFAULT = 7.6         # gross raw-backtest c/ct -> ~5.6c net_opt after the 2c fill cost (5 low streams, incl NY-low)
-# Per-trade contract SIZING, anchored ONCE to the deployed sub-book and then HELD FIXED -- it is NOT re-pinned
-# when the scenario grows (doing so would suppress real scaling, the bug a user caught 2026-06-24). Anchor:
-# the 7-stream sub-book (3 high + 4 warm low) at its accurate net edges, 0.50x Kelly on $1,000, reproduces
-# that sub-book's Kelly-MC median (~14.6%/m, run_projection's kelly_activated_book artifact, n_streams=7).
-# CT_CAL=2.81 fits that anchor. From there, profit SCALES with the inputs: adding NY-low (-> 8 streams) lifts
-# the default to ~17%/m (NY-low's real contribution, which the 7-stream MC projection does NOT yet include);
-# raising edges/cities scales it further. The run_projection MC is still the older 7-stream artifact -> the
-# sandbox 8-stream default (~17%) is HIGHER than that projection by design until the MC is re-run with NY-low.
-SANDBOX_CT_CAL = 2.81
+# Per-trade contract SIZING that anchors the linear what-if to the LIVE deployed book's Kelly-MC median (the
+# kelly_activated_book joint-MC that run_projection reads). The 8-stream activated book (incl NY-low, MC
+# regenerated 2026-06-24) medians 21.33%/m, so CT_CAL=3.52 makes the deployed-config default MATCH that
+# projection. It is anchored to the CURRENT deployed reality, then profit SCALES with every input (add a
+# stream -> >21.33%, drop one -> less). It is NOT pinned to HOLD a default when the scenario changes -- the
+# bug a user caught 2026-06-24 was the OPPOSITE: I lowered it to keep the default at the STALE 7-stream 14.63%
+# WHILE adding NY-low, which HID NY-low's real +6.7%/m lift. Re-solve ONLY when the deployed book itself
+# changes AND the MC is regenerated (here: 7->8 streams, median 14.63->21.33), so the default tracks reality.
+SANDBOX_CT_CAL = 3.5233
 
 # ---- NON-LINEAR per-stream slippage(size) curves (AUDIT-CORRECTED 2026-06-21) ----
 # The ONLY stream with a real logged per-size fill curve is NY-high (median across n logged lock-moment
