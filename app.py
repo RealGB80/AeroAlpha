@@ -4155,24 +4155,35 @@ def _sandbox(s1_c, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         ceil_flag = html.Span("  FULL-KELLY ZONE · RUIN RISK", className="badge bad",
                               style={"marginLeft": "8px"})
         kelly_badge_cls = "badge bad"
+    # SCENARIO vs VALIDATED-REFERENCE (FIX 2026-06-24): the headline median MUST be the COMPUTED scenario roi
+    # (responds to every input), NOT the fixed Kelly-sweep median -- showing k['med'] made the risk panel
+    # pigeonhole to 7.1%@0.25 / 14.4%@0.5 regardless of the edges/cities entered. The Kelly SWEEP
+    # (kelly_1k_stake_sweep_20260619, re-validated 2026-06-24: re-running the MC reproduces 7.06%@0.25) is the
+    # VALIDATED deployed-book reference at CI-lower-bound; we keep it as an explicit reference + use its risk
+    # SHAPE (p5/stress as a fraction of its median) scaled to the scenario median, so downside tracks inputs.
+    ratio = (roi / k["med"]) if abs(k["med"]) > 1e-6 else 1.0
+    sc_p5 = k["p5"] * ratio
+    sc_stress = k["stress"] * ratio
     kelly_band = html.Div([
         html.Span(f"Kelly {kelly:.2f}x", className=kelly_badge_cls),
         ceil_flag,
-        html.Div([f"Sweep (interpolated): median ", html.B(f"{k['med']:+.1f}%/m"),
-                  f" · p5 {k['p5']:+.1f}%/m · stress {k['stress']:+.1f}%/m"],
+        html.Div(["Scenario median (your inputs): ", html.B(f"{roi:+.1f}%/m"),
+                  "  ·  validated-sweep reference (deployed 4-stream book, CI-lower-bound) at this fraction: ",
+                  html.B(f"{k['med']:+.1f}%/m"), f" median · {k['p5']:+.1f}%/m p5 · {k['stress']:+.1f}%/m stress"],
                  className="sub", style={"marginTop": "6px", "fontSize": "11.5px"})])
 
     metrics = html.Div([
-        _risk_metric("Median return", f"{k['med']:+.1f}%/m", "good" if k["med"] > 0 else "bad",
-                     "Typical month at this stake (paper model)."),
-        _risk_metric("Downside p5", f"{k['p5']:+.1f}%/m", _sev_dd(abs(k["p5"]) * 1.0),
-                     "1-in-20 bad month — the soft floor."),
-        _risk_metric("p95 max drawdown", f"{k['dd']:.1f}%", _sev_dd(k["dd"]),
-                     "Worst peak-to-trough in 19/20 paths."),
-        _risk_metric("Stress max drawdown", f"{k['sdd']:.1f}%", _sev_sdd(k["sdd"]),
-                     "Worst peak-to-trough if EVERY edge is at its CI lower bound (~41% at full Kelly)."),
-        _risk_metric("Stress return", f"{k['stress']:+.1f}%/m", "good" if k["stress"] > 0 else "bad",
-                     "Median month, all edges at CI lower bound at once.")],
+        _risk_metric("Median return (scenario)", f"{roi:+.1f}%/m", "good" if roi > 0 else "bad",
+                     "YOUR inputs: net edge x trades x cities x Kelly stake, capacity-capped. Moves with "
+                     "every field (the validated deployed-book default is ~+14.6%/m)."),
+        _risk_metric("Downside p5 (scenario)", f"{sc_p5:+.1f}%/m", _sev_dd(abs(sc_p5)),
+                     "1-in-20 bad month — the validated risk shape scaled to your scenario median."),
+        _risk_metric("p95 max drawdown (ref)", f"{k['dd']:.1f}%", _sev_dd(k["dd"]),
+                     "Validated deployed-book drawdown at this Kelly fraction (reference, not rescaled)."),
+        _risk_metric("Stress max drawdown (ref)", f"{k['sdd']:.1f}%", _sev_sdd(k["sdd"]),
+                     "Validated deployed-book stress drawdown at this Kelly fraction (reference)."),
+        _risk_metric("Stress return (scenario)", f"{sc_stress:+.1f}%/m", "good" if sc_stress > 0 else "bad",
+                     "All edges at CI lower bound at once, scaled to your scenario.")],
         style={"display": "flex", "flexWrap": "wrap", "gap": "10px"})
 
     # ---- (a) 12-month Monte-Carlo equity fan ----
