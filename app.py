@@ -3456,15 +3456,16 @@ def render_sandbox():
         html.Div("Day-ahead S1 (high)", className="sub",
                  style={"margin": "2px 0 2px", "color": MINT, "fontWeight": "700"}),
         field("sb-s1edge", "High-S1 edge (c/contract, gross)", S1_HIGH_EDGE_DEFAULT, 0.1, 0, 20),
-        html.Div(f"Gross model edge before fills; ~{S1_HIGH_EDGE_DEFAULT - 1.0:.1f}c net after the 1c base-slip "
-                 "floor. Default = the deployed NY/LAX/CHI activated-book mean.", className="sub",
+        html.Div(f"Gross model edge before fills; ~{S1_HIGH_EDGE_DEFAULT - 2.0:.1f}c net after the 2c fill "
+                 "cost (slippage + fee). Default = the RAW backtest NY/LAX/CHI activated-book mean (4.9c), "
+                 "not NY alone.", className="sub",
                  style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
         field("sb-cities", "Active high-S1 cities (streams)", 3, 1, 0, 7),
         field("sb-s1trades", "High-S1 trades / month / city", 84, 1, 0, 400),
         html.Div("Daily-LOW S1 (validated, overnight)", className="sub",
                  style={"margin": "14px 0 2px", "color": MINT, "fontWeight": "700"}),
         field("sb-lowedge", "Daily-low S1 edge (c/contract, gross)", LOW_EDGE_DEFAULT, 0.1, 0, 20),
-        field("sb-lowcities", "Daily-low S1 cities", 4, 1, 0, 7),
+        field("sb-lowcities", "Daily-low S1 cities", 5, 1, 0, 7),
         field("sb-lowtrades", "Daily-low trades / month / city", 82, 1, 0, 400),
         html.Div("Lock-in (latency, NYC + airports)", className="sub",
                  style={"margin": "14px 0 2px", "color": DIM, "fontWeight": "700"}),
@@ -3486,7 +3487,7 @@ def render_sandbox():
                  "climbs steeply. No ROI cap; the warnings escalate honestly.", className="sub",
                  style={"margin": "8px 0 2px", "fontSize": "11px"}),
         html.Div(style={"height": "10px"}),
-        field("sb-slip", "Base slippage (c/contract)", 1.0, 0.5, 0, 3),
+        field("sb-slip", "Base fill cost — slippage + fee (c/contract)", 2.0, 0.5, 0, 4),
         # ITEM 6: slippage-vs-bankroll mode. DEFAULT = 'off' (base behavior, no bankroll dependence).
         html.Div("Slippage model", className="sb-field-lbl u-label", style={"margin": "12px 0 6px"}),
         dcc.RadioItems(id="sb-slip-mode",
@@ -3496,11 +3497,12 @@ def render_sandbox():
                        value="off", className="sb-radio",
                        labelStyle={"display": "block", "fontSize": "12px", "margin": "2px 0"}),
         field("sb-slip-manual", "Manual slippage (c/contract, manual mode)", 4.0, 0.5, 0, 40),
-        html.Div(["Off = base: per-contract slippage is the fixed value above (depth still capped by each "
-                  "stream's measured book). Auto = per-contract slippage RISES with order size as bankroll "
-                  "grows, along Mosaic's per-stream slippage(size) curve. Manual = force a single flat "
-                  "slippage you set. Win rate is NOT a user lever — it is already embedded in each stream's "
-                  "net c/contract."], className="sub",
+        html.Div(["The base fill cost (slippage + fee) is what the gross backtest edge loses to reach the "
+                  "deployed net (~2c, matching the activated-book net_opt = mean_c − 2c). Off = fixed at that "
+                  "value (depth still capped by each stream's measured book). Auto = it RISES with order size "
+                  "as bankroll grows, along Mosaic's per-stream slippage(size) curve. Manual = force a single "
+                  "flat value. Win rate is NOT a user lever — it is already embedded in each stream's edge."],
+                 className="sub",
                  style={"marginTop": "8px", "fontSize": "11px"})],
         style={"flex": "1", "minWidth": "270px"})
 
@@ -3818,18 +3820,19 @@ def _statusbar(_n):
 
 # ---- Sandbox profitability model (transparent; paper estimate only) ----
 DEPTH_CAP = 250        # contracts fillable within slippage (measured median; flat fallback only)
-# HIGH-S1 and DAILY-LOW edges are now DIRECT c/contract inputs (2026-06-21, user ask: c/ct is more
-# conventional than the old RMSE->edge derivation). Defaults = the CURRENT ACTUAL per-stream net c/ct from
-# the deployed activated book (kelly_activated_book_20260619_225520.json -> joint_mc.activated_all, the
-# ~+14.63%/m median): high (NY/LAX/CHI) net_opt mean ~2.9c, daily-low (AUS/LAX/DEN/MIA warm) net_opt mean
-# ~5.7c. The sandbox edge field is the GROSS model edge (before the 1c base-slip/fee floor); gross = net +
-# ~1c -> high 3.9c / low 6.7c defaults (the 'off' slip mode subtracts the 1c floor back to the actual net).
-S1_HIGH_EDGE_DEFAULT = 3.9     # gross c/ct -> ~2.9c net (activated-book NY/LAX/CHI mean)
-LOW_EDGE_DEFAULT = 6.7         # gross c/ct -> ~5.7c net (activated-book warm-low mean)
-# Calibrated contracts-per-trade so the DEFAULT scenario reproduces the DEPLOYED $1,000 activated-book median
-# (~+14.63%/m, ~$146/mo). With high 2.9c-net*84tr*3 cities + low 5.7c-net*82tr*4 cities at 0.50x Kelly on
-# $1,000: CT = 146.27 / 52.01 = 2.81 (re-derived for the new c/ct defaults; was 2.58 under the RMSE input).
-SANDBOX_CT_CAL = 2.81
+# HIGH-S1 and DAILY-LOW edges are DIRECT c/contract inputs (user ask: c/ct is more conventional than the old
+# RMSE->edge derivation). The edge field is the GROSS RAW backtest model-edge MEAN across the FULL activated
+# book (kelly_activated_book per_stream mean_c), NOT NY alone (2026-06-24 fix: the old 3.9/6.7 were NY-anchored
+# net_opt+1c -> understated). High = mean(NY 4.02, LAX 5.24, CHI 5.42) = 4.9c; daily-low = mean over ALL 5
+# activated low streams INCLUDING NY-low = mean(NY-low 6.96, AUS 8.38, LAX 9.77, DEN 7.03, MIA 5.75) = 7.6c.
+# The activated-book MC's net_opt = mean_c - 2.0c (slippage + fee) -> base FILL-COST default 2.0c lands the
+# net at net_opt (~2.9c high / ~5.6c low).
+S1_HIGH_EDGE_DEFAULT = 4.9     # gross raw-backtest c/ct -> ~2.9c net_opt after the 2c fill cost (NY/LAX/CHI mean)
+LOW_EDGE_DEFAULT = 7.6         # gross raw-backtest c/ct -> ~5.6c net_opt after the 2c fill cost (5 low streams, incl NY-low)
+# CALIBRATED contracts-per-trade so the DEFAULT scenario (3 high + 5 low, 0.50x Kelly, $1,000) reproduces the
+# DEPLOYED activated-book median (~+14.63%/m). RE-SOLVED 2026-06-24 to 2.42 (was 2.81) after the edge defaults
+# became the accurate raw means + lowcities 4->5 (NY-low added) + fill cost 1c->2c -> verified roi=14.63%/m.
+SANDBOX_CT_CAL = 2.4162
 
 # ---- NON-LINEAR per-stream slippage(size) curves (AUDIT-CORRECTED 2026-06-21) ----
 # The ONLY stream with a real logged per-size fill curve is NY-high (median across n logged lock-moment
