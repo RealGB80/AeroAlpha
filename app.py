@@ -3777,11 +3777,24 @@ def render_sandbox():
                   "what-if if/when they do."], className="sub")],
         style={"borderColor": "color-mix(in srgb, var(--amber) 40%, transparent)"})
 
+    # NEW (2026-06-25): a SEASONAL profit profile under the edge inputs -- the only chart that shows the
+    # year-round vs cold-only split across the calendar (winter is fatter because the cold streams switch on).
+    season_card = card([html.H3(["Seasonal Profit Profile  ", info_dot(
+            "Projected paper $/mo by calendar month for THIS scenario. The all-season book (year-round high + "
+            "active low) earns every month; the cold-only streams (LV/MIN high, PHIL/PHX low) add only Nov–Apr, "
+            "so winter months are fatter. Your current month is marked. Illustrative — capacity is modeled at "
+            "the current bankroll; paper, never realized P&L.")]),
+        html.Div("The all-season book earns every month; the cold-only streams switch on Nov–Apr. Move any "
+                 "input and the whole year re-scales.", className="sub"),
+        dcc.Graph(id="sb-season", config={"displayModeBar": False})])
+
     return html.Div([section("Sandbox — Interactive Risk / Return Lab"),
         html.Div("Tune the edges, capital, and risk profile. Every output is a transparent paper model "
                  "(see the note at the bottom) — research only, never realized P&L.", className="sub",
                  style={"marginBottom": "10px"}),
-        html.Div([html.Div(edge_inputs, className="col-8"),
+        html.Div([html.Div([html.Div([edge_inputs, season_card],
+                                      style={"display": "flex", "flexDirection": "column", "gap": "14px"})],
+                            className="col-8"),
                   html.Div([html.Div([out, cap_inputs],
                                      style={"display": "flex", "flexDirection": "column", "gap": "14px"})],
                            className="col-4")], className="grid12"),
@@ -4326,7 +4339,7 @@ def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
     Output("sb-profit", "children"), Output("sb-roi", "children"), Output("sb-roi", "style"),
     Output("sb-kelly-band", "children"), Output("sb-note", "children"), Output("sb-risk-metrics", "children"),
     Output("sb-chart", "figure"), Output("sb-fan", "figure"), Output("sb-cap", "figure"),
-    Output("sb-cap-flag", "children"),
+    Output("sb-cap-flag", "children"), Output("sb-season", "figure"),
     Input("sb-s1edge", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
     Input("sb-s1edge-cold", "value"), Input("sb-cities-cold", "value"), Input("sb-s1trades-cold", "value"),
     Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
@@ -4353,7 +4366,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
         slip_manual = max(0.0, float(slip_manual)) if slip_manual is not None else 0.0
     except (TypeError, ValueError):
         return ("—", "—", {"color": DIM}, "", "Enter valid numbers in every field.", "",
-                blank, blank, blank, "")
+                blank, blank, blank, "", blank)
     kelly = min(KELLY_MAX, max(0.25, kelly))
 
     # ---- TRANSPARENT PER-STREAM PROFIT MODEL (FIX 1, 2026-06-19). Profit is now a DIRECT function of the
@@ -4673,11 +4686,31 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
                  if slip_mode == "auto" else
                  f"a flat {slip_manual:.1f}c/contract override on every fill (the curve is disabled)."))
 
-    # fig/fan/cap are already styled PLAIN-DICT figures (no go.Figure -> ~0 build cost). The rr/dist/ruin
+    # ---- (f) SEASONAL profit profile: the all-season book earns every month; the cold-only books add Nov-Apr.
+    # Uses the per-bucket monthly $ already computed (capacity-scaled), so it moves with every input. Stacked
+    # bars across the calendar; the current month is marked.
+    _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    _COLD = {11, 12, 1, 2, 3, 4}                       # COLD_MONTHS = Nov-Apr (matches the harness season split)
+    _allseason_m = s1_monthly + low_monthly + lock_monthly        # year-round high + active low + lock-in
+    _coldadd_m = s1cold_monthly + lowcold_monthly                 # cold-only high + cold-only low (winter only)
+    _base = [_allseason_m] * 12
+    _cold = [(_coldadd_m if (i + 1) in _COLD else 0.0) for i in range(12)]
+    _cur_m = datetime.now(timezone.utc).month
+    season = _dfig(
+        [{"type": "bar", "x": _MONTHS, "y": _base, "name": "all-season book",
+          "marker": {"color": MINT, "cornerradius": 4}, "hovertemplate": "%{x}<br>all-season %{y:$,.0f}/mo<extra></extra>"},
+         {"type": "bar", "x": _MONTHS, "y": _cold, "name": "cold-only add (Nov–Apr)",
+          "marker": {"color": CYAN, "cornerradius": 4}, "hovertemplate": "%{x}<br>cold add %{y:$,.0f}/mo<extra></extra>"}],
+        h=260, legend=True, extra={"barmode": "stack"},
+        xaxis={"title": ""},
+        yaxis={"title": "paper $ / month", "tickprefix": "$", "tickformat": "~s"},
+        annotations=[_ann(_MONTHS[_cur_m - 1], 1.0, "▲ this month", AMBER, 10, yref="paper", yanchor="bottom")])
+
+    # fig/fan/cap/season are already styled PLAIN-DICT figures (no go.Figure -> ~0 build cost). The rr/dist/ruin
     # figures depend ONLY on the Kelly slider, so they moved to their own callback (_sandbox_risk) and no
     # longer rebuild on every edge/city keystroke.
     return (f"${total:,.0f}", f"{roi:+.1f}%", {"color": roi_color}, kelly_band, note, metrics,
-            fig, fan, cap, cap_flag)
+            fig, fan, cap, cap_flag, season)
 
 
 @app.callback(
