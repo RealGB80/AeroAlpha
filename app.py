@@ -3449,27 +3449,50 @@ def render_sandbox():
                else None)
     _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the live Kelly-MC median"
     edge_inputs = card([html.H3("Edges & Flow"),
-        html.Div([f"Defaults = the live deployed $1,000 book: {_sb_nact} activated streams, ${_sb_stake} "
-                  f"staked at 0.50x Kelly. The per-trade sizing is anchored to the live Kelly-Monte-Carlo "
-                  f"median (", html.B(_sb_med_str), f", the Projection panel — now the full 8-stream book "
-                  f"incl NY-low), so the default MATCHES that projection. From there profit SCALES with every "
-                  f"field: add a city/edge and it rises above the anchor, drop one and it falls. Nothing is "
-                  f"pinned — change any input and the result moves."],
+        html.Div([f"Streams are split by SEASON CLASS — YEAR-ROUND (season=all) and COLD-ONLY (validated "
+                  f"cold edge, warm unconfirmed) — for both high and low. The YEAR-ROUND defaults reproduce "
+                  f"the live deployed book ({_sb_nact} activated streams, ${_sb_stake} staked at 0.50x Kelly), "
+                  f"whose per-trade sizing is anchored to the live Kelly-Monte-Carlo median (", html.B(_sb_med_str),
+                  f", the Projection panel). The COLD-ONLY defaults add the validated cold-season streams "
+                  f"(LV/MIN high; PHIL/PHX low) — $0-funded in warm season today, so this full-book "
+                  f"default sits ABOVE the warm-season deployed number by design (it shows the cold upside). "
+                  f"Nothing is pinned — every field moves the result; zero the cold cities to see the "
+                  f"warm-season-only book."],
                  className="sub", style={"margin": "0 0 8px", "fontSize": "11px"}),
-        html.Div("Day-ahead S1 (high)", className="sub",
+        # --- HIGH: year-round (season=all) vs cold-only (validated cold edge, warm unconfirmed) ---
+        html.Div("Day-ahead S1 HIGH — year-round (NY/LAX/CHI, all-season)", className="sub",
                  style={"margin": "2px 0 2px", "color": MINT, "fontWeight": "700"}),
-        field("sb-s1edge", "High-S1 edge (c/contract, gross)", S1_HIGH_EDGE_DEFAULT, 0.1, 0, 20),
+        field("sb-s1edge", "High year-round edge (c/contract, gross)", S1_HIGH_EDGE_DEFAULT, 0.1, 0, 20),
         html.Div(f"Gross model edge before fills; ~{S1_HIGH_EDGE_DEFAULT - 2.0:.1f}c net after the 2c fill "
-                 "cost (slippage + fee). Default = the RAW backtest NY/LAX/CHI activated-book mean (4.9c), "
-                 "not NY alone.", className="sub",
+                 "cost. Default = the all-season NY/LAX/CHI deployed-book mean (4.9c).", className="sub",
                  style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
-        field("sb-cities", "Active high-S1 cities (streams)", 3, 1, 0, 7),
-        field("sb-s1trades", "High-S1 trades / month / city", 84, 1, 0, 400),
-        html.Div("Daily-LOW S1 (validated, overnight)", className="sub",
+        field("sb-cities", "High year-round cities", 3, 1, 0, 7),
+        field("sb-s1trades", "High year-round trades / month / city", 84, 1, 0, 400),
+        html.Div("Day-ahead S1 HIGH — cold-only (LV/MIN, Nov–Apr)", className="sub",
+                 style={"margin": "12px 0 2px", "color": CYAN, "fontWeight": "700"}),
+        field("sb-s1edge-cold", "High cold-only edge (c/contract, gross)", S1_HIGH_COLD_EDGE_DEFAULT, 0.1, 0, 20),
+        html.Div("Validated COLD-season high streams (LV +9.19c / MIN +9.89c, A6 watch). Active ~Nov–Apr only; "
+                 "$0-funded in warm season today, auto-stage at the cold turn on gate PASS.", className="sub",
+                 style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
+        field("sb-cities-cold", "High cold-only cities", 2, 1, 0, 7),
+        field("sb-s1trades-cold", "High cold-only trades / month / city", 84, 1, 0, 400),
+        # --- LOW: all-season/active (NY-low + warm AUS/LAX/DEN/MIA) vs cold-only add (PHIL/PHX) ---
+        html.Div("Daily-LOW S1 — all-season / active (NY-low + warm AUS/LAX/DEN/MIA)", className="sub",
                  style={"margin": "14px 0 2px", "color": MINT, "fontWeight": "700"}),
-        field("sb-lowedge", "Daily-low S1 edge (c/contract, gross)", LOW_EDGE_DEFAULT, 0.1, 0, 20),
-        field("sb-lowcities", "Daily-low S1 cities", 5, 1, 0, 7),
-        field("sb-lowtrades", "Daily-low trades / month / city", 82, 1, 0, 400),
+        field("sb-lowedge", "Low all-season edge (c/contract, gross)", LOW_EDGE_DEFAULT, 0.1, 0, 20),
+        html.Div("Default = the deployed low book: NY-low all-season flagship (+6.96c) + the 4 warm-activated "
+                 "daily-low (AUS/LAX/DEN/MIA), mean ~7.6c, the streams trading right now.", className="sub",
+                 style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
+        field("sb-lowcities", "Low all-season cities", 5, 1, 0, 7),
+        field("sb-lowtrades", "Low all-season trades / month / city", 82, 1, 0, 400),
+        html.Div("Daily-LOW S1 — cold-only add (PHIL/PHX, Nov–Apr)", className="sub",
+                 style={"margin": "12px 0 2px", "color": CYAN, "fontWeight": "700"}),
+        field("sb-lowedge-cold", "Low cold-only edge (c/contract, gross)", LOW_COLD_EDGE_DEFAULT, 0.1, 0, 20),
+        html.Div("Cold-season-only low ADDS (PHIL +11.79c / PHX +17.65c, mean ~14.7c). Cold cadence ~20 "
+                 "trades/mo/city; $0 in warm season, auto-stage at the cold turn on gate PASS.",
+                 className="sub", style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
+        field("sb-lowcities-cold", "Low cold-only cities", 2, 1, 0, 7),
+        field("sb-lowtrades-cold", "Low cold-only trades / month / city", 20, 1, 0, 400),
         html.Div("Lock-in (latency, NYC + airports)", className="sub",
                  style={"margin": "14px 0 2px", "color": DIM, "fontWeight": "700"}),
         field("sb-lock", "Lock-in edge (c/contract)", 12, 0.5, 0, 30),
@@ -3830,8 +3853,21 @@ DEPTH_CAP = 250        # contracts fillable within slippage (measured median; fl
 # activated low streams INCLUDING NY-low = mean(NY-low 6.96, AUS 8.38, LAX 9.77, DEN 7.03, MIA 5.75) = 7.6c.
 # The activated-book MC's net_opt = mean_c - 2.0c (slippage + fee) -> base FILL-COST default 2.0c lands the
 # net at net_opt (~2.9c high / ~5.6c low).
-S1_HIGH_EDGE_DEFAULT = 4.9     # gross raw-backtest c/ct -> ~2.9c net_opt after the 2c fill cost (NY/LAX/CHI mean)
-LOW_EDGE_DEFAULT = 7.6         # gross raw-backtest c/ct -> ~5.6c net_opt after the 2c fill cost (5 low streams, incl NY-low)
+# EDGE DEFAULTS split by SEASON CLASS (2026-06-24, user ask). The sandbox distinguishes the ALL-SEASON /
+# currently-active streams from the COLD-ONLY (validated cold edge; warm $0) ADD-ON streams, for BOTH high and
+# low. Defaults = the real per-bucket means we actually have, and the all-season buckets reproduce the live
+# deployed book so cold-cities-zero == the deployed ~21%/m projection, with cold adding the cold-season upside:
+#   HIGH all-season  = NY/LAX/CHI all-season mean ~4.9c (deployed high book, 3 cities)
+#   HIGH cold-only   = LV/MIN cold mean ~9.5c (A6 watch; +9.19/+9.89, 2 cities)
+#   LOW  all-season  = the deployed low book NY-low + AUS/LAX/DEN/MIA(warm) ~7.6c (5 cities). The 4 warm
+#                      daily-low are warm-activated NOW; folding them here keeps the warm baseline = deployed.
+#   LOW  cold-only   = PHIL/PHX cold ADD ~14.7c (+11.79/+17.65, 2 cities) -- $0 in warm, auto-stage at cold turn.
+# Cold buckets default ON to their validated city counts (full-book default, user-chosen) so the scenario
+# shows year-round + cold upside; zero the cold cities for the warm-season-only (deployed) view.
+S1_HIGH_EDGE_DEFAULT = 4.9          # gross raw-backtest c/ct, HIGH all-season (NY/LAX/CHI mean)
+S1_HIGH_COLD_EDGE_DEFAULT = 9.5     # gross c/ct, HIGH cold-only add (LV/MIN cold mean +9.19/+9.89)
+LOW_EDGE_DEFAULT = 7.6              # gross c/ct, LOW all-season / active (NY-low + AUS/LAX/DEN/MIA warm)
+LOW_COLD_EDGE_DEFAULT = 14.7        # gross c/ct, LOW cold-only add (PHIL/PHX cold mean +11.79/+17.65)
 # Per-trade contract SIZING that anchors the linear what-if to the LIVE deployed book's Kelly-MC median (the
 # kelly_activated_book joint-MC that run_projection reads). The 8-stream activated book (incl NY-low, MC
 # regenerated 2026-06-24) medians 21.33%/m, so CT_CAL=3.52 makes the deployed-config default MATCH that
@@ -3895,18 +3931,26 @@ def _scal_curves():
     return out
 
 
-def _capacity_book_list(cities, s1tr, low_cities, low_trades, lockpm, s1_edge_c, low_edge_c, lock_edge_c):
+def _capacity_book_list(cities, s1tr, low_cities, low_trades, lockpm, s1_edge_c, low_edge_c, lock_edge_c,
+                        cold_cities=0, s1tr_cold=0.0, s1_cold_edge_c=0.0,
+                        lowcold_cities=0, lowcold_trades=0.0, low_cold_edge_c=0.0):
     """Each ACTIVE per-market book as (key, net_edge_c, slip_curve, trades_per_mo). Real per-city HIGH curves
     + a conservative DAILY-LOW curve -> shallower low books saturate at a smaller size (earlier bankroll) than
-    deep high books, so the capacity-vs-bankroll curve is a STAIRCASE that drops streams a group at a time."""
+    deep high books, so the capacity-vs-bankroll curve is a STAIRCASE that drops streams a group at a time.
+    Cold-only high/low books (2026-06-24 season split) use the SAME archetype depth curves as their year-round
+    counterparts (high cold = HIGH curves cycled; low cold = the daily-low curve) at their own edge/cadence."""
     real = _real_stream_curves()
     hi = [real[s] for s in _HIGH_CITY_ORDER if s in real] or [None]
     low_curve = real.get("AUS_low_S1") or _LOW_FALLBACK_CURVE
     books = []
     for i in range(max(0, int(cities))):
         books.append((f"high{i+1}", s1_edge_c, hi[i] if i < len(hi) else hi[-1], s1tr))
+    for i in range(max(0, int(cold_cities))):                     # high cold-only (LV/MIN) -> HIGH depth curves
+        books.append((f"highcold{i+1}", s1_cold_edge_c, hi[(int(cities) + i) % len(hi)], s1tr_cold))
     for j in range(max(0, int(low_cities))):
         books.append((f"low{j+1}", low_edge_c, low_curve, low_trades))
+    for j in range(max(0, int(lowcold_cities))):                  # low cold-only -> daily-low depth curve
+        books.append((f"lowcold{j+1}", low_cold_edge_c, low_curve, lowcold_trades))
     if lockpm > 0:
         books.append(("lock", lock_edge_c, real.get("NY_high_S1"), lockpm))
     return books
@@ -4044,14 +4088,18 @@ def _optimal_fill_dollars(base_edge_c, curve, trades, markets):
 
 
 def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
-                              s1_edge_c, low_edge_c, lock_edge_c):
+                              s1_edge_c, low_edge_c, lock_edge_c,
+                              cold_cities=0, s1tr_cold=0.0, s1_cold_edge_c=0.0,
+                              lowcold_cities=0, lowcold_trades=0.0, low_cold_edge_c=0.0):
     """Absolute-$ monthly profit CEILING from REAL non-linear market depth, summed PER BOOK (each book fills
     its profit-MAXIMIZING size along its OWN archetype slippage(size) curve; net edge degrades with size, $
     peaks then falls). Bankroll-independent -> the hard plateau. Because shallow daily-low books peak at a
     smaller size than the deep high books, the books saturate at DIFFERENT bankrolls -> the staircase. Falls
-    back to the flat 250ct cap per book if a curve is absent."""
+    back to the flat 250ct cap per book if a curve is absent. Includes the cold-only high/low books."""
     books = _capacity_book_list(cities, s1tr, low_cities, low_trades, lockpm,
-                                s1_edge_c, low_edge_c, lock_edge_c)
+                                s1_edge_c, low_edge_c, lock_edge_c,
+                                cold_cities, s1tr_cold, s1_cold_edge_c,
+                                lowcold_cities, lowcold_trades, low_cold_edge_c)
     tot = 0.0
     for _key, edge, curve, trades in books:
         peak, _ = _optimal_fill_dollars(edge, curve, trades, 1)
@@ -4066,17 +4114,24 @@ def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
     Output("sb-dist", "figure"), Output("sb-cap", "figure"), Output("sb-cap-flag", "children"),
     Output("sb-ruin", "figure"),
     Input("sb-s1edge", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
+    Input("sb-s1edge-cold", "value"), Input("sb-cities-cold", "value"), Input("sb-s1trades-cold", "value"),
     Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
+    Input("sb-lowedge-cold", "value"), Input("sb-lowcities-cold", "value"), Input("sb-lowtrades-cold", "value"),
     Input("sb-lock", "value"), Input("sb-lockpm", "value"),
     Input("sb-bankroll", "value"), Input("sb-kelly", "value"),
     Input("sb-slip", "value"), Input("sb-slip-mode", "value"), Input("sb-slip-manual", "value"))
-def _sandbox(s1_c, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
-             bankroll, kelly, slip, slip_mode, slip_manual):
+def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
+             low_c, low_cities, low_trades, lowc_cold, lowcities_cold, lowtr_cold,
+             lock_c, lockpm, bankroll, kelly, slip, slip_mode, slip_manual):
     import numpy as _np
     blank = _tpl(go.Figure(), h=300)
     try:
         s1_c = max(0.0, float(s1_c)); cities = max(0, int(cities)); s1tr = max(0.0, float(s1tr))
+        s1c_cold = max(0.0, float(s1c_cold)); cities_cold = max(0, int(cities_cold))
+        s1tr_cold = max(0.0, float(s1tr_cold))
         low_c = float(low_c); low_cities = max(0, int(low_cities)); low_trades = max(0.0, float(low_trades))
+        lowc_cold = max(0.0, float(lowc_cold)); lowcities_cold = max(0, int(lowcities_cold))
+        lowtr_cold = max(0.0, float(lowtr_cold))
         lock_c = float(lock_c); lockpm = max(0.0, float(lockpm))
         bankroll = max(0.0, float(bankroll)); kelly = float(kelly)
         slip = max(0.0, float(slip))
@@ -4100,19 +4155,23 @@ def _sandbox(s1_c, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
     # GROSS per-stream model edge (before any slippage). The win rate is already embedded in the backtest
     # net c/contract; slippage is applied per-mode below (item 6).
     s1_gross_c = max(0.0, s1_c)            # direct gross c/contract input (was RMSE->edge derivation)
+    s1cold_gross_c = max(0.0, s1c_cold)    # HIGH cold-only (LV/MIN) gross edge
     low_gross_c = max(0.0, low_c)
+    lowcold_gross_c = max(0.0, lowc_cold)  # LOW cold-only (PHIL/AUS/MIA/PHX) gross edge
     lock_gross_c = max(0.0, lock_c)
     # per-stream NET edge after the BASE slippage (used by the depth-ceiling/optimal-fill math, which is
     # mode-agnostic and conservative -- the base slip floor)
     s1_edge_c = max(0.0, s1_gross_c - slip)
+    s1cold_edge_c = max(0.0, s1cold_gross_c - slip)
     low_edge_c = max(0.0, low_gross_c - slip)
+    lowcold_edge_c = max(0.0, lowcold_gross_c - slip)
     lock_edge_c = max(0.0, lock_gross_c - slip)
     # contracts per trade: CALIBRATED so the DEFAULT scenario (deployed 7-stream book) at 0.50x Kelly on
     # $1,000 reproduces the activated-book median (~14.63%/m) -- the headline stays GROUNDED to the real number,
     # it does NOT run away. From that anchor it scales LINEARLY with Kelly fraction and bankroll, and is
     # CAPPED at the measured fillable depth (DEPTH_CAP/market). Every per-stream input (edge, trades, cities)
     # still multiplies through, so all inputs MOVE the output (FIX 1) while the magnitude stays honest.
-    active_books = max(1, cities + low_cities)        # used only for the note/labeling
+    active_books = max(1, cities + cities_cold + low_cities + lowcities_cold)   # note/labeling only
     # contracts per trade scales with Kelly fraction + bankroll (NO flat 250ct cliff anymore -- the cap is now
     # the NON-LINEAR per-stream slippage curve below).
     def contracts_per_trade():
@@ -4145,25 +4204,33 @@ def _sandbox(s1_c, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         return gross_edge_c - _eff_slip(curve, size)
 
     s1_net_at = _net_at(s1_gross_c, _curves.get("high"), s1_ct)
+    s1cold_net_at = _net_at(s1cold_gross_c, _curves.get("high"), s1_ct)
     low_net_at = _net_at(low_gross_c, _curves.get("low"), low_ct)
+    lowcold_net_at = _net_at(lowcold_gross_c, _curves.get("low"), low_ct)
     lock_net_at = _net_at(lock_gross_c, _curves.get("high"), lock_ct)
     s1_net_at = max(0.0, s1_net_at); low_net_at = max(0.0, low_net_at); lock_net_at = max(0.0, lock_net_at)
+    s1cold_net_at = max(0.0, s1cold_net_at); lowcold_net_at = max(0.0, lowcold_net_at)
     # monthly $ per stream = net_edge_at_size($) * trades/mo * markets * contracts/trade (size-degraded edge)
     s1_monthly = (s1_net_at / 100.0) * s1tr * cities * s1_ct
+    s1cold_monthly = (s1cold_net_at / 100.0) * s1tr_cold * cities_cold * s1_ct
     low_monthly = (low_net_at / 100.0) * low_trades * low_cities * low_ct
+    lowcold_monthly = (lowcold_net_at / 100.0) * lowtr_cold * lowcities_cold * low_ct
     lock_monthly = (lock_net_at / 100.0) * lockpm * cities * lock_ct
-    total_uncapped = s1_monthly + low_monthly + lock_monthly
+    total_uncapped = s1_monthly + s1cold_monthly + low_monthly + lowcold_monthly + lock_monthly
     # ---- DEPTH-CAPACITY CAP (deliverable #3): absolute-$ profit cannot exceed what real market depth
     # fills. ceiling = DEPTH_CAP ct * edge * trades/mo * markets -> bankroll-INDEPENDENT plateau. Past the
     # ceiling, more capital earns the SAME dollars (lower %). This is the "$100M -> same as ~$5k" reality.
     cap_ceiling = _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
-                                            s1_edge_c, low_edge_c, lock_edge_c)
+                                            s1_edge_c, low_edge_c, lock_edge_c,
+                                            cities_cold, s1tr_cold, s1cold_edge_c,
+                                            lowcities_cold, lowtr_cold, lowcold_edge_c)
     capacity_bound = bankroll > 0 and cap_ceiling > 0 and total_uncapped > cap_ceiling
     total = min(total_uncapped, cap_ceiling) if cap_ceiling > 0 else total_uncapped
     # if the cap binds, shrink each stream proportionally so the breakdown still sums to the capped total
     if capacity_bound and total_uncapped > 0:
         _scale = total / total_uncapped
-        s1_monthly *= _scale; low_monthly *= _scale; lock_monthly *= _scale
+        s1_monthly *= _scale; s1cold_monthly *= _scale
+        low_monthly *= _scale; lowcold_monthly *= _scale; lock_monthly *= _scale
     # realized ROI on bankroll (falls once capacity binds)
     roi = (total / bankroll * 100.0) if bankroll > 0 else 0.0
     roi_color = MINT if total >= 0 else RED
@@ -4303,9 +4370,10 @@ def _sandbox(s1_c, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
 
     # ---- profit breakdown by stream ----
     fig = go.Figure()
-    labels = ["High S1", "Daily-low S1", "Lock-in", "TOTAL"]
-    vals = [s1_monthly, low_monthly, lock_monthly, total]
-    fig.add_bar(x=labels, y=vals, marker_color=[MINT, "#7fb0a0", CYAN, AMBER], width=0.62,
+    labels = ["High year-round", "High cold-only", "Low year-round", "Low cold-only", "Lock-in", "TOTAL"]
+    vals = [s1_monthly, s1cold_monthly, low_monthly, lowcold_monthly, lock_monthly, total]
+    fig.add_bar(x=labels, y=vals,
+                marker_color=[MINT, "#3aa6c2", "#7fb0a0", "#4f8fa6", CYAN, AMBER], width=0.62,
                 text=[f"${v:,.0f}" for v in vals], textposition="outside", cliponaxis=False,
                 hovertemplate="%{x}<br>%{y:$,.0f} / month<extra></extra>")
     fig.update_layout(title=None)
@@ -4326,7 +4394,9 @@ def _sandbox(s1_c, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         # PER-BOOK staircase (2026-06-21): each active book fills along its OWN curve; shallow daily-low books
         # cap at a smaller size (lower bankroll) than the deep high books, so streams drop a group at a time.
         _books = _capacity_book_list(cities, s1tr, low_cities, low_trades, lockpm,
-                                     s1_edge_c, low_edge_c, lock_edge_c)
+                                     s1_edge_c, low_edge_c, lock_edge_c,
+                                     cities_cold, s1tr_cold, s1cold_edge_c,
+                                     lowcities_cold, lowtr_cold, lowcold_edge_c)
         _peaks = [_optimal_fill_dollars(e, c, 1, 1) for _k, e, c, tr in _books]  # (peak_$/mkt, best_size), bk-indep
         def _profit_at(bk, capped):
             ct = max(0.0, SANDBOX_CT_CAL * (kelly / 0.25) * (bk / 1000.0))
@@ -4398,18 +4468,23 @@ def _sandbox(s1_c, cities, s1tr, low_c, low_cities, low_trades, lock_c, lockpm,
         cap_flag = html.Div("Set non-zero edges to see the capacity ceiling.", className="sub")
 
     _nonlin = " (depth model: live Mosaic slippage curves)" if _curves else " (depth model: flat 250ct fallback)"
-    note = (f"Profit is a TRANSPARENT per-stream sum, driven by every input: for each active stream, "
-            f"(net c/contract at this size ÷ 100) × trades/mo × active markets × contracts/trade. "
-            f"Contracts/trade ({s1_ct:.1f} here) is CALIBRATED so the default scenario at 0.25x on $1,000 "
-            f"equals the validated $1k Kelly-sweep median (~7.1%/m); it scales with Kelly ({kelly:.2f}x) and "
-            f"bankroll (${bankroll:,.0f}). NON-LINEAR DEPTH{_nonlin}: the net c/contract DEGRADES as per-market "
-            f"size grows along each book's measured VWAP-slippage curve and crosses zero at its real capacity "
-            f"ceiling (deep high books fill to ~250ct; the shallower daily-low books cap sooner, so they "
-            f"saturate at a lower bankroll — the capacity chart is a staircase, not a flat cliff). High-S1 "
-            f"net at size = {s1_net_at:.1f}c (model {s1_edge_c:.1f}c) × {s1tr:.0f}/mo × {cities} cities = "
-            f"${s1_monthly:,.0f}/mo; daily-low net at size {low_net_at:.1f}c × {low_trades:.0f}/mo × "
-            f"{low_cities} cities = ${low_monthly:,.0f}/mo; lock-in net at size {lock_net_at:.1f}c × "
-            f"{lockpm:.0f}/mo × {cities} cities = ${lock_monthly:,.0f}/mo. Win rate is NOT a lever — each net "
+    note = (f"Profit is a TRANSPARENT per-stream sum over FOUR season-classed books (high/low × year-round/"
+            f"cold-only), driven by every input: for each active stream, (net c/contract at this size ÷ 100) "
+            f"× trades/mo × active markets × contracts/trade. Contracts/trade ({s1_ct:.1f} here) is anchored "
+            f"to the deployed book's per-trade unit so the ALL-SEASON default (cold cities = 0) at 0.50x on "
+            f"$1,000 reproduces the live Kelly-MC projection (~21.3%/m, the Projection panel); it scales "
+            f"linearly with Kelly ({kelly:.2f}x) and bankroll (${bankroll:,.0f}). The cold-only books default "
+            f"ON (full validated book), so the default sits above the warm-season deployed number; zero their "
+            f"cities for the warm-season-only (deployed) view. "
+            f"NON-LINEAR DEPTH{_nonlin}: the net c/contract DEGRADES as per-market size grows along each book's "
+            f"measured VWAP-slippage curve and crosses zero at its real capacity ceiling (deep high books fill "
+            f"to ~250ct; the shallower daily-low books cap sooner — the capacity chart is a staircase). "
+            f"High year-round net {s1_net_at:.1f}c (model {s1_edge_c:.1f}c) × {s1tr:.0f}/mo × {cities} = "
+            f"${s1_monthly:,.0f}/mo; high cold-only {s1cold_net_at:.1f}c × {s1tr_cold:.0f}/mo × {cities_cold} = "
+            f"${s1cold_monthly:,.0f}/mo; low year-round {low_net_at:.1f}c × {low_trades:.0f}/mo × {low_cities} = "
+            f"${low_monthly:,.0f}/mo; low cold-only {lowcold_net_at:.1f}c × {lowtr_cold:.0f}/mo × "
+            f"{lowcities_cold} = ${lowcold_monthly:,.0f}/mo; lock-in {lock_net_at:.1f}c × {lockpm:.0f}/mo × "
+            f"{cities} = ${lock_monthly:,.0f}/mo. Win rate is NOT a lever — each net "
             f"c/contract already embeds win/loss from the backtest. The total is bounded by real market depth "
             f"-> a ~${cap_ceiling:,.0f}/mo absolute ceiling "
             f"{'(BINDING now)' if capacity_bound else '(not binding yet)'}; past it, bankroll buys no extra "
