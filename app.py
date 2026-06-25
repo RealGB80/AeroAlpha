@@ -912,25 +912,37 @@ def panel_brier_gauges():
 # QUANT-TERMINAL PANELS (Iris 2026-06-19): dense live/terminal + Quant Lab graphics. Green/red/neutral
 # ONLY. Each reads ONE curated table, guards its own empty case, and carries an honest paper caption.
 # ============================================================================================
-def _spark(values, color=None, height=34, fill=True):
-    """Tiny inline sparkline (no axes/grid/hover-bar). Green if last>=first else red unless color given.
-    PERF (2026-06-25): returns a PLAIN-DICT figure (not go.Figure) -- these are built MANY per page (one per
-    open-position row), and the go.Figure path cost ~15 ms each (~0.5 s for the pending-trades table alone).
-    A dict is ~0.01 ms and renders identically as a staticPlot dcc.Graph."""
+def _spark(values, color=None, height=34, fill=True, width=90):
+    """Tiny inline sparkline. Green if last>=first else red unless color given.
+    PERF (2026-06-25): returns a ~250-byte inline-SVG DATA-URI <img> -- NOT a dcc.Graph/Plotly figure. These
+    are built MANY per page (one per open-position row); a Plotly graph is ~1.5 KB of payload AND a full
+    Plotly instance to render in the browser (~25 of them was a real client-side drag). A data-URI image is a
+    fraction of the payload and renders instantly with zero JS."""
     if not values or len(values) < 2:
         return html.Div(className="spark-empty", style={"height": f"{height}px"})
     color = color or (GREEN if values[-1] >= values[0] else RED)
-    trace = {"type": "scatter", "y": list(values), "mode": "lines",
-             "line": {"color": color, "width": 1.6, "shape": "spline", "smoothing": 0.5}, "hoverinfo": "skip"}
+    vmin, vmax = min(values), max(values)
+    rng = (vmax - vmin) or 1.0
+    n = len(values); pad = 2.0
+
+    def _x(i):
+        return pad + (width - 2 * pad) * i / (n - 1)
+
+    def _y(v):
+        return pad + (height - 2 * pad) * (1 - (v - vmin) / rng)
+
+    pts = " ".join(f"{_x(i):.1f},{_y(v):.1f}" for i, v in enumerate(values))
+    parts = []
     if fill:
-        trace["fill"] = "tozeroy"; trace["fillcolor"] = f"rgba({_rgb(color)},.10)"
-    fig = {"data": [trace],
-           "layout": {"margin": {"l": 0, "r": 0, "t": 2, "b": 2}, "height": height,
-                      "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)", "showlegend": False,
-                      "xaxis": {"visible": False, "fixedrange": True},
-                      "yaxis": {"visible": False, "fixedrange": True}}}
-    return dcc.Graph(figure=fig, config={"displayModeBar": False, "staticPlot": True},
-                     style={"height": f"{height}px"})
+        parts.append(f'<polygon points="{_x(0):.1f},{height - pad:.1f} {pts} {_x(n - 1):.1f},{height - pad:.1f}" '
+                     f'fill="rgba({_rgb(color)},0.12)" stroke="none"/>')
+    parts.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.6" '
+                 f'stroke-linejoin="round" stroke-linecap="round"/>')
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+           f'preserveAspectRatio="none">{"".join(parts)}</svg>')
+    from urllib.parse import quote
+    return html.Img(src="data:image/svg+xml," + quote(svg),
+                    style={"width": "100%", "height": f"{height}px", "display": "block"})
 
 
 def _rgb(hex_or_name):
@@ -1715,7 +1727,7 @@ def _equity_figure(window_label):
             win = pts[-2:] if len(pts) >= 2 else pts[-1:]
     else:
         win = pts
-    win = _downsample_list(win, 600)   # PERF: cap plotted points (keeps first/last -> raw/% change exact)
+    win = _downsample_list(win, 240)   # PERF: cap plotted points (keeps first/last -> raw/% change exact)
     xs = [_to_et_naive(p["dt"]) for p in win]   # ET wall-clock display (was UTC)
     ys = [p["equity"] for p in win]
     dds = [p["drawdown"] for p in win]
@@ -1903,7 +1915,7 @@ def _resolution_day_figure(resolution_date):
     if sel.empty:
         return _tpl(fig, h=300, legend=False)
     sel["dt"] = sel["dt"].dt.tz_convert(_DISPLAY_TZ).dt.tz_localize(None)   # ET wall-clock display (was UTC)
-    sel = _downsample_df(sel, 500)     # PERF: cap dense grids (today's curve was ~12.5k pts x 5 traces)
+    sel = _downsample_df(sel, 64)      # PERF: cap dense grids (5 traces x N pts x 2 dates -> keep it light)
     xs = list(sel["dt"])
     paid = [float(v) / 100.0 for v in sel["cumulative_paid_c"]]      # cents -> dollars
     value = [float(v) / 100.0 for v in sel["cumulative_value_c"]]
@@ -2301,7 +2313,7 @@ def panel_open_positions():
             lbl = f"{pts[0]:.0f}c" if pts else "—"
             return html.Span(["• ", html.Span(lbl, className="mono sub")],
                              title="accumulating price snapshots (grows each run)")
-        return _spark(seq, height=22, fill=False)
+        return _spark(_downsample_list(seq, 30), height=22, fill=False)   # PERF: 30 pts is plenty for a sparkline
     # NET-PER-DAY SWING (USER ASK 2026-06-24: make it match the per-resolution-day charts EXACTLY). Built from
     # the SAME source as those charts -- _resday_summary(date) (last-ts cumulative paid vs value from
     # resolution_day_curve) -- so the numbers are identical to the section headers below by construction.
@@ -4382,14 +4394,14 @@ def _time_to_target(base, unc_rate, sigma_m, cap_ceiling, target_profit):
     if unc_rate <= 0:
         return (_ttt_text("not reachable", "These inputs have no positive net edge — equity does not grow "
                           "toward the target.", RED), blank)
-    n_paths, MAXM = 2000, 600
+    n_paths, MAXM = 1200, 600
     rng = np.random.default_rng(4242)
     E = np.full(n_paths, float(base))
     crossed = np.full(n_paths, -1.0)
-    p5l, p50l, p95l = [float(base)], [float(base)], [float(base)]
-    p50_cross, m = None, 0
-    while m < MAXM:
-        m += 1
+    hist = [E.copy()]                                # per-month equity snapshots -> ONE vectorized percentile
+    half_m, m = None, 0                              # PERF: track the crossing fraction (avoids a per-month
+    while m < MAXM:                                  # np.percentile partition); run until ~97% have crossed so
+        m += 1                                       # the median + p5/p95 TIME are break-independent (correct).
         r = np.clip(rng.normal(unc_rate, sigma_m, n_paths), -0.95, None)
         if cap_ceiling > 0:                          # liquidity: a $ ceiling -> a tightening return ceiling
             r = np.minimum(r, cap_ceiling / np.maximum(E, 1e-9))
@@ -4398,17 +4410,30 @@ def _time_to_target(base, unc_rate, sigma_m, cap_ceiling, target_profit):
         nc = (crossed < 0) & (E >= target_eq)
         if nc.any():                                 # sub-month interpolation of the crossing time
             crossed[nc] = (m - 1) + (target_eq - e_prev[nc]) / np.maximum(E[nc] - e_prev[nc], 1e-9)
-        p50 = float(np.percentile(E, 50))
-        p5l.append(float(np.percentile(E, 5))); p50l.append(p50); p95l.append(float(np.percentile(E, 95)))
-        if p50_cross is None and p50 >= target_eq:
-            p50_cross = m
-        if (p50_cross is not None and m >= int(p50_cross * 1.3)) or (crossed >= 0).all():
+        hist.append(E.copy())
+        frac = float((crossed >= 0).mean())
+        if half_m is None and frac >= 0.5:
+            half_m = m
+        # stop once the slow tail is in (>=97% crossed) -- but never run more than ~2.2x the median crossing
+        # (low-variance capped growth -> the tail lands quickly), so the loop stays short.
+        if frac >= 0.97 or (half_m is not None and m >= int(half_m * 2.2) + 2):
             break
-    cr = crossed[crossed >= 0]
-    if cr.size == 0:
+    # CORRECT median/percentiles over ALL paths (non-crossed = +inf), so they don't depend on the break time.
+    # errstate: percentile may interpolate between two +inf (slow tail) -> harmless nan, handled via isfinite.
+    allcross = np.where(crossed >= 0, crossed, np.inf)
+    with np.errstate(invalid="ignore"):
+        med = float(np.percentile(allcross, 50))
+        p5t = float(np.percentile(allcross, 5))
+        _p95 = float(np.percentile(allcross, 95))
+    if not np.isfinite(med):                         # <50% of paths reach the target within 50 years
         return (_ttt_text("> 50 years", f"the ${target_profit:,.0f} profit target is not reached within 50 "
                           "years at this scenario's capacity-capped growth.", AMBER), blank)
-    med, p5t, p95t = float(np.median(cr)), float(np.percentile(cr, 5)), float(np.percentile(cr, 95))
+    p5t = p5t if np.isfinite(p5t) else 0.0
+    p95t = _p95 if np.isfinite(_p95) else None
+    # ONE vectorized percentile over the (months x paths) history -> the p5/median/p95 bands for the chart
+    H = np.vstack(hist)                              # shape (n_months+1, n_paths)
+    p5a, p50a, p95a = np.percentile(H, [5, 50, 95], axis=1)
+    p5l, p50l, p95l = p5a.tolist(), p50a.tolist(), p95a.tolist()
     xs = list(range(len(p50l)))
     fig = _dfig(
         [{"type": "scatter", "x": xs + xs[::-1], "y": p95l + p5l[::-1], "fill": "toself",
@@ -4426,8 +4451,9 @@ def _time_to_target(base, unc_rate, sigma_m, cap_ceiling, target_profit):
         shapes=[_hline(target_eq, AMBER, 1.4, "dash"), _hline(base, AXISCOL, 1, "dot")],
         annotations=[_ann(0.0, target_eq, f"target ${target_eq:,.0f}", AMBER, 10,
                           xref="paper", yref="y", xanchor="left", yanchor="bottom")])
+    _p95s = _fmt_dur(p95t) if p95t is not None else "> 50 years"
     detail = (f"to ${target_profit:,.0f} profit (${target_eq:,.0f} equity) · median of {n_paths:,} "
-              f"capacity-capped paths · p5–p95: {_fmt_dur(p5t)} — {_fmt_dur(p95t)}")
+              f"capacity-capped paths · p5–p95: {_fmt_dur(p5t)} — {_p95s}")
     return (_ttt_text(_fmt_dur(med), detail), fig)
 
 
@@ -4617,7 +4643,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     sigma_m = max(1e-4, swp_sigma * (abs(unc_rate) / max(abs(k["med"]) / 100.0, 1e-6)) if k["med"] else swp_sigma)
     months = _np.arange(0, 13)
     rng = _np.random.default_rng(12345)
-    n_paths = 4000
+    n_paths = 2000
     draws = _np.clip(rng.normal(unc_rate, sigma_m, size=(n_paths, 12)), -0.95, None)   # uncapped monthly returns
     eq = _np.empty((n_paths, 13)); eq[:, 0] = base
     for _m in range(12):
@@ -4672,7 +4698,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     # reach $0 at low bankroll and the plateau at the ceiling is legible (the uncapped line clips off the top).
     cap_data = []; cap_shapes = []; cap_anns = []; cap_xaxis = None; cap_yaxis = None
     if cap_ceiling > 0:
-        bxs = _np.geomspace(100.0, 1e8, 90)                          # $100 -> $100M log axis
+        bxs = _np.geomspace(100.0, 1e8, 48)                          # $100 -> $100M log axis (48 pts = smooth)
         # PER-BOOK staircase (2026-06-21): each active book fills along its OWN curve; shallow daily-low books
         # cap at a smaller size (lower bankroll) than the deep high books, so streams drop a group at a time.
         _books = _capacity_book_list(cities, s1tr, low_cities, low_trades, lockpm,
