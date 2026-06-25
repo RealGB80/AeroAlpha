@@ -3777,22 +3777,32 @@ def render_sandbox():
                   "what-if if/when they do."], className="sub")],
         style={"borderColor": "color-mix(in srgb, var(--amber) 40%, transparent)"})
 
-    # NEW (2026-06-25): a SEASONAL profit profile under the edge inputs -- the only chart that shows the
-    # year-round vs cold-only split across the calendar (winter is fatter because the cold streams switch on).
-    season_card = card([html.H3(["Seasonal Profit Profile  ", info_dot(
-            "Projected paper $/mo by calendar month for THIS scenario. The all-season book (year-round high + "
-            "active low) earns every month; the cold-only streams (LV/MIN high, PHIL/PHX low) add only Nov–Apr, "
-            "so winter months are fatter. Your current month is marked. Illustrative — capacity is modeled at "
-            "the current bankroll; paper, never realized P&L.")]),
-        html.Div("The all-season book earns every month; the cold-only streams switch on Nov–Apr. Move any "
-                 "input and the whole year re-scales.", className="sub"),
-        dcc.Graph(id="sb-season", config={"displayModeBar": False})])
+    # NEW (2026-06-25): TIME-TO-TARGET simulator under the edge inputs. Set a profit goal -> the median time
+    # (years/months/days) to reach it, with the depth/liquidity ceiling applied each month, + the equity path.
+    ttt_card = card([html.H3(["Time to Target Profit  ", info_dot(
+            "Set a profit goal; the lab simulates thousands of forward paths under THIS scenario and reports "
+            "the MEDIAN time to reach it. Fill sizes / liquidity are taken into account: the depth ceiling is "
+            "an absolute $/mo, so as equity compounds the dollars added per month plateau at capacity and the "
+            "growth (and the countdown) slows. The chart is the median equity path with its p5–p95 band climbing "
+            "to the target. Paper model, never realized P&L.")]),
+        html.Div("Set a profit goal — get the median time to reach it, with order-book depth/liquidity applied "
+                 "every month (the $/mo added plateaus at capacity, so growth slows as the bankroll scales).",
+                 className="sub"),
+        html.Div([
+            html.Div([html.Label("Target profit ($)", className="u-label",
+                                 style={"fontSize": "10px", "display": "block", "marginBottom": "3px"}),
+                      dcc.Input(id="sb-target", type="number", value=10000, step=500, min=100, max=10_000_000,
+                                style={"width": "150px", "padding": "6px 9px", "fontSize": "14px"})]),
+            html.Div(id="sb-ttt-result", style={"flex": "1", "minWidth": "180px"})],
+            style={"display": "flex", "alignItems": "flex-end", "gap": "18px", "margin": "10px 0 8px",
+                   "flexWrap": "wrap"}),
+        dcc.Graph(id="sb-ttt-chart", config={"displayModeBar": False})])
 
     return html.Div([section("Sandbox — Interactive Risk / Return Lab"),
         html.Div("Tune the edges, capital, and risk profile. Every output is a transparent paper model "
                  "(see the note at the bottom) — research only, never realized P&L.", className="sub",
                  style={"marginBottom": "10px"}),
-        html.Div([html.Div([html.Div([edge_inputs, season_card],
+        html.Div([html.Div([html.Div([edge_inputs, ttt_card],
                                       style={"display": "flex", "flexDirection": "column", "gap": "14px"})],
                             className="col-8"),
                   html.Div([html.Div([out, cap_inputs],
@@ -4335,21 +4345,109 @@ def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
     return max(0.0, tot)
 
 
+def _fmt_dur(months):
+    """Float months -> 'X years, Y months, Z days' (years dropped when 0)."""
+    months = max(0.0, float(months))
+    yrs = int(months // 12); rem = months - yrs * 12; mo = int(rem); days = int(round((rem - mo) * 30.44))
+    if days >= 30:
+        mo += 1; days -= 30
+    if mo >= 12:
+        yrs += 1; mo -= 12
+    seg = []
+    if yrs:
+        seg.append(f"{yrs} year" + ("s" if yrs != 1 else ""))
+    seg.append(f"{mo} month" + ("s" if mo != 1 else ""))
+    seg.append(f"{days} day" + ("s" if days != 1 else ""))
+    return ", ".join(seg)
+
+
+def _ttt_text(big, detail, color=MINT):
+    return html.Div([
+        html.Div("Median time to reach the target", className="sub", style={"fontSize": "10.5px", "opacity": .8}),
+        html.Div(big, className="mono", style={"fontSize": "25px", "fontWeight": "800", "color": color,
+                                               "lineHeight": "1.12", "margin": "1px 0 2px"}),
+        html.Div(detail, className="sub", style={"fontSize": "10.5px", "lineHeight": "1.4"})])
+
+
+def _time_to_target(base, unc_rate, sigma_m, cap_ceiling, target_profit):
+    """Monte-Carlo: months to grow `base` equity to base+target_profit, with the depth/liquidity ceiling
+    applied EACH month (monthly return = min(drawn rate, cap_ceiling/equity)), so as equity compounds the $
+    added/mo plateaus at the capacity ceiling and the time-to-target stretches. Returns (result_children,
+    figure). Median + p5/p95 across the paths; the chart shows the median equity path + band to the target."""
+    import numpy as np
+    blank = _dfig([], h=240)
+    if base <= 0 or target_profit <= 0:
+        return (_ttt_text("—", "Enter a positive bankroll and a target profit.", DIM), blank)
+    target_eq = base + target_profit
+    if unc_rate <= 0:
+        return (_ttt_text("not reachable", "These inputs have no positive net edge — equity does not grow "
+                          "toward the target.", RED), blank)
+    n_paths, MAXM = 2000, 600
+    rng = np.random.default_rng(4242)
+    E = np.full(n_paths, float(base))
+    crossed = np.full(n_paths, -1.0)
+    p5l, p50l, p95l = [float(base)], [float(base)], [float(base)]
+    p50_cross, m = None, 0
+    while m < MAXM:
+        m += 1
+        r = np.clip(rng.normal(unc_rate, sigma_m, n_paths), -0.95, None)
+        if cap_ceiling > 0:                          # liquidity: a $ ceiling -> a tightening return ceiling
+            r = np.minimum(r, cap_ceiling / np.maximum(E, 1e-9))
+        e_prev = E
+        E = E * (1.0 + r)
+        nc = (crossed < 0) & (E >= target_eq)
+        if nc.any():                                 # sub-month interpolation of the crossing time
+            crossed[nc] = (m - 1) + (target_eq - e_prev[nc]) / np.maximum(E[nc] - e_prev[nc], 1e-9)
+        p50 = float(np.percentile(E, 50))
+        p5l.append(float(np.percentile(E, 5))); p50l.append(p50); p95l.append(float(np.percentile(E, 95)))
+        if p50_cross is None and p50 >= target_eq:
+            p50_cross = m
+        if (p50_cross is not None and m >= int(p50_cross * 1.3)) or (crossed >= 0).all():
+            break
+    cr = crossed[crossed >= 0]
+    if cr.size == 0:
+        return (_ttt_text("> 50 years", f"the ${target_profit:,.0f} profit target is not reached within 50 "
+                          "years at this scenario's capacity-capped growth.", AMBER), blank)
+    med, p5t, p95t = float(np.median(cr)), float(np.percentile(cr, 5)), float(np.percentile(cr, 95))
+    xs = list(range(len(p50l)))
+    fig = _dfig(
+        [{"type": "scatter", "x": xs + xs[::-1], "y": p95l + p5l[::-1], "fill": "toself",
+          "fillcolor": "rgba(22,199,132,.10)", "line": {"width": 0}, "mode": "lines", "name": "p5–p95",
+          "hoverinfo": "skip"},
+         {"type": "scatter", "x": xs, "y": p50l, "mode": "lines", "name": "median equity",
+          "line": {"color": MINT, "width": 2.4, "shape": "spline", "smoothing": 0.3},
+          "hovertemplate": "month %{x}<br>%{y:$,.0f}<extra></extra>"},
+         {"type": "scatter", "x": [med], "y": [target_eq], "mode": "markers", "name": "target reached",
+          "marker": {"size": 14, "color": AMBER, "symbol": "star", "line": {"width": 1.3, "color": "#fff"}},
+          "hovertemplate": f"target ${target_eq:,.0f}<br>~{_fmt_dur(med)}<extra></extra>"}],
+        h=240, legend=False,
+        xaxis={"title": "months from now", "nticks": 8},
+        yaxis={"title": "paper equity ($)", "tickprefix": "$", "tickformat": "~s"},
+        shapes=[_hline(target_eq, AMBER, 1.4, "dash"), _hline(base, AXISCOL, 1, "dot")],
+        annotations=[_ann(0.0, target_eq, f"target ${target_eq:,.0f}", AMBER, 10,
+                          xref="paper", yref="y", xanchor="left", yanchor="bottom")])
+    detail = (f"to ${target_profit:,.0f} profit (${target_eq:,.0f} equity) · median of {n_paths:,} "
+              f"capacity-capped paths · p5–p95: {_fmt_dur(p5t)} — {_fmt_dur(p95t)}")
+    return (_ttt_text(_fmt_dur(med), detail), fig)
+
+
 @app.callback(
     Output("sb-profit", "children"), Output("sb-roi", "children"), Output("sb-roi", "style"),
     Output("sb-kelly-band", "children"), Output("sb-note", "children"), Output("sb-risk-metrics", "children"),
     Output("sb-chart", "figure"), Output("sb-fan", "figure"), Output("sb-cap", "figure"),
-    Output("sb-cap-flag", "children"), Output("sb-season", "figure"),
+    Output("sb-cap-flag", "children"),
+    Output("sb-ttt-result", "children"), Output("sb-ttt-chart", "figure"),
     Input("sb-s1edge", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
     Input("sb-s1edge-cold", "value"), Input("sb-cities-cold", "value"), Input("sb-s1trades-cold", "value"),
     Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
     Input("sb-lowedge-cold", "value"), Input("sb-lowcities-cold", "value"), Input("sb-lowtrades-cold", "value"),
     Input("sb-lock", "value"), Input("sb-lockpm", "value"),
     Input("sb-bankroll", "value"), Input("sb-kelly", "value"),
-    Input("sb-slip", "value"), Input("sb-slip-mode", "value"), Input("sb-slip-manual", "value"))
+    Input("sb-slip", "value"), Input("sb-slip-mode", "value"), Input("sb-slip-manual", "value"),
+    Input("sb-target", "value"))
 def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
              low_c, low_cities, low_trades, lowc_cold, lowcities_cold, lowtr_cold,
-             lock_c, lockpm, bankroll, kelly, slip, slip_mode, slip_manual):
+             lock_c, lockpm, bankroll, kelly, slip, slip_mode, slip_manual, target):
     import numpy as _np
     blank = _dfig([], h=300)
     try:
@@ -4364,9 +4462,10 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
         slip = max(0.0, float(slip))
         slip_mode = slip_mode if slip_mode in ("off", "auto", "manual") else "off"
         slip_manual = max(0.0, float(slip_manual)) if slip_manual is not None else 0.0
+        target = max(0.0, float(target)) if target not in (None, "") else 0.0
     except (TypeError, ValueError):
         return ("—", "—", {"color": DIM}, "", "Enter valid numbers in every field.", "",
-                blank, blank, blank, "", blank)
+                blank, blank, blank, "", "", blank)
     kelly = min(KELLY_MAX, max(0.25, kelly))
 
     # ---- TRANSPARENT PER-STREAM PROFIT MODEL (FIX 1, 2026-06-19). Profit is now a DIRECT function of the
@@ -4686,31 +4785,16 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
                  if slip_mode == "auto" else
                  f"a flat {slip_manual:.1f}c/contract override on every fill (the curve is disabled)."))
 
-    # ---- (f) SEASONAL profit profile: the all-season book earns every month; the cold-only books add Nov-Apr.
-    # Uses the per-bucket monthly $ already computed (capacity-scaled), so it moves with every input. Stacked
-    # bars across the calendar; the current month is marked.
-    _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    _COLD = {11, 12, 1, 2, 3, 4}                       # COLD_MONTHS = Nov-Apr (matches the harness season split)
-    _allseason_m = s1_monthly + low_monthly + lock_monthly        # year-round high + active low + lock-in
-    _coldadd_m = s1cold_monthly + lowcold_monthly                 # cold-only high + cold-only low (winter only)
-    _base = [_allseason_m] * 12
-    _cold = [(_coldadd_m if (i + 1) in _COLD else 0.0) for i in range(12)]
-    _cur_m = datetime.now(timezone.utc).month
-    season = _dfig(
-        [{"type": "bar", "x": _MONTHS, "y": _base, "name": "all-season book",
-          "marker": {"color": MINT, "cornerradius": 4}, "hovertemplate": "%{x}<br>all-season %{y:$,.0f}/mo<extra></extra>"},
-         {"type": "bar", "x": _MONTHS, "y": _cold, "name": "cold-only add (Nov–Apr)",
-          "marker": {"color": CYAN, "cornerradius": 4}, "hovertemplate": "%{x}<br>cold add %{y:$,.0f}/mo<extra></extra>"}],
-        h=260, legend=True, extra={"barmode": "stack"},
-        xaxis={"title": ""},
-        yaxis={"title": "paper $ / month", "tickprefix": "$", "tickformat": "~s"},
-        annotations=[_ann(_MONTHS[_cur_m - 1], 1.0, "▲ this month", AMBER, 10, yref="paper", yanchor="bottom")])
+    # ---- (f) TIME TO TARGET PROFIT: how long THIS scenario needs to reach the user's profit goal, with the
+    # depth/liquidity ceiling applied EACH month (so growth decelerates as equity scales into capacity). Reuses
+    # the capacity-aware drift (unc_rate / sigma_m / cap_ceiling) already computed for the equity fan.
+    ttt_result, ttt_fig = _time_to_target(base, unc_rate, sigma_m, cap_ceiling, target)
 
-    # fig/fan/cap/season are already styled PLAIN-DICT figures (no go.Figure -> ~0 build cost). The rr/dist/ruin
+    # fig/fan/cap are already styled PLAIN-DICT figures (no go.Figure -> ~0 build cost). The rr/dist/ruin
     # figures depend ONLY on the Kelly slider, so they moved to their own callback (_sandbox_risk) and no
     # longer rebuild on every edge/city keystroke.
     return (f"${total:,.0f}", f"{roi:+.1f}%", {"color": roi_color}, kelly_band, note, metrics,
-            fig, fan, cap, cap_flag, season)
+            fig, fan, cap, cap_flag, ttt_result, ttt_fig)
 
 
 @app.callback(
