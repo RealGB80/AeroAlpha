@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -27,6 +28,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from dash import Dash, dcc, html, dash_table, Input, Output, State, ALL, ctx
+from dash.development.base_component import Component
 
 from data import table, meta_value
 
@@ -95,6 +97,94 @@ def _tpl(fig, h=300, legend=None):
 
 def graph(fig):
     return dcc.Graph(figure=fig, config={"displayModeBar": False})
+
+
+# ============================================================================================
+# PAGE CACHE + BACKGROUND PRE-WARM (2026-06-25 PERF). Whole-site slowness was the SAME root cause as the
+# sandbox: building a page rebuilds dozens of go.Figure objects (~0.7-1.5 s/page; deepcopy + plotly property
+# tree). Hand-converting all ~50 panels to dicts is high-regression-risk, so instead we MEMOIZE each rendered
+# page and serve the cached tree -- with its figures converted to PLAIN DICTS ONCE (_dictify_figures) so the
+# per-request re-serialization is ~7-65 ms instead of ~40-190 ms. A daemon thread RE-RENDERS every page on a
+# 60 s cadence so the cache is always warm (data TTL is 120 s, so a cached page is never staler than the data)
+# -> investor navigation is a cache hit ~always. Per-process (each gunicorn worker warms its own cache).
+_PAGE_CACHE: dict = {}
+_PAGE_TTL = 120.0
+_PREWARM_INTERVAL = 60.0
+_PREWARM_STARTED = False
+_PREWARM_LOCK = threading.Lock()
+
+
+def _dictify_figures(node):
+    """Walk a built Dash component tree and replace every go.Figure with its plain-dict form, so a cached page
+    re-serializes at dict speed (no repeated go.Figure->JSON). Mutates in place; safe on dicts/strings."""
+    if not isinstance(node, Component):
+        return node
+    fig = getattr(node, "figure", None)
+    if fig is not None and hasattr(fig, "to_plotly_json"):
+        try:
+            node.figure = fig.to_plotly_json()
+        except Exception:
+            pass
+    ch = getattr(node, "children", None)
+    if isinstance(ch, Component):
+        _dictify_figures(ch)
+    elif isinstance(ch, (list, tuple)):
+        for c in ch:
+            _dictify_figures(c)
+    return node
+
+
+def _render_page(key):
+    """Build a page fresh, convert its figures to dicts, and store it in the cache. Returns the tree."""
+    tree = RENDER.get(key, render_overview)()
+    _dictify_figures(tree)
+    _PAGE_CACHE[key] = (time.time(), tree)
+    return tree
+
+
+def _prewarm_loop():
+    while True:
+        for key in list(RENDER.keys()):
+            try:
+                _render_page(key)
+            except Exception:
+                pass            # a degraded page never kills the warmer; the live request path still rebuilds
+        time.sleep(_PREWARM_INTERVAL)
+
+
+def _ensure_prewarm():
+    """Start the background pre-warmer once per process, lazily on the first request (survives gunicorn
+    preload+fork, unlike a thread started at import). Disable with DASH_PREWARM=0 (used by perf tests)."""
+    global _PREWARM_STARTED
+    if _PREWARM_STARTED or os.environ.get("DASH_PREWARM", "1") != "1":
+        return
+    with _PREWARM_LOCK:
+        if _PREWARM_STARTED:
+            return
+        threading.Thread(target=_prewarm_loop, daemon=True, name="page-prewarm").start()
+        _PREWARM_STARTED = True
+
+
+_CB_CACHE: dict = {}
+
+
+def _cb_memo(key, ttl, build):
+    """TTL memo for interactive callbacks whose inputs are a small discrete set (e.g. the equity-window radio,
+    the calibration-stream dropdown). build() returns the callback's output tuple; any go.Figure in it should
+    already be dict-ified by the caller so repeat serves are fast. First pick of each value pays the build,
+    repeats within ttl are instant."""
+    now = time.time()
+    hit = _CB_CACHE.get(key)
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    val = build()
+    _CB_CACHE[key] = (now, val)
+    return val
+
+
+def _as_dict_fig(fig):
+    """go.Figure -> plain dict (Dash renders natively, fast re-serialize); pass dicts through unchanged."""
+    return fig.to_plotly_json() if hasattr(fig, "to_plotly_json") else fig
 
 
 # ============================================================================================
@@ -3826,7 +3916,12 @@ def _nav_style(active):
 # market-feed) update via their OWN small callbacks below, never by re-rendering the active page.
 @app.callback(Output("main", "children"), Input("active", "data"))
 def _route(active):
-    return RENDER.get(active, render_overview)()
+    _ensure_prewarm()
+    key = active if active in RENDER else "overview"
+    hit = _PAGE_CACHE.get(key)
+    if hit and time.time() - hit[0] < _PAGE_TTL:   # cache hit -> serve the dict-ified tree (fast re-serialize)
+        return hit[1]
+    return _render_page(key)                        # miss (cold / expired) -> build once, cache, dict-ify
 
 
 # $1k paper-equity time-window selector (USER ASK 2026-06-21): re-window the equity series + readout on each
@@ -3834,8 +3929,11 @@ def _route(active):
 @app.callback(Output("run-equity-graph", "figure"), Output("run-equity-readout", "children"),
               Input("run-equity-window", "value"))
 def _run_equity_window(window):
-    fig, readout, _col = _equity_figure(window or "1W")
-    return fig, readout
+    w = window or "1W"
+    def build():
+        fig, readout, _col = _equity_figure(w)
+        return _as_dict_fig(fig), readout
+    return _cb_memo(("eqwin", w), 60.0, build)
 
 
 # (2026-06-22) The resolution-day current/next TOGGLE was replaced by full per-date SECTIONS rendered
@@ -3848,27 +3946,29 @@ def _run_equity_window(window):
               Output("calib-cov", "figure"), Output("calib-meta", "children"),
               Input("calib-stream", "value"))
 def _calib_stream(stream):
-    d = table("calibration_streams")
-    empty = go.Figure()
-    if d.empty or stream is None:
-        return "", _tpl(empty, h=300), _tpl(empty, h=180), ""
-    sel = d[d["stream"] == stream]
-    if sel.empty:
-        return "", _tpl(empty, h=300), _tpl(empty, h=180), ""
-    row = sel.iloc[0]
-    chip = _conf_chip(row.get("direction"), row.get("s_star"))
-    pit = _calib_pit_figure(row)
-    cov = _calib_cov_figure(row)
-    # honest meta line: folds, residual RMSE, mean sigma, coverage, window.
-    def _n(v, f="{:.2f}"):
-        return "—" if _isnull(v) else f.format(float(v))
-    meta = (f"{_stream_label(stream)} ({str(row.get('market') or '').upper()}) · "
-            f"n={int(row.get('n_folds') or 0)} WF folds · "
-            f"residual RMSE {_n(row.get('rmse_resid_F'))}°F · mean σ {_n(row.get('mean_sd_F'))}°F · "
-            f"cov80 {_n(row.get('cov80'), '{:.1%}')} (nom 80%) / cov90 {_n(row.get('cov90'), '{:.1%}')} "
-            f"(nom 90%) · {row.get('date_start')} → {row.get('date_end')}. Leak-free walk-forward, "
-            f"paper/backtest.")
-    return chip, pit, cov, meta
+    def build():
+        d = table("calibration_streams")
+        empty = _dfig([], h=300)
+        if d.empty or stream is None:
+            return "", empty, _dfig([], h=180), ""
+        sel = d[d["stream"] == stream]
+        if sel.empty:
+            return "", empty, _dfig([], h=180), ""
+        row = sel.iloc[0]
+        chip = _conf_chip(row.get("direction"), row.get("s_star"))
+        pit = _as_dict_fig(_calib_pit_figure(row))
+        cov = _as_dict_fig(_calib_cov_figure(row))
+        # honest meta line: folds, residual RMSE, mean sigma, coverage, window.
+        def _n(v, f="{:.2f}"):
+            return "—" if _isnull(v) else f.format(float(v))
+        meta = (f"{_stream_label(stream)} ({str(row.get('market') or '').upper()}) · "
+                f"n={int(row.get('n_folds') or 0)} WF folds · "
+                f"residual RMSE {_n(row.get('rmse_resid_F'))}°F · mean σ {_n(row.get('mean_sd_F'))}°F · "
+                f"cov80 {_n(row.get('cov80'), '{:.1%}')} (nom 80%) / cov90 {_n(row.get('cov90'), '{:.1%}')} "
+                f"(nom 90%) · {row.get('date_start')} → {row.get('date_end')}. Leak-free walk-forward, "
+                f"paper/backtest.")
+        return chip, pit, cov, meta
+    return _cb_memo(("calib", stream), 60.0, build)
 
 
 @app.callback(Output("tb-clock", "children"), Output("tb-tickers", "children"),
