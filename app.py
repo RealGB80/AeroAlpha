@@ -913,18 +913,22 @@ def panel_brier_gauges():
 # ONLY. Each reads ONE curated table, guards its own empty case, and carries an honest paper caption.
 # ============================================================================================
 def _spark(values, color=None, height=34, fill=True):
-    """Tiny inline sparkline (no axes/grid/hover-bar). Green if last>=first else red unless color given."""
+    """Tiny inline sparkline (no axes/grid/hover-bar). Green if last>=first else red unless color given.
+    PERF (2026-06-25): returns a PLAIN-DICT figure (not go.Figure) -- these are built MANY per page (one per
+    open-position row), and the go.Figure path cost ~15 ms each (~0.5 s for the pending-trades table alone).
+    A dict is ~0.01 ms and renders identically as a staticPlot dcc.Graph."""
     if not values or len(values) < 2:
         return html.Div(className="spark-empty", style={"height": f"{height}px"})
     color = color or (GREEN if values[-1] >= values[0] else RED)
-    fig = go.Figure()
-    fig.add_scatter(y=values, mode="lines", line=dict(color=color, width=1.6, shape="spline", smoothing=0.5),
-                    fill="tozeroy" if fill else None,
-                    fillcolor=f"rgba({_rgb(color)},.10)" if fill else None, hoverinfo="skip")
-    fig.update_layout(margin=dict(l=0, r=0, t=2, b=2), height=height, paper_bgcolor="rgba(0,0,0,0)",
-                      plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
-    fig.update_xaxes(visible=False, fixedrange=True)
-    fig.update_yaxes(visible=False, fixedrange=True)
+    trace = {"type": "scatter", "y": list(values), "mode": "lines",
+             "line": {"color": color, "width": 1.6, "shape": "spline", "smoothing": 0.5}, "hoverinfo": "skip"}
+    if fill:
+        trace["fill"] = "tozeroy"; trace["fillcolor"] = f"rgba({_rgb(color)},.10)"
+    fig = {"data": [trace],
+           "layout": {"margin": {"l": 0, "r": 0, "t": 2, "b": 2}, "height": height,
+                      "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)", "showlegend": False,
+                      "xaxis": {"visible": False, "fixedrange": True},
+                      "yaxis": {"visible": False, "fixedrange": True}}}
     return dcc.Graph(figure=fig, config={"displayModeBar": False, "staticPlot": True},
                      style={"height": f"{height}px"})
 
@@ -3587,6 +3591,27 @@ def render_sandbox():
             kw["max"] = mx
         return html.Div([html.Label(label), dcc.Input(**kw)], className="sb-field")
 
+    # COMPACT field + bucket (2026-06-25 UX): the season-classed inputs were ~16 stacked fields = a very tall
+    # column. Group each stream class into a small "bucket" tile with its 2-3 numeric inputs on ONE row, and
+    # lay the buckets out in a responsive auto-fit grid -> ~3x shorter, same IDs/behaviour.
+    def cf(id_, label, val, step, mn, mx):
+        return html.Div([
+            html.Label(label, style={"fontSize": "9.5px", "color": DIM, "fontWeight": "600",
+                                     "display": "block", "marginBottom": "2px", "whiteSpace": "nowrap"}),
+            dcc.Input(id=id_, type="number", value=val, step=step, min=mn, max=mx,
+                      style={"width": "100%", "padding": "5px 7px", "fontSize": "13px"})],
+            style={"flex": "1", "minWidth": "58px"})
+
+    def bucket(title, color, caption, *fields):
+        return html.Div([
+            html.Div(title, style={"color": color, "fontWeight": "700", "fontSize": "11.5px",
+                                   "letterSpacing": ".2px"}),
+            html.Div(caption, className="sub",
+                     style={"fontSize": "9.5px", "opacity": .72, "lineHeight": "1.3", "margin": "1px 0 7px"}),
+            html.Div(list(fields), style={"display": "flex", "gap": "7px", "flexWrap": "wrap"})],
+            style={"border": "1px solid var(--line)", "borderRadius": "10px", "padding": "9px 11px",
+                   "background": "color-mix(in srgb, var(--panel) 55%, transparent)"})
+
     # ---- column 1: edge & flow inputs ----
     # DEFAULTS reproduce the DEPLOYED $1,000 activated book (3 high-S1 NY/LAX/CHI + NY-low all-season + the 4
     # warm daily-low AUS/LAX/DEN/MIA). The stream count + staked $ + median are read LIVE from run_meta /
@@ -3601,55 +3626,34 @@ def render_sandbox():
                else None)
     _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the live Kelly-MC median"
     edge_inputs = card([html.H3("Edges & Flow"),
-        html.Div([f"Streams are split by SEASON CLASS — YEAR-ROUND (season=all) and COLD-ONLY (validated "
-                  f"cold edge, warm unconfirmed) — for both high and low. The YEAR-ROUND defaults reproduce "
-                  f"the live deployed book ({_sb_nact} activated streams, ${_sb_stake} staked at 0.50x Kelly), "
-                  f"whose per-trade sizing is anchored to the live Kelly-Monte-Carlo median (", html.B(_sb_med_str),
-                  f", the Projection panel). The COLD-ONLY defaults add the validated cold-season streams "
-                  f"(LV/MIN high; PHIL/PHX low) — $0-funded in warm season today, so this full-book "
-                  f"default sits ABOVE the warm-season deployed number by design (it shows the cold upside). "
-                  f"Nothing is pinned — every field moves the result; zero the cold cities to see the "
-                  f"warm-season-only book."],
-                 className="sub", style={"margin": "0 0 8px", "fontSize": "11px"}),
-        # --- HIGH: year-round (season=all) vs cold-only (validated cold edge, warm unconfirmed) ---
-        html.Div("Day-ahead S1 HIGH — year-round (NY/LAX/CHI, all-season)", className="sub",
-                 style={"margin": "2px 0 2px", "color": MINT, "fontWeight": "700"}),
-        field("sb-s1edge", "High year-round edge (c/contract, gross)", S1_HIGH_EDGE_DEFAULT, 0.1, 0, 20),
-        html.Div(f"Gross model edge before fills; ~{S1_HIGH_EDGE_DEFAULT - 2.0:.1f}c net after the 2c fill "
-                 "cost. Default = the all-season NY/LAX/CHI deployed-book mean (4.9c).", className="sub",
-                 style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
-        field("sb-cities", "High year-round cities", 3, 1, 0, 7),
-        field("sb-s1trades", "High year-round trades / month / city", 84, 1, 0, 400),
-        html.Div("Day-ahead S1 HIGH — cold-only (LV/MIN, Nov–Apr)", className="sub",
-                 style={"margin": "12px 0 2px", "color": CYAN, "fontWeight": "700"}),
-        field("sb-s1edge-cold", "High cold-only edge (c/contract, gross)", S1_HIGH_COLD_EDGE_DEFAULT, 0.1, 0, 20),
-        html.Div("Validated COLD-season high streams (LV +9.19c / MIN +9.89c, A6 watch). Active ~Nov–Apr only; "
-                 "$0-funded in warm season today, auto-stage at the cold turn on gate PASS.", className="sub",
-                 style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
-        field("sb-cities-cold", "High cold-only cities", 2, 1, 0, 7),
-        field("sb-s1trades-cold", "High cold-only trades / month / city", 84, 1, 0, 400),
-        # --- LOW: all-season/active (NY-low + warm AUS/LAX/DEN/MIA) vs cold-only add (PHIL/PHX) ---
-        html.Div("Daily-LOW S1 — all-season / active (NY-low + warm AUS/LAX/DEN/MIA)", className="sub",
-                 style={"margin": "14px 0 2px", "color": MINT, "fontWeight": "700"}),
-        field("sb-lowedge", "Low all-season edge (c/contract, gross)", LOW_EDGE_DEFAULT, 0.1, 0, 20),
-        html.Div("Default = the deployed low book: NY-low all-season flagship (+6.96c) + the 4 warm-activated "
-                 "daily-low (AUS/LAX/DEN/MIA), mean ~7.6c, the streams trading right now.", className="sub",
-                 style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
-        field("sb-lowcities", "Low all-season cities", 5, 1, 0, 7),
-        field("sb-lowtrades", "Low all-season trades / month / city", 82, 1, 0, 400),
-        html.Div("Daily-LOW S1 — cold-only add (PHIL/PHX, Nov–Apr)", className="sub",
-                 style={"margin": "12px 0 2px", "color": CYAN, "fontWeight": "700"}),
-        field("sb-lowedge-cold", "Low cold-only edge (c/contract, gross)", LOW_COLD_EDGE_DEFAULT, 0.1, 0, 20),
-        html.Div("Cold-season-only low ADDS (PHIL +11.79c / PHX +17.65c, mean ~14.7c). Cold cadence ~20 "
-                 "trades/mo/city; $0 in warm season, auto-stage at the cold turn on gate PASS.",
-                 className="sub", style={"margin": "0 0 4px", "fontSize": "10.5px", "opacity": .8}),
-        field("sb-lowcities-cold", "Low cold-only cities", 2, 1, 0, 7),
-        field("sb-lowtrades-cold", "Low cold-only trades / month / city", 20, 1, 0, 400),
-        html.Div("Lock-in (latency, NYC + airports)", className="sub",
-                 style={"margin": "14px 0 2px", "color": DIM, "fontWeight": "700"}),
-        field("sb-lock", "Lock-in edge (c/contract)", 12, 0.5, 0, 30),
-        field("sb-lockpm", "Locks / month / city (0 = not in deployed book)", 0, 1, 0, 120)],
-        style={"flex": "1", "minWidth": "270px"})
+        html.Div([f"Streams split by SEASON CLASS for both high & low. YEAR-ROUND defaults reproduce the live "
+                  f"deployed book ({_sb_nact} streams, ${_sb_stake} @ 0.50x Kelly, anchored to the Kelly-MC "
+                  f"median ", html.B(_sb_med_str), f"); COLD-ONLY adds the validated cold streams (LV/MIN high; "
+                  f"PHIL/PHX low — $0 in warm today), so the full-book default sits above the warm-season "
+                  f"number. Zero the cold cities for the warm-only book; every field moves the result."],
+                 className="sub", style={"margin": "0 0 10px", "fontSize": "11px"}),
+        html.Div([
+            bucket("HIGH · year-round", MINT, "NY/LAX/CHI all-season (~4.9c gross; ~2.9c net)",
+                   cf("sb-s1edge", "Edge ¢/ct", S1_HIGH_EDGE_DEFAULT, 0.1, 0, 20),
+                   cf("sb-cities", "Cities", 3, 1, 0, 7),
+                   cf("sb-s1trades", "Trades/mo·city", 84, 1, 0, 400)),
+            bucket("HIGH · cold-only", CYAN, "LV +9.19c / MIN +9.89c · Nov–Apr · A6 watch ($0 warm)",
+                   cf("sb-s1edge-cold", "Edge ¢/ct", S1_HIGH_COLD_EDGE_DEFAULT, 0.1, 0, 20),
+                   cf("sb-cities-cold", "Cities", 2, 1, 0, 7),
+                   cf("sb-s1trades-cold", "Trades/mo·city", 84, 1, 0, 400)),
+            bucket("LOW · all-season / active", MINT, "NY-low + warm AUS/LAX/DEN/MIA (~7.6c) — trading now",
+                   cf("sb-lowedge", "Edge ¢/ct", LOW_EDGE_DEFAULT, 0.1, 0, 20),
+                   cf("sb-lowcities", "Cities", 5, 1, 0, 7),
+                   cf("sb-lowtrades", "Trades/mo·city", 82, 1, 0, 400)),
+            bucket("LOW · cold-only", CYAN, "PHIL +11.79c / PHX +17.65c · ~20/mo · Nov–Apr ($0 warm)",
+                   cf("sb-lowedge-cold", "Edge ¢/ct", LOW_COLD_EDGE_DEFAULT, 0.1, 0, 20),
+                   cf("sb-lowcities-cold", "Cities", 2, 1, 0, 7),
+                   cf("sb-lowtrades-cold", "Trades/mo·city", 20, 1, 0, 400)),
+            bucket("Lock-in (latency)", DIM, "NYC + airports · 0 locks = not in deployed book",
+                   cf("sb-lock", "Edge ¢/ct", 12, 0.5, 0, 30),
+                   cf("sb-lockpm", "Locks/mo·city", 0, 1, 0, 120))],
+            style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(192px, 1fr))",
+                   "gap": "10px"})])
 
     # ---- column 2: capital, risk profile, frictions ----
     cap_inputs = card([html.H3("Capital & Risk Profile"),
@@ -3706,8 +3710,9 @@ def render_sandbox():
         style={"flex": "1"})
 
     charts = card([html.H3("Projected Equity Fan — 12-Month Monte-Carlo"),
-        html.Div("Median path with p5/p95 bands, modeled from the median %/m and an implied monthly "
-                 "sigma backed out of the p5 outcome. A model, not a forecast.", className="sub"),
+        html.Div("Median path with p5/p95 bands. Capacity-aware: the depth ceiling is an absolute $/mo, so as "
+                 "equity compounds the % return tightens toward the plateau (paths can't grow unbounded through "
+                 "the ceiling). A model, not a forecast.", className="sub"),
         dcc.Graph(id="sb-fan", config={"displayModeBar": False})])
     chart_rr = card([html.H3("Risk vs Return Across Kelly Fractions"),
         html.Div("Median monthly return vs p95 max-drawdown for each Kelly fraction; your current pick is "
@@ -3776,7 +3781,10 @@ def render_sandbox():
         html.Div("Tune the edges, capital, and risk profile. Every output is a transparent paper model "
                  "(see the note at the bottom) — research only, never realized P&L.", className="sub",
                  style={"marginBottom": "10px"}),
-        html.Div([edge_inputs, cap_inputs, out], className="grid"),
+        html.Div([html.Div(edge_inputs, className="col-8"),
+                  html.Div([html.Div([out, cap_inputs],
+                                     style={"display": "flex", "flexDirection": "column", "gap": "14px"})],
+                           className="col-4")], className="grid12"),
         html.Div([html.Div(risk_panel, className="col-12")], className="grid12"),
         html.Div([html.Div(charts, className="col-6"), html.Div(chart_rr, className="col-6")],
                  className="grid12"),
@@ -4484,22 +4492,31 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
         style={"display": "flex", "flexWrap": "wrap", "gap": "10px"})
 
     # ---- (a) 12-month Monte-Carlo equity fan ----
-    # drift = the COMPUTED scenario ROI (so the fan reflects the user's edge/city/trade inputs, FIX 1); the
-    # monthly sigma is scaled from the Kelly sweep's median/p5 spread (the validated risk shape) about it.
-    mu_m = roi / 100.0
+    # drift = the UNCAPPED scenario rate (so the fan reflects the user's edge/city/trade inputs); the monthly
+    # sigma is scaled from the Kelly sweep's median/p5 spread (the validated risk shape) about it.
+    # CAPACITY-AWARE (2026-06-25): the depth ceiling is an ABSOLUTE $/mo (cap_ceiling), so as a path's equity
+    # COMPOUNDS the same % return earns more $ until it hits the ceiling, after which the % return MECHANICALLY
+    # falls (return = min(uncapped_rate, cap_ceiling / equity)). The old fan compounded a CONSTANT return and so
+    # overstated the upper paths (they grew unbounded through the ceiling). We now draw uncapped monthly returns
+    # and apply the DOLLAR cap per path per month, so the median/p95 bend toward the plateau as they scale up.
+    base = bankroll if bankroll > 0 else 1.0
+    unc_rate = (total_uncapped / bankroll) if bankroll > 0 else (roi / 100.0)   # fractional, scale-invariant
     swp_sigma = max(1e-4, (k["med"] - k["p5"]) / 100.0 / 1.645)      # sweep's monthly sigma at this fraction
-    sigma_m = max(1e-4, swp_sigma * (abs(mu_m) / max(abs(k["med"]) / 100.0, 1e-6)) if k["med"] else swp_sigma)
+    sigma_m = max(1e-4, swp_sigma * (abs(unc_rate) / max(abs(k["med"]) / 100.0, 1e-6)) if k["med"] else swp_sigma)
     months = _np.arange(0, 13)
     rng = _np.random.default_rng(12345)
     n_paths = 4000
-    # multiplicative monthly returns -> equity multiple paths
-    draws = rng.normal(mu_m, sigma_m, size=(n_paths, 12))
-    eq = _np.cumprod(1.0 + _np.clip(draws, -0.95, None), axis=1)
-    eq = _np.hstack([_np.ones((n_paths, 1)), eq]) * (bankroll if bankroll > 0 else 1.0)
+    draws = _np.clip(rng.normal(unc_rate, sigma_m, size=(n_paths, 12)), -0.95, None)   # uncapped monthly returns
+    eq = _np.empty((n_paths, 13)); eq[:, 0] = base
+    for _m in range(12):
+        _E = eq[:, _m]
+        _r = draws[:, _m]
+        if cap_ceiling > 0:                       # $ ceiling -> a return ceiling that TIGHTENS as equity grows
+            _r = _np.minimum(_r, cap_ceiling / _np.maximum(_E, 1e-9))
+        eq[:, _m + 1] = _E * (1.0 + _r)
     med_path = _np.median(eq, axis=0)
     p5_path = _np.percentile(eq, 5, axis=0)
     p95_path = _np.percentile(eq, 95, axis=0)
-    base = bankroll if bankroll > 0 else 1.0
     _mo = list(months)
     fan = _dfig(
         [{"type": "scatter", "x": _mo + _mo[::-1], "y": list(p95_path) + list(p5_path)[::-1],
@@ -4539,7 +4556,8 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     # model edge, contracts grow with bankroll, NO depth limit (the naive linear extrapolation). CAPPED = the
     # REAL Mosaic curve: net edge per contract degrades with per-market size along slippage(size), and a stream
     # never fills past the size that maximizes its $ -> a SMOOTH plateau at the per-stream capacity ceiling
-    # (not a hard 250ct cliff). LOG x AND LOG y so the plateau and the rising uncapped line are both legible.
+    # (not a hard 250ct cliff). LOG x (bankroll spans decades) + LINEAR y so the capped green line + its fill
+    # reach $0 at low bankroll and the plateau at the ceiling is legible (the uncapped line clips off the top).
     cap_data = []; cap_shapes = []; cap_anns = []; cap_xaxis = None; cap_yaxis = None
     if cap_ceiling > 0:
         bxs = _np.geomspace(100.0, 1e8, 90)                          # $100 -> $100M log axis
@@ -4583,29 +4601,28 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
              "name": "depth-capped (your actual)", "line": {"color": GREEN, "width": 2.8},
              "fill": "tozeroy", "fillcolor": "rgba(0,224,138,.08)",
              "hovertemplate": "bankroll $%{x:,.0f}<br>capped $%{y:,.0f}/mo<extra></extra>"},
-            {"type": "scatter", "x": [bnow], "y": [max(pnow, 1e-9)], "mode": "markers", "name": "your bankroll",
+            {"type": "scatter", "x": [bnow], "y": [max(pnow, 0.0)], "mode": "markers", "name": "your bankroll",
              "marker": {"size": 15, "color": AMBER, "symbol": "star", "line": {"width": 1.4, "color": "#fff"}},
              "hovertemplate": f"your bankroll ${bnow:,.0f}<br>$%{{y:,.0f}}/mo<extra></extra>"}]
-        # LOG axes: shape/annotation coords referencing a log axis must be the LOG10 of the data value (traces
-        # use raw values; shapes/annotations do NOT auto-convert the way add_hline/add_vline did). _lg() guards
-        # non-positive inputs.
-        def _lg(v):
-            return math.log10(v) if v and v > 0 else 0.0
-        cap_shapes.append(_hline(_lg(cap_ceiling), RED, 1.4, "dot"))
-        cap_anns.append(_ann(0.0, _lg(cap_ceiling), f"absolute depth ceiling ${cap_ceiling:,.0f}/mo", RED, 10,
+        # Shapes/annotations take RAW data coords on a log axis (Plotly converts internally, exactly as
+        # add_hline/add_vline do) -- y is LINEAR here anyway. The red ceiling line + the saturation vlines:
+        cap_shapes.append(_hline(cap_ceiling, RED, 1.4, "dot"))
+        cap_anns.append(_ann(0.0, cap_ceiling, f"absolute depth ceiling ${cap_ceiling:,.0f}/mo", RED, 10,
                              xref="paper", yref="y", xanchor="left", yanchor="bottom"))
         if step1_b and bind_b and 100 <= step1_b <= 1e8 and step1_b < bind_b * 0.9:
-            cap_shapes.append(_vline(_lg(step1_b), NEUTRAL, 1.1, "dot"))
-            cap_anns.append(_ann(_lg(step1_b), 0.0, f"shallow daily-low books saturate ~${step1_b:,.0f}", DIM, 9,
+            cap_shapes.append(_vline(step1_b, NEUTRAL, 1.1, "dot"))
+            cap_anns.append(_ann(step1_b, 0.04, f"shallow daily-low books saturate ~${step1_b:,.0f}", DIM, 9,
                                  xref="x", yref="paper", xanchor="left", yanchor="bottom"))
         if bind_b and 100 <= bind_b <= 1e8:
-            cap_shapes.append(_vline(_lg(bind_b), AMBER, 1.9, "dash"))
-            cap_anns.append(_ann(_lg(bind_b), 1.0,
+            cap_shapes.append(_vline(bind_b, AMBER, 1.9, "dash"))
+            cap_anns.append(_ann(bind_b, 0.98,
                                  f"depth fully saturates ~${bind_b:,.0f} — beyond here extra bankroll adds ~$0/mo",
                                  AMBER, 10, xref="x", yref="paper", xanchor="right", yanchor="top"))
         cap_xaxis = {"type": "log", "title": "bankroll ($, log scale)", "tickprefix": "$", "tickformat": "~s"}
-        cap_yaxis = {"type": "log", "title": "paper profit ($ / month, log scale)", "tickprefix": "$",
-                     "tickformat": "~s"}
+        # LINEAR y, clamped a little above the ceiling so the capped plateau + its fill-to-$0 are legible and
+        # the uncapped line simply exits the top (its full magnitude is the hover, the message is the plateau).
+        cap_yaxis = {"type": "linear", "title": "paper profit ($ / month)", "tickprefix": "$",
+                     "tickformat": "~s", "range": [0, cap_ceiling * 1.35], "rangemode": "tozero"}
     cap = _dfig(cap_data, h=320, legend=len(cap_data) > 1, xaxis=cap_xaxis, yaxis=cap_yaxis,
                 shapes=cap_shapes or None, annotations=cap_anns or None)
 
