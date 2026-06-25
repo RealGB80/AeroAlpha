@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import time
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -94,6 +95,67 @@ def _tpl(fig, h=300, legend=None):
 
 def graph(fig):
     return dcc.Graph(figure=fig, config={"displayModeBar": False})
+
+
+# ============================================================================================
+# FAST DICT FIGURES (2026-06-24 PERF). Constructing a go.Figure validates + deepcopies every trace and
+# layout property (~20-100 ms/figure); a PLAIN DICT is ~0.01 ms and Dash renders it natively. The Sandbox
+# callback builds 6 figures on EVERY keystroke -> the go path cost ~800 ms/interaction; these helpers drop
+# it to a few ms with IDENTICAL visuals. Use _dfig() + the _hline/_vline/_vrect/_ann shape helpers instead
+# of go.Figure()/add_*/update_* in any hot-path (interactive-callback) figure.
+_X_STYLE = dict(gridcolor="rgba(0,0,0,0)", zerolinecolor=AXISCOL, nticks=7, linecolor=GRIDCOL,
+                showline=True, ticks="outside", ticklen=5, tickcolor=GRIDCOL,
+                tickfont=dict(size=12, color=DIM), title_font=dict(size=11.5, color=DIM), automargin=True)
+_Y_STYLE = dict(gridcolor=GRIDCOL, griddash="dot", zerolinecolor=AXISCOL, nticks=5,
+                linecolor="rgba(0,0,0,0)", showline=False, ticks="", ticklen=0,
+                tickfont=dict(size=12, color=DIM), title_font=dict(size=11.5, color=DIM), automargin=True)
+
+
+def _dfig(data, h=300, legend=False, xaxis=None, yaxis=None, shapes=None, annotations=None, extra=None):
+    """Return a PLAIN-DICT Plotly figure styled exactly like _tpl() (template, margins, legend, axes), but
+    WITHOUT constructing a go.Figure (the validation/deepcopy that makes the sandbox slow). xaxis/yaxis are
+    style-override dicts merged onto the shared axis styling; shapes/annotations/extra go straight to layout."""
+    lay = {"template": "plotly_dark", "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)",
+           "font": {"color": INK, "family": "Inter, system-ui", "size": 12.5}, "colorway": PALETTE,
+           "margin": {"l": 58, "r": 20, "t": 18, "b": 44}, "height": h, "title": None, "showlegend": legend,
+           "legend": {"bgcolor": "rgba(0,0,0,0)", "font": {"size": 11, "color": DIM}, "orientation": "h",
+                      "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0, "title_text": "",
+                      "itemsizing": "constant"},
+           "hoverlabel": {"bgcolor": PANEL, "bordercolor": GRIDCOL,
+                          "font": {"family": "Inter, system-ui", "size": 12.5, "color": INK}, "align": "left"},
+           "bargap": 0.42, "bargroupgap": 0.16, "uniformtext": {"mode": "hide", "minsize": 9},
+           "xaxis": {**_X_STYLE, **(xaxis or {})}, "yaxis": {**_Y_STYLE, **(yaxis or {})}}
+    if shapes:
+        lay["shapes"] = shapes
+    if annotations:
+        lay["annotations"] = annotations
+    if extra:
+        lay.update(extra)
+    return {"data": data, "layout": lay}
+
+
+def _hline(y, color, width=1.0, dash=None):
+    ln = {"color": color, "width": width}
+    if dash:
+        ln["dash"] = dash
+    return {"type": "line", "xref": "paper", "yref": "y", "x0": 0, "x1": 1, "y0": y, "y1": y, "line": ln}
+
+
+def _vline(x, color, width=1.0, dash=None):
+    ln = {"color": color, "width": width}
+    if dash:
+        ln["dash"] = dash
+    return {"type": "line", "xref": "x", "yref": "paper", "x0": x, "x1": x, "y0": 0, "y1": 1, "line": ln}
+
+
+def _vrect(x0, x1, fillcolor):
+    return {"type": "rect", "xref": "x", "yref": "paper", "x0": x0, "x1": x1, "y0": 0, "y1": 1,
+            "fillcolor": fillcolor, "line": {"width": 0}, "layer": "below"}
+
+
+def _ann(x, y, text, color, size=10, xref="x", yref="paper", xanchor="center", yanchor="bottom"):
+    return {"x": x, "y": y, "xref": xref, "yref": yref, "text": text, "showarrow": False,
+            "font": {"color": color, "size": size}, "xanchor": xanchor, "yanchor": yanchor}
 
 
 # ============================================================================================
@@ -3901,25 +3963,37 @@ _HIGH_CITY_ORDER = ["NY_high_S1", "LAX_high_S1", "CHI_high_S1"]
 _LOW_FALLBACK_CURVE = [(10, 0.0), (25, 0.0), (50, 0.5), (100, 1.5), (250, 9.0)]
 
 
+_CURVE_MEMO: dict = {}     # PERF: cache the pandas-derived curves; the source table() already has a 120s TTL,
+_CURVE_TTL = 120.0         # but the groupby->dict reshape (~34 ms) re-ran on every sandbox keystroke.
+
+
 def _real_stream_curves():
     """{stream_id: [(size_ct, slip_c), ...]} for every stream with depth_state=='real_curve' in the curated
-    fill_scalability table (NY/LAX/CHI high today). {} if none materialized."""
+    fill_scalability table (NY/LAX/CHI high today). {} if none materialized. MEMOIZED (TTL) -- the reshape is
+    pure recompute on a TTL-cached table, so it was wasted work on every interactive callback."""
+    _now = time.time()
+    _hit = _CURVE_MEMO.get("real")
+    if _hit and _now - _hit[0] < _CURVE_TTL:
+        return _hit[1]
     sc = table("fill_scalability")
-    if sc.empty or "depth_state" not in sc:
-        return {}
-    sc = sc[sc["depth_state"] == "real_curve"]
-    if sc.empty:
-        return {}
-    out = {}
-    for sid, g in sc.groupby("stream_id"):
-        gg = g.groupby("size_ct")["slippage_vs_best_c"].mean().sort_index()
-        out[str(sid)] = [(float(s), float(v)) for s, v in gg.items()]
+    out: dict = {}
+    if (not sc.empty) and "depth_state" in sc:
+        sc = sc[sc["depth_state"] == "real_curve"]
+        for sid, g in sc.groupby("stream_id"):
+            gg = g.groupby("size_ct")["slippage_vs_best_c"].mean().sort_index()
+            out[str(sid)] = [(float(s), float(v)) for s, v in gg.items()]
+    _CURVE_MEMO["real"] = (_now, out)
     return out
 
 
 def _scal_curves():
     """Representative high/low curves for the HEADLINE net-at-size math (auto/manual slip modes). high = the
-    deepest real high curve (NY); low = the real warm-low curve if promoted, else the conservative fallback."""
+    deepest real high curve (NY); low = the real warm-low curve if promoted, else the conservative fallback.
+    MEMOIZED (TTL) off _real_stream_curves (itself memoized)."""
+    _now = time.time()
+    _hit = _CURVE_MEMO.get("scal")
+    if _hit and _now - _hit[0] < _CURVE_TTL:
+        return _hit[1]
     real = _real_stream_curves()
     high = next((real[s] for s in _HIGH_CITY_ORDER if s in real), None)
     low = real.get("AUS_low_S1") or _LOW_FALLBACK_CURVE
@@ -3928,6 +4002,7 @@ def _scal_curves():
         out["high"] = high
     if low:
         out["low"] = low
+    _CURVE_MEMO["scal"] = (_now, out)
     return out
 
 
@@ -4056,6 +4131,38 @@ def _sev_sdd(dd):      # p95 max-drawdown % under the STRESS scenario (stricter 
     return "good" if dd < 16 else ("warn" if dd < 25 else "bad")
 
 
+# Risk-vs-return frontier + ruin/drawdown probability curves depend ONLY on the embedded KELLY_SWEEP (the
+# user's edges/cities never enter them) -> compute the (formerly per-keystroke) 16-fraction x 3000-path MC
+# ONCE and reuse. Only the "your pick" markers/lines move with the slider. Lazy + cached at module scope.
+_RISK_STATIC: dict | None = None
+
+
+def _risk_static():
+    global _RISK_STATIC
+    if _RISK_STATIC is not None:
+        return _RISK_STATIC
+    import numpy as _np
+    fr = [r["f"] for r in KELLY_SWEEP]; med = [r["med"] for r in KELLY_SWEEP]; dd = [r["dd"] for r in KELLY_SWEEP]
+    DD25, RUIN_DD = 0.25, 0.50
+    rng2 = _np.random.default_rng(98765)
+    fr_grid = _np.round(_np.arange(0.25, 1.001, 0.05), 2)
+    p_dd25, p_ruin = [], []
+    for f in fr_grid:
+        kf = kelly_interp(float(f))
+        mu = kf["med"] / 100.0
+        sig = max(1e-4, (kf["med"] - kf["p5"]) / 100.0 / 1.645)
+        dr = rng2.normal(mu, sig, size=(3000, 12))
+        eqp = _np.cumprod(1.0 + _np.clip(dr, -0.95, None), axis=1)
+        peak = _np.maximum.accumulate(eqp, axis=1)
+        ddp = (peak - eqp) / peak
+        maxdd = ddp.max(axis=1)
+        p_dd25.append(float((maxdd >= DD25).mean()))
+        p_ruin.append(float((maxdd >= RUIN_DD).mean()))
+    _RISK_STATIC = {"fr": fr, "med": med, "dd": dd, "fr_grid": list(fr_grid),
+                    "p_dd25": p_dd25, "p_ruin": p_ruin, "DD25": DD25, "RUIN_DD": RUIN_DD}
+    return _RISK_STATIC
+
+
 def _risk_metric(label, value, sev, meaning):
     color = {"good": MINT, "warn": AMBER, "bad": RED}[sev]
     return html.Div([
@@ -4110,9 +4217,8 @@ def _capacity_ceiling_dollars(cities, s1tr, low_cities, low_trades, lockpm,
 @app.callback(
     Output("sb-profit", "children"), Output("sb-roi", "children"), Output("sb-roi", "style"),
     Output("sb-kelly-band", "children"), Output("sb-note", "children"), Output("sb-risk-metrics", "children"),
-    Output("sb-chart", "figure"), Output("sb-fan", "figure"), Output("sb-rr", "figure"),
-    Output("sb-dist", "figure"), Output("sb-cap", "figure"), Output("sb-cap-flag", "children"),
-    Output("sb-ruin", "figure"),
+    Output("sb-chart", "figure"), Output("sb-fan", "figure"), Output("sb-cap", "figure"),
+    Output("sb-cap-flag", "children"),
     Input("sb-s1edge", "value"), Input("sb-cities", "value"), Input("sb-s1trades", "value"),
     Input("sb-s1edge-cold", "value"), Input("sb-cities-cold", "value"), Input("sb-s1trades-cold", "value"),
     Input("sb-lowedge", "value"), Input("sb-lowcities", "value"), Input("sb-lowtrades", "value"),
@@ -4124,7 +4230,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
              low_c, low_cities, low_trades, lowc_cold, lowcities_cold, lowtr_cold,
              lock_c, lockpm, bankroll, kelly, slip, slip_mode, slip_manual):
     import numpy as _np
-    blank = _tpl(go.Figure(), h=300)
+    blank = _dfig([], h=300)
     try:
         s1_c = max(0.0, float(s1_c)); cities = max(0, int(cities)); s1tr = max(0.0, float(s1tr))
         s1c_cold = max(0.0, float(s1c_cold)); cities_cold = max(0, int(cities_cold))
@@ -4139,7 +4245,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
         slip_manual = max(0.0, float(slip_manual)) if slip_manual is not None else 0.0
     except (TypeError, ValueError):
         return ("—", "—", {"color": DIM}, "", "Enter valid numbers in every field.", "",
-                blank, blank, blank, blank, blank, "", blank)
+                blank, blank, blank, "")
     kelly = min(KELLY_MAX, max(0.25, kelly))
 
     # ---- TRANSPARENT PER-STREAM PROFIT MODEL (FIX 1, 2026-06-19). Profit is now a DIRECT function of the
@@ -4293,94 +4399,40 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     med_path = _np.median(eq, axis=0)
     p5_path = _np.percentile(eq, 5, axis=0)
     p95_path = _np.percentile(eq, 95, axis=0)
-    fan = go.Figure()
-    fan.add_scatter(x=list(months) + list(months)[::-1], y=list(p95_path) + list(p5_path)[::-1],
-                    fill="toself", fillcolor="rgba(22,199,132,.10)", line=dict(width=0), mode="lines",
-                    name="p5–p95", hoverinfo="skip")
-    fan.add_scatter(x=months, y=med_path, mode="lines", name="median",
-                    line=dict(color=MINT, width=2.4, shape="spline", smoothing=0.4),
-                    hovertemplate="month %{x}<br>%{y:$,.0f}<extra></extra>")
-    fan.add_scatter(x=months, y=p5_path, mode="lines", name="p5", line=dict(color=RED, width=1.3, dash="dot"),
-                    hovertemplate="month %{x}<br>p5 %{y:$,.0f}<extra></extra>")
-    fan.add_scatter(x=months, y=p95_path, mode="lines", name="p95",
-                    line=dict(color=CYAN, width=1.3, dash="dot"),
-                    hovertemplate="month %{x}<br>p95 %{y:$,.0f}<extra></extra>")
     base = bankroll if bankroll > 0 else 1.0
-    fan.add_hline(y=base, line=dict(color=AXISCOL, width=1, dash="dash"))
-    fan.update_layout(title=None)
-    fan.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f")
-    fan.update_xaxes(title="month", nticks=13)
-
-    # ---- (b) risk vs return curve across fractions ----
-    fr = [r["f"] for r in KELLY_SWEEP]; med = [r["med"] for r in KELLY_SWEEP]; dd = [r["dd"] for r in KELLY_SWEEP]
-    rr = go.Figure()
-    rr.add_scatter(x=dd, y=med, mode="lines+markers+text", name="Kelly frontier",
-                   text=[f"{f:.2f}x" for f in fr], textposition="top center",
-                   textfont=dict(size=10, color=DIM),
-                   line=dict(color=CYAN, width=2, shape="spline", smoothing=0.3),
-                   marker=dict(size=9, color=[MINT if f <= KELLY_CEILING else RED for f in fr],
-                               line=dict(width=1, color="rgba(255,255,255,.25)")),
-                   hovertemplate="%{text}<br>median %{y:+.1f}%/m<br>p95 maxDD %{x:.1f}%<extra></extra>")
-    rr.add_scatter(x=[k["dd"]], y=[k["med"]], mode="markers", name="your pick",
-                   marker=dict(size=16, color=AMBER, symbol="star",
-                               line=dict(width=1.4, color="#fff")),
-                   hovertemplate=f"your pick {kelly:.2f}x<br>median %{{y:+.1f}}%/m"
-                                 f"<br>p95 maxDD %{{x:.1f}}%<extra></extra>")
-    # mark the RECOMMENDED ceiling drawdown (0.50x = 18%) -- beyond it is reachable but riskier
-    rr.add_vline(x=18.0, line=dict(color=NEUTRAL, width=1.4, dash="dash"),
-                 annotation_text="0.50x recommended", annotation_position="top",
-                 annotation_font=dict(color=NEUTRAL, size=10))
-    rr.update_layout(title=None)
-    rr.update_yaxes(title="median return (%/month)", ticksuffix="%")
-    rr.update_xaxes(title="p95 max drawdown (%)", ticksuffix="%")
-
-    # ---- (c) return distribution + drawdown gauge ----
-    dist = go.Figure()
-    dist.add_trace(go.Indicator(
-        mode="gauge+number", value=k["dd"],
-        number={"suffix": "%", "font": {"size": 22, "color": _sev_color(_sev_dd(k["dd"]))}},
-        title={"text": "p95 max drawdown", "font": {"size": 12, "color": INK}},
-        gauge={"axis": {"range": [0, 40], "tickwidth": 1, "tickcolor": AXISCOL,
-                        "tickfont": {"size": 9, "color": DIM}},
-               "bar": {"color": _sev_color(_sev_dd(k["dd"])), "thickness": 0.72},
-               "bgcolor": "rgba(0,0,0,0)", "borderwidth": 0,
-               "steps": [{"range": [0, 12], "color": "rgba(22,199,132,.12)"},
-                         {"range": [12, 20], "color": "rgba(217,162,58,.12)"},
-                         {"range": [20, 40], "color": "rgba(234,57,67,.12)"}],
-               "threshold": {"line": {"color": AMBER, "width": 2}, "thickness": 0.85, "value": 18}},
-        domain={"x": [0.0, 0.42], "y": [0.0, 1.0]}))
-    # return spread bar (p5 / median / p95) on the right
-    spread_x = [k["p5"], k["med"], k["med"] + (k["med"] - k["p5"])]   # p95 ~ symmetric proxy of the band
-    dist.add_bar(x=["p5", "median", "p95"], y=spread_x,
-                 marker_color=[RED, MINT, CYAN], width=0.6,
-                 text=[f"{v:+.1f}%" for v in spread_x], textposition="outside", cliponaxis=False,
-                 xaxis="x2", yaxis="y2",
-                 hovertemplate="%{x}: %{y:+.1f}%/m<extra></extra>")
-    dist.update_layout(
-        title=None, template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color=INK, family="Inter, system-ui", size=12), height=300, showlegend=False,
-        margin=dict(l=10, r=20, t=20, b=40),
-        xaxis2=dict(domain=[0.56, 1.0], anchor="y2", tickfont=dict(size=11, color=DIM),
-                    showgrid=False, linecolor=GRIDCOL),
-        yaxis2=dict(anchor="x2", title="%/month", ticksuffix="%", tickfont=dict(size=11, color=DIM),
-                    gridcolor=GRIDCOL, griddash="dot", zerolinecolor=AXISCOL,
-                    title_font=dict(size=11, color=DIM)))
-    dist.add_annotation(x=0.78, y=1.08, xref="paper", yref="paper", showarrow=False,
-                        text="Monthly return spread", font=dict(size=12, color=INK))
+    _mo = list(months)
+    fan = _dfig(
+        [{"type": "scatter", "x": _mo + _mo[::-1], "y": list(p95_path) + list(p5_path)[::-1],
+          "fill": "toself", "fillcolor": "rgba(22,199,132,.10)", "line": {"width": 0}, "mode": "lines",
+          "name": "p5–p95", "hoverinfo": "skip"},
+         {"type": "scatter", "x": _mo, "y": list(med_path), "mode": "lines", "name": "median",
+          "line": {"color": MINT, "width": 2.4, "shape": "spline", "smoothing": 0.4},
+          "hovertemplate": "month %{x}<br>%{y:$,.0f}<extra></extra>"},
+         {"type": "scatter", "x": _mo, "y": list(p5_path), "mode": "lines", "name": "p5",
+          "line": {"color": RED, "width": 1.3, "dash": "dot"},
+          "hovertemplate": "month %{x}<br>p5 %{y:$,.0f}<extra></extra>"},
+         {"type": "scatter", "x": _mo, "y": list(p95_path), "mode": "lines", "name": "p95",
+          "line": {"color": CYAN, "width": 1.3, "dash": "dot"},
+          "hovertemplate": "month %{x}<br>p95 %{y:$,.0f}<extra></extra>"}],
+        h=300, legend=True,
+        xaxis={"title": "month", "nticks": 13},
+        yaxis={"title": "paper equity ($)", "tickprefix": "$", "tickformat": ",.0f"},
+        shapes=[_hline(base, AXISCOL, 1, "dash")])
 
     # ---- profit breakdown by stream ----
-    fig = go.Figure()
     labels = ["High year-round", "High cold-only", "Low year-round", "Low cold-only", "Lock-in", "TOTAL"]
     vals = [s1_monthly, s1cold_monthly, low_monthly, lowcold_monthly, lock_monthly, total]
-    fig.add_bar(x=labels, y=vals,
-                marker_color=[MINT, "#3aa6c2", "#7fb0a0", "#4f8fa6", CYAN, AMBER], width=0.62,
-                text=[f"${v:,.0f}" for v in vals], textposition="outside", cliponaxis=False,
-                hovertemplate="%{x}<br>%{y:$,.0f} / month<extra></extra>")
-    fig.update_layout(title=None)
     _vmax = max(list(vals) + [1.0]); _vmin = min(list(vals) + [0.0])
-    fig.update_yaxes(title="paper profit ($ / month)", tickprefix="$", tickformat=",.0f",
-                     range=[_vmin * 1.18 if _vmin < 0 else 0, _vmax * 1.18])
-    fig.update_xaxes(title="")
+    fig = _dfig(
+        [{"type": "bar", "x": labels, "y": vals,
+          "marker": {"color": [MINT, "#3aa6c2", "#7fb0a0", "#4f8fa6", CYAN, AMBER],
+                     "cornerradius": 6, "line": {"width": 0}}, "width": 0.62,
+          "text": [f"${v:,.0f}" for v in vals], "textposition": "outside", "cliponaxis": False,
+          "textfont": {"family": "JetBrains Mono, monospace", "size": 11.5},
+          "hovertemplate": "%{x}<br>%{y:$,.0f} / month<extra></extra>"}],
+        h=300, legend=False, xaxis={"title": ""},
+        yaxis={"title": "paper profit ($ / month)", "tickprefix": "$", "tickformat": ",.0f",
+               "range": [_vmin * 1.18 if _vmin < 0 else 0, _vmax * 1.18]})
 
     # ---- (d) capacity-ceiling-vs-bankroll line chart (deliverable #3 + Mosaic non-linear 2026-06-20) ----
     # Re-evaluate the SAME per-stream profit model across a $100 -> $100M bankroll sweep. UNCAPPED = flat full
@@ -4388,7 +4440,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     # REAL Mosaic curve: net edge per contract degrades with per-market size along slippage(size), and a stream
     # never fills past the size that maximizes its $ -> a SMOOTH plateau at the per-stream capacity ceiling
     # (not a hard 250ct cliff). LOG x AND LOG y so the plateau and the rising uncapped line are both legible.
-    cap = go.Figure()
+    cap_data = []; cap_shapes = []; cap_anns = []; cap_xaxis = None; cap_yaxis = None
     if cap_ceiling > 0:
         bxs = _np.geomspace(100.0, 1e8, 90)                          # $100 -> $100M log axis
         # PER-BOOK staircase (2026-06-21): each active book fills along its OWN curve; shallow daily-low books
@@ -4420,36 +4472,42 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
         _bsz = [bs for (_pk, bs) in _peaks if bs and bs > 0]
         _denom = SANDBOX_CT_CAL * (kelly / 0.25)
         step1_b = (min(_bsz) / _denom * 1000.0) if (_bsz and _denom > 0) else None
-        cap.add_scatter(x=bxs, y=prof_uncapped, mode="lines", name="uncapped (no depth limit)",
-                        line=dict(color=NEUTRAL, width=1.6, dash="dash"),
-                        hovertemplate="bankroll $%{x:,.0f}<br>uncapped $%{y:,.0f}/mo<extra></extra>")
-        cap.add_scatter(x=bxs, y=prof_capped, mode="lines", name="depth-capped (your actual)",
-                        line=dict(color=GREEN, width=2.8),
-                        fill="tozeroy", fillcolor="rgba(0,224,138,.08)",
-                        hovertemplate="bankroll $%{x:,.0f}<br>capped $%{y:,.0f}/mo<extra></extra>")
-        cap.add_hline(y=cap_ceiling, line=dict(color=RED, width=1.4, dash="dot"),
-                      annotation_text=f"absolute depth ceiling ${cap_ceiling:,.0f}/mo",
-                      annotation_position="top left", annotation_font=dict(color=RED, size=10))
-        if step1_b and bind_b and 100 <= step1_b <= 1e8 and step1_b < bind_b * 0.9:
-            cap.add_vline(x=step1_b, line=dict(color=NEUTRAL, width=1.1, dash="dot"),
-                          annotation_text=f"shallow daily-low books saturate ~${step1_b:,.0f}",
-                          annotation_position="bottom left", annotation_font=dict(color=DIM, size=9))
-        if bind_b and 100 <= bind_b <= 1e8:
-            cap.add_vline(x=bind_b, line=dict(color=AMBER, width=1.9, dash="dash"),
-                          annotation_text=(f"depth fully saturates ~${bind_b:,.0f} — "
-                                           f"beyond here extra bankroll adds ~$0/mo"),
-                          annotation_position="top right", annotation_font=dict(color=AMBER, size=10))
         # mark the user's current bankroll on the capped (actual) curve
         bnow = max(100.0, min(1e8, bankroll if bankroll > 0 else 1000.0))
         pnow = _profit_at(bnow, capped=True)
-        cap.add_scatter(x=[bnow], y=[max(pnow, 1e-9)], mode="markers", name="your bankroll",
-                        marker=dict(size=15, color=AMBER, symbol="star", line=dict(width=1.4, color="#fff")),
-                        hovertemplate=f"your bankroll ${bnow:,.0f}<br>$%{{y:,.0f}}/mo<extra></extra>")
-        cap.update_xaxes(type="log", title="bankroll ($, log scale)", tickprefix="$", tickformat="~s")
-        # LOG y so the capped plateau and rising uncapped line are both legible across decades (FIX 4)
-        cap.update_yaxes(type="log", title="paper profit ($ / month, log scale)", tickprefix="$",
-                         tickformat="~s")
-    cap.update_layout(title=None)
+        cap_data = [
+            {"type": "scatter", "x": list(bxs), "y": list(prof_uncapped), "mode": "lines",
+             "name": "uncapped (no depth limit)", "line": {"color": NEUTRAL, "width": 1.6, "dash": "dash"},
+             "hovertemplate": "bankroll $%{x:,.0f}<br>uncapped $%{y:,.0f}/mo<extra></extra>"},
+            {"type": "scatter", "x": list(bxs), "y": list(prof_capped), "mode": "lines",
+             "name": "depth-capped (your actual)", "line": {"color": GREEN, "width": 2.8},
+             "fill": "tozeroy", "fillcolor": "rgba(0,224,138,.08)",
+             "hovertemplate": "bankroll $%{x:,.0f}<br>capped $%{y:,.0f}/mo<extra></extra>"},
+            {"type": "scatter", "x": [bnow], "y": [max(pnow, 1e-9)], "mode": "markers", "name": "your bankroll",
+             "marker": {"size": 15, "color": AMBER, "symbol": "star", "line": {"width": 1.4, "color": "#fff"}},
+             "hovertemplate": f"your bankroll ${bnow:,.0f}<br>$%{{y:,.0f}}/mo<extra></extra>"}]
+        # LOG axes: shape/annotation coords referencing a log axis must be the LOG10 of the data value (traces
+        # use raw values; shapes/annotations do NOT auto-convert the way add_hline/add_vline did). _lg() guards
+        # non-positive inputs.
+        def _lg(v):
+            return math.log10(v) if v and v > 0 else 0.0
+        cap_shapes.append(_hline(_lg(cap_ceiling), RED, 1.4, "dot"))
+        cap_anns.append(_ann(0.0, _lg(cap_ceiling), f"absolute depth ceiling ${cap_ceiling:,.0f}/mo", RED, 10,
+                             xref="paper", yref="y", xanchor="left", yanchor="bottom"))
+        if step1_b and bind_b and 100 <= step1_b <= 1e8 and step1_b < bind_b * 0.9:
+            cap_shapes.append(_vline(_lg(step1_b), NEUTRAL, 1.1, "dot"))
+            cap_anns.append(_ann(_lg(step1_b), 0.0, f"shallow daily-low books saturate ~${step1_b:,.0f}", DIM, 9,
+                                 xref="x", yref="paper", xanchor="left", yanchor="bottom"))
+        if bind_b and 100 <= bind_b <= 1e8:
+            cap_shapes.append(_vline(_lg(bind_b), AMBER, 1.9, "dash"))
+            cap_anns.append(_ann(_lg(bind_b), 1.0,
+                                 f"depth fully saturates ~${bind_b:,.0f} — beyond here extra bankroll adds ~$0/mo",
+                                 AMBER, 10, xref="x", yref="paper", xanchor="right", yanchor="top"))
+        cap_xaxis = {"type": "log", "title": "bankroll ($, log scale)", "tickprefix": "$", "tickformat": "~s"}
+        cap_yaxis = {"type": "log", "title": "paper profit ($ / month, log scale)", "tickprefix": "$",
+                     "tickformat": "~s"}
+    cap = _dfig(cap_data, h=320, legend=len(cap_data) > 1, xaxis=cap_xaxis, yaxis=cap_yaxis,
+                shapes=cap_shapes or None, annotations=cap_anns or None)
 
     if capacity_bound:
         cap_flag = html.Div([badge("CAPACITY-LIMITED", "warn"),
@@ -4498,53 +4556,98 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
                  if slip_mode == "auto" else
                  f"a flat {slip_manual:.1f}c/contract override on every fill (the curve is disabled)."))
 
-    # ---- (e) ITEM 7 (AUDIT-CORRECTED 2026-06-21): P(maxDD>=25%) and P(ruin=DD>=50%) vs Kelly fraction ----
-    # The old P(month<0) line was DROPPED: it is essentially INVARIANT to the Kelly fraction. Scaling every
-    # bet by f scales the monthly mean AND std EQUALLY, so the standardized monthly return (mu/sigma) -- and
-    # hence the sign probability -- barely moves with f. A risk chart whose curve doesn't respond to the lever
-    # is misleading. We replace it with P(max drawdown >= 25%), which RISES monotonically with Kelly (deeper
-    # leverage -> deeper drawdowns) and pairs naturally with the existing P(ruin)=P(DD>=50%). Both come from
-    # the SAME 12-month MC engine that drives the equity fan.
-    DD25 = 0.25                                              # a >=25% peak-to-trough drawdown
-    RUIN_DD = 0.50                                           # ruin = a >=50% peak-to-trough drawdown
-    rng2 = _np.random.default_rng(98765)
-    fr_grid = _np.round(_np.arange(0.25, 1.001, 0.05), 2)
-    p_dd25, p_ruin = [], []
-    for f in fr_grid:
-        kf = kelly_interp(float(f))
-        mu = kf["med"] / 100.0
-        sig = max(1e-4, (kf["med"] - kf["p5"]) / 100.0 / 1.645)
-        dr = rng2.normal(mu, sig, size=(3000, 12))
-        eqp = _np.cumprod(1.0 + _np.clip(dr, -0.95, None), axis=1)
-        peak = _np.maximum.accumulate(eqp, axis=1)
-        dd = (peak - eqp) / peak
-        maxdd = dd.max(axis=1)
-        p_dd25.append(float((maxdd >= DD25).mean()))
-        p_ruin.append(float((maxdd >= RUIN_DD).mean()))
-    ruin = go.Figure()
-    ruin.add_scatter(x=fr_grid, y=[p * 100 for p in p_dd25], mode="lines+markers",
-                     name=f"P(max drawdown ≥ {int(DD25*100)}% in 12mo)",
-                     line=dict(color=AMBER, width=2.4), marker=dict(size=6),
-                     hovertemplate="Kelly %{x:.2f}x<br>P(maxDD≥25%) %{y:.0f}%<extra></extra>")
-    ruin.add_scatter(x=fr_grid, y=[p * 100 for p in p_ruin], mode="lines+markers",
-                     name=f"P(ruin, ≥{int(RUIN_DD*100)}% DD in 12mo)",
-                     line=dict(color=RED, width=2.6), marker=dict(size=6),
-                     hovertemplate="Kelly %{x:.2f}x<br>P(ruin) %{y:.1f}%<extra></extra>")
-    ruin.add_vrect(x0=0.50, x1=0.75, fillcolor="rgba(217,162,58,.08)", line_width=0)
-    ruin.add_vrect(x0=0.75, x1=1.00, fillcolor="rgba(234,57,67,.08)", line_width=0)
-    ruin.add_vline(x=kelly, line=dict(color=GREEN, width=1.6, dash="dash"),
-                   annotation_text=f"your pick {kelly:.2f}x", annotation_position="top",
-                   annotation_font=dict(color=GREEN, size=10))
-    ruin.add_vline(x=0.50, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
-                   annotation_text="0.50x ceiling", annotation_position="bottom right",
-                   annotation_font=dict(color=DIM, size=9))
-    ruin.update_layout(title=None)
-    ruin.update_xaxes(title="Kelly fraction", dtick=0.25)
-    ruin.update_yaxes(title="probability (%)", ticksuffix="%", rangemode="tozero")
-
+    # fig/fan/cap are already styled PLAIN-DICT figures (no go.Figure -> ~0 build cost). The rr/dist/ruin
+    # figures depend ONLY on the Kelly slider, so they moved to their own callback (_sandbox_risk) and no
+    # longer rebuild on every edge/city keystroke.
     return (f"${total:,.0f}", f"{roi:+.1f}%", {"color": roi_color}, kelly_band, note, metrics,
-            _tpl(fig, h=300, legend=False), _tpl(fan, h=300), _tpl(rr, h=300, legend=False), dist,
-            _tpl(cap, h=320), cap_flag, _tpl(ruin, h=300, legend=True))
+            fig, fan, cap, cap_flag)
+
+
+@app.callback(
+    Output("sb-rr", "figure"), Output("sb-dist", "figure"), Output("sb-ruin", "figure"),
+    Input("sb-kelly", "value"))
+def _sandbox_risk(kelly):
+    """RISK figures that depend ONLY on the Kelly slider (the validated sweep + the 'your pick' markers), split
+    out of _sandbox so they do NOT rebuild on every edge/city/trade keystroke. The static MC curves (frontier
+    + drawdown/ruin probabilities) are precomputed once in _risk_static(); only the markers/lines move."""
+    try:
+        kelly = min(KELLY_MAX, max(0.25, float(kelly)))
+    except (TypeError, ValueError):
+        kelly = KELLY_CEILING
+    k = kelly_interp(kelly)
+    rs = _risk_static()
+    fr, med, dd = rs["fr"], rs["med"], rs["dd"]
+
+    # ---- (b) risk vs return curve across fractions (static frontier + moving 'your pick') ----
+    rr = _dfig(
+        [{"type": "scatter", "x": dd, "y": med, "mode": "lines+markers+text", "name": "Kelly frontier",
+          "text": [f"{f:.2f}x" for f in fr], "textposition": "top center",
+          "textfont": {"size": 10, "color": DIM},
+          "line": {"color": CYAN, "width": 2, "shape": "spline", "smoothing": 0.3},
+          "marker": {"size": 9, "color": [MINT if f <= KELLY_CEILING else RED for f in fr],
+                     "line": {"width": 1, "color": "rgba(255,255,255,.25)"}},
+          "hovertemplate": "%{text}<br>median %{y:+.1f}%/m<br>p95 maxDD %{x:.1f}%<extra></extra>"},
+         {"type": "scatter", "x": [k["dd"]], "y": [k["med"]], "mode": "markers", "name": "your pick",
+          "marker": {"size": 16, "color": AMBER, "symbol": "star", "line": {"width": 1.4, "color": "#fff"}},
+          "hovertemplate": f"your pick {kelly:.2f}x<br>median %{{y:+.1f}}%/m"
+                           f"<br>p95 maxDD %{{x:.1f}}%<extra></extra>"}],
+        h=300, legend=False,
+        xaxis={"title": "p95 max drawdown (%)", "ticksuffix": "%"},
+        yaxis={"title": "median return (%/month)", "ticksuffix": "%"},
+        shapes=[_vline(18.0, NEUTRAL, 1.4, "dash")],
+        annotations=[_ann(18.0, 1.0, "0.50x recommended", NEUTRAL, 10)])
+
+    # ---- (c) return distribution + drawdown gauge ----
+    _dsev = _sev_color(_sev_dd(k["dd"]))
+    spread_x = [k["p5"], k["med"], k["med"] + (k["med"] - k["p5"])]   # p95 ~ symmetric proxy of the band
+    dist = {"data": [
+        {"type": "indicator", "mode": "gauge+number", "value": k["dd"],
+         "number": {"suffix": "%", "font": {"size": 22, "color": _dsev}},
+         "title": {"text": "p95 max drawdown", "font": {"size": 12, "color": INK}},
+         "gauge": {"axis": {"range": [0, 40], "tickwidth": 1, "tickcolor": AXISCOL,
+                            "tickfont": {"size": 9, "color": DIM}},
+                   "bar": {"color": _dsev, "thickness": 0.72}, "bgcolor": "rgba(0,0,0,0)", "borderwidth": 0,
+                   "steps": [{"range": [0, 12], "color": "rgba(22,199,132,.12)"},
+                             {"range": [12, 20], "color": "rgba(217,162,58,.12)"},
+                             {"range": [20, 40], "color": "rgba(234,57,67,.12)"}],
+                   "threshold": {"line": {"color": AMBER, "width": 2}, "thickness": 0.85, "value": 18}},
+         "domain": {"x": [0.0, 0.42], "y": [0.0, 1.0]}},
+        {"type": "bar", "x": ["p5", "median", "p95"], "y": spread_x, "marker": {"color": [RED, MINT, CYAN]},
+         "width": 0.6, "text": [f"{v:+.1f}%" for v in spread_x], "textposition": "outside",
+         "cliponaxis": False, "xaxis": "x2", "yaxis": "y2",
+         "hovertemplate": "%{x}: %{y:+.1f}%/m<extra></extra>"}],
+        "layout": {
+            "title": None, "template": "plotly_dark", "paper_bgcolor": "rgba(0,0,0,0)",
+            "plot_bgcolor": "rgba(0,0,0,0)", "font": {"color": INK, "family": "Inter, system-ui", "size": 12},
+            "height": 300, "showlegend": False, "margin": {"l": 10, "r": 20, "t": 20, "b": 40},
+            "xaxis2": {"domain": [0.56, 1.0], "anchor": "y2", "tickfont": {"size": 11, "color": DIM},
+                       "showgrid": False, "linecolor": GRIDCOL},
+            "yaxis2": {"anchor": "x2", "title": "%/month", "ticksuffix": "%",
+                       "tickfont": {"size": 11, "color": DIM}, "gridcolor": GRIDCOL, "griddash": "dot",
+                       "zerolinecolor": AXISCOL, "title_font": {"size": 11, "color": DIM}},
+            "annotations": [{"x": 0.78, "y": 1.08, "xref": "paper", "yref": "paper", "showarrow": False,
+                             "text": "Monthly return spread", "font": {"size": 12, "color": INK}}]}}
+
+    # ---- (e) P(maxDD>=25%) and P(ruin=DD>=50%) vs Kelly fraction (static curves + moving 'your pick') ----
+    fr_grid, p_dd25, p_ruin = rs["fr_grid"], rs["p_dd25"], rs["p_ruin"]
+    DD25, RUIN_DD = rs["DD25"], rs["RUIN_DD"]
+    ruin = _dfig(
+        [{"type": "scatter", "x": fr_grid, "y": [p * 100 for p in p_dd25], "mode": "lines+markers",
+          "name": f"P(max drawdown ≥ {int(DD25*100)}% in 12mo)",
+          "line": {"color": AMBER, "width": 2.4}, "marker": {"size": 6},
+          "hovertemplate": "Kelly %{x:.2f}x<br>P(maxDD≥25%) %{y:.0f}%<extra></extra>"},
+         {"type": "scatter", "x": fr_grid, "y": [p * 100 for p in p_ruin], "mode": "lines+markers",
+          "name": f"P(ruin, ≥{int(RUIN_DD*100)}% DD in 12mo)",
+          "line": {"color": RED, "width": 2.6}, "marker": {"size": 6},
+          "hovertemplate": "Kelly %{x:.2f}x<br>P(ruin) %{y:.1f}%<extra></extra>"}],
+        h=300, legend=True,
+        xaxis={"title": "Kelly fraction", "dtick": 0.25},
+        yaxis={"title": "probability (%)", "ticksuffix": "%", "rangemode": "tozero"},
+        shapes=[_vrect(0.50, 0.75, "rgba(217,162,58,.08)"), _vrect(0.75, 1.00, "rgba(234,57,67,.08)"),
+                _vline(kelly, GREEN, 1.6, "dash"), _vline(0.50, NEUTRAL, 1.2, "dot")],
+        annotations=[_ann(kelly, 1.0, f"your pick {kelly:.2f}x", GREEN, 10),
+                     _ann(0.50, 0.0, "0.50x ceiling", DIM, 9, xanchor="right")])
+    return rr, dist, ruin
 
 
 def _sev_color(sev):
