@@ -1448,7 +1448,7 @@ def _latest_equity():
     if not tl.empty and "equity" in tl.columns:
         t = tl.copy()
         if "ts" in t.columns:
-            t["__dt"] = pd.to_datetime(t["ts"], utc=True, errors="coerce")
+            t["__dt"] = pd.to_datetime(t["ts"], utc=True, format="ISO8601", errors="coerce")
             t = t.dropna(subset=["__dt"]).sort_values("__dt")
         if not t.empty:
             try:
@@ -1471,7 +1471,7 @@ def _latest_cash_positions():
         return eq, 0.0, 0.0, 0.0
     t = tl.copy()
     if "ts" in t.columns:
-        t["__dt"] = pd.to_datetime(t["ts"], utc=True, errors="coerce")
+        t["__dt"] = pd.to_datetime(t["ts"], utc=True, format="ISO8601", errors="coerce")
         t = t.dropna(subset=["__dt"]).sort_values("__dt")
     if t.empty:
         return eq, 0.0, 0.0, 0.0
@@ -1643,7 +1643,7 @@ def _equity_points():
     if not tl.empty and len(tl) >= 2 and "ts" in tl.columns:
         # PERF (2026-06-22): VECTORIZED build (was a per-row iterrows over ~27k rows = seconds/render).
         t = tl.copy()
-        t["dt"] = pd.to_datetime(t["ts"], utc=True, errors="coerce")
+        t["dt"] = pd.to_datetime(t["ts"], utc=True, format="ISO8601", errors="coerce")
         t["equity"] = pd.to_numeric(t["equity"], errors="coerce")
         t = t.dropna(subset=["dt", "equity"]).sort_values("dt")
         has_r = "realized" in t.columns
@@ -1662,7 +1662,7 @@ def _equity_points():
     marks = table("bankroll_marks")
     if not marks.empty and len(marks) >= 2 and "ts" in marks.columns:
         m = marks.copy()
-        m["dt"] = pd.to_datetime(m["ts"], utc=True, errors="coerce")
+        m["dt"] = pd.to_datetime(m["ts"], utc=True, format="ISO8601", errors="coerce")
         m = m.dropna(subset=["dt"]).sort_values("dt")
         pts = [{"dt": r["dt"], "equity": float(r["equity"]),
                 "drawdown": (None if pd.isna(r.get("drawdown")) else float(r["drawdown"]))}
@@ -1673,7 +1673,7 @@ def _equity_points():
     d = table("bankroll_run")
     if not d.empty:
         dd = d.copy()
-        dd["dt"] = pd.to_datetime(dd["date"], utc=True, errors="coerce")
+        dd["dt"] = pd.to_datetime(dd["date"], utc=True, format="ISO8601", errors="coerce")
         # rows can repeat a date (multiple same-day settlements) -> keep order, nudge dupes by index seconds
         dd = dd.reset_index(drop=True)
         out = []
@@ -1687,7 +1687,7 @@ def _equity_points():
             # if there is exactly ONE marks row, splice it on as the latest point so the head is current
             if not marks.empty and "ts" in marks.columns and len(marks) == 1:
                 m0 = marks.iloc[0]
-                mdt = pd.to_datetime(m0["ts"], utc=True, errors="coerce")
+                mdt = pd.to_datetime(m0["ts"], utc=True, format="ISO8601", errors="coerce")
                 if pd.notna(mdt):
                     out.append({"dt": mdt, "equity": float(m0["equity"]),
                                 "drawdown": (None if pd.isna(m0.get("drawdown")) else float(m0["drawdown"]))})
@@ -1696,7 +1696,7 @@ def _equity_points():
     # last resort: a single flat marks row (or nothing) -> one point so the chart still renders
     if not marks.empty and "ts" in marks.columns:
         m0 = marks.iloc[0]
-        mdt = pd.to_datetime(m0["ts"], utc=True, errors="coerce")
+        mdt = pd.to_datetime(m0["ts"], utc=True, format="ISO8601", errors="coerce")
         if pd.notna(mdt):
             return [{"dt": mdt, "equity": float(m0["equity"]),
                      "drawdown": (None if pd.isna(m0.get("drawdown")) else float(m0["drawdown"]))}], "marks"
@@ -1885,10 +1885,15 @@ def _resday_summary(resolution_date):
     d = table("resolution_day_curve")
     if d.empty or "resolution_date" not in d.columns or "ts" not in d.columns:
         return None
-    sel = d[d["resolution_date"].astype(str) == str(resolution_date)]
+    sel = d[d["resolution_date"].astype(str) == str(resolution_date)].copy()
     if sel.empty:
         return None
-    last = sel.sort_values("ts").iloc[-1]
+    # Sort by PARSED datetime (ISO8601 handles the mixed micros/no-micros ts formats) so this headline picks the
+    # SAME latest row the chart plots. A plain string sort kept a micros-format row the chart was DROPPING as NaT
+    # (pre-fix), so the headline "Current value" could read a different (newer) point than the chart's last point
+    # -- the 44.36-vs-41.79 discrepancy (2026-06-26).
+    sel["__dt"] = pd.to_datetime(sel["ts"], utc=True, format="ISO8601", errors="coerce")
+    last = sel.sort_values("__dt").iloc[-1]
     paid = float(last.get("cumulative_paid_c") or 0.0) / 100.0
     value = float(last.get("cumulative_value_c") or 0.0) / 100.0
     npos = int(last.get("n_entered") or 0)
@@ -1910,7 +1915,7 @@ def _resolution_day_figure(resolution_date):
     sel = d[d["resolution_date"].astype(str) == str(resolution_date)].copy()
     if sel.empty or "ts" not in sel.columns:
         return _tpl(fig, h=300, legend=False)
-    sel["dt"] = pd.to_datetime(sel["ts"], utc=True, errors="coerce")
+    sel["dt"] = pd.to_datetime(sel["ts"], utc=True, format="ISO8601", errors="coerce")
     sel = sel.dropna(subset=["dt"]).sort_values("dt")
     if sel.empty:
         return _tpl(fig, h=300, legend=False)
