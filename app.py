@@ -3803,7 +3803,7 @@ def render_sandbox():
         html.Div([
             html.Div([html.Label("Target profit ($)", className="u-label",
                                  style={"fontSize": "10px", "display": "block", "marginBottom": "3px"}),
-                      dcc.Input(id="sb-target", type="number", value=10000, step=500, min=100, max=10_000_000,
+                      dcc.Input(id="sb-target", type="number", value=10000, step=100, min=100, max=10_000_000,
                                 style={"width": "150px", "padding": "6px 9px", "fontSize": "14px"})]),
             html.Div(id="sb-ttt-result", style={"flex": "1", "minWidth": "180px"})],
             style={"display": "flex", "alignItems": "flex-end", "gap": "18px", "margin": "10px 0 8px",
