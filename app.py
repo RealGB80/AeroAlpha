@@ -1703,8 +1703,17 @@ def _equity_points():
     return [], "none"
 
 
-def _equity_figure(window_label):
+# Kelly what-if overlay (toggle on the $1k equity chart): counterfactual sizings + a forward projection.
+_EQ_KELLY_FRACS = [0.25, 0.30, 0.40, 0.50, 0.75, 1.00]
+_EQ_KELLY_COLORS = {0.25: "#5AC8FA", 0.30: "#2DD4BF", 0.40: "#9CCC65",
+                    0.50: GREEN, 0.75: "#FFB020", 1.00: "#FF5C5C"}
+
+
+def _equity_figure(window_label, kelly_overlay=False):
     """Build the windowed $1k paper-equity figure + the (raw $ change, % change) readout for `window_label`.
+    kelly_overlay=True swaps the single line for a family of counterfactual curves at 0.25-1.0x Kelly (solid =
+    realized past, linear Kelly-scaling of the P&L deviation; dashed = forward projection at the run's realized
+    growth scaled per Kelly). The 0.50x member == the actual deployed path. Paper / hypothetical what-if.
     Returns (figure, readout_children, readout_color). Time-aware x (HH:MM intraday, dates for long windows).
     Graceful with 1-2 points (renders a marker/short line, never crashes). PAPER equity, hypothetical."""
     pts, source = _equity_points()
@@ -1756,18 +1765,63 @@ def _equity_figure(window_label):
     # for the dense intraday timeline drop the per-point markers so the spline reads cleanly
     if source == "timeline" and len(win) > 40:
         mode = "lines"
-    fig.add_scatter(x=xs, y=ys, mode=mode, name="paper equity",
-                    line=line_kw, marker=dict(size=6, color=col), customdata=cd,
-                    hovertemplate=hovertmpl)
+    overlay_on = bool(kelly_overlay) and source in ("timeline", "marks", "curve") and len(win) >= 2
+    if overlay_on:
+        # ---- KELLY WHAT-IF FAMILY: counterfactual equity at each sizing (solid past + dashed forward). ----
+        kdep = float(_run_meta("kelly_fraction", 0.5) or 0.5) or 0.5
+        e_now = ys[-1]
+        # forward DRIFT grounded in the run's REALIZED (locked-in) growth, not a model; clamped (5 days of
+        # data can't justify a big rate). Kelly scales the per-period return linearly in the small-edge regime.
+        realized_now = None
+        if source == "timeline":
+            for _p in reversed(pts):
+                if _p.get("realized") is not None:
+                    realized_now = float(_p["realized"]); break
+        span_days = max((pts[-1]["dt"] - pts[0]["dt"]).total_seconds() / 86400.0, 0.5)
+        base_now = (1000.0 + realized_now) if realized_now is not None else e_now
+        g0 = (max(base_now, 1.0) / 1000.0) ** (1.0 / span_days) - 1.0
+        g0 = max(min(g0, 0.01), -0.01)                          # +/-1%/day cap
+        hist_span = max((last_dt - win[0]["dt"]).total_seconds() / 86400.0, 0.25)
+        fwd_span = min(max(hist_span, 0.5), 30.0)               # mirror the visible window, capped at 30d
+        NS = 16
+        fwd_x = [_to_et_naive(last_dt + pd.Timedelta(days=fwd_span * i / NS)) for i in range(NS + 1)]
+        all_y = list(ys)
+        for kf in _EQ_KELLY_FRACS:
+            ratio = kf / kdep
+            ckf = _EQ_KELLY_COLORS.get(kf, NEUTRAL)
+            wkf = 3.0 if abs(kf - kdep) < 1e-9 else 1.6
+            hist_y = [1000.0 + ratio * (e - 1000.0) for e in ys]          # linear Kelly-scaling of the P&L
+            e_k_now = 1000.0 + ratio * (e_now - 1000.0)
+            gk = g0 * ratio
+            fwd_y = [max(e_k_now * (1.0 + gk) ** (fwd_span * i / NS), 1.0) for i in range(NS + 1)]
+            all_y += hist_y + fwd_y
+            lbl = f"{kf:.2f}x Kelly" + ("  (deployed)" if abs(kf - kdep) < 1e-9 else "")
+            fig.add_scatter(x=xs, y=hist_y, mode="lines", name=lbl, legendgroup=lbl,
+                            line=dict(color=ckf, width=wkf, shape="spline", smoothing=0.35),
+                            hovertemplate="%{x|%b %d %H:%M} ET<br>$%{y:,.2f}<br>" + f"{kf:.2f}x Kelly<extra></extra>")
+            fig.add_scatter(x=fwd_x, y=fwd_y, mode="lines", name=lbl, legendgroup=lbl, showlegend=False,
+                            line=dict(color=ckf, width=wkf, dash="dot"),
+                            hovertemplate="%{x|%b %d} ET<br>$%{y:,.2f}<br>" + f"{kf:.2f}x Kelly (projected)<extra></extra>")
+        fig.add_vline(x=_to_et_naive(last_dt), line=dict(color=NEUTRAL, width=1, dash="dot"),
+                      annotation_text="now", annotation_position="top",
+                      annotation_font=dict(color=NEUTRAL, size=9))
+        ov_lo, ov_hi = min(all_y), max(all_y)
+    else:
+        fig.add_scatter(x=xs, y=ys, mode=mode, name="paper equity",
+                        line=line_kw, marker=dict(size=6, color=col), customdata=cd,
+                        hovertemplate=hovertmpl)
+        ov_lo, ov_hi = min(ys), max(ys)
     fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
                   annotation_text="$1,000 baseline", annotation_position="bottom right",
                   annotation_font=dict(color=NEUTRAL, size=10))
-    span = (max(ys) - min(ys)) or 1.0
-    lo = min(min(ys), 1000) - span * 0.6
-    hi = max(max(ys), 1000) + span * 0.6
+    pad_span = (ov_hi - ov_lo) or 1.0
+    pad = 0.10 if overlay_on else 0.6
+    lo = min(ov_lo, 1000) - pad_span * pad
+    hi = max(ov_hi, 1000) + pad_span * pad
     fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.2f", range=[lo, hi])
-    # time-aware x: HH:MM for intraday windows, dates otherwise (proper datetime axis -> Plotly auto-formats)
-    if window_label in _EQ_INTRADAY:
+    # time-aware x: HH:MM for intraday windows, dates otherwise (proper datetime axis -> Plotly auto-formats).
+    # With the Kelly overlay the forward projection spans days, so force a date format even on intraday windows.
+    if window_label in _EQ_INTRADAY and not overlay_on:
         fig.update_xaxes(title=None, tickformat="%H:%M", type="date")
     else:
         fig.update_xaxes(title=None, tickformat="%b %d", type="date")
@@ -1777,7 +1831,7 @@ def _equity_figure(window_label):
         html.Span(f"  ·  {pct:+.2f}%", className="mono"),
         html.Span(f"  ({window_label})", className="sub", style={"marginLeft": "4px"})],
         style={"color": col, "fontSize": "15px"})
-    return _tpl(fig, h=240, legend=False), readout, col
+    return _tpl(fig, h=240, legend=overlay_on), readout, col
 
 
 def panel_run_equity():
@@ -1804,6 +1858,12 @@ def panel_run_equity():
         value=default_win, className="sb-radio",
         labelStyle={"display": "inline-block", "marginRight": "12px", "fontSize": "12px"},
         style={"marginBottom": "6px"})
+    kelly_toggle = dcc.Checklist(
+        id="run-equity-kelly",
+        options=[{"label": "  Kelly what-if overlay (0.25–1.0× sizing + forward projection)", "value": "on"}],
+        value=[], className="sb-radio",
+        labelStyle={"display": "inline-block", "fontSize": "12px"},
+        style={"marginBottom": "6px"})
     return card([html.H3(f"Paper Equity — {cur_str}"),
                  _cap(f"The $1,000 PAPER bankroll, RESET to $1,000 on {reset_date} (the algorithm changed; the "
                       f"prior track is archived). PAPER equity = $1,000 reset baseline − invested + the current "
@@ -1811,9 +1871,12 @@ def panel_run_equity():
                       f"CONTINUOUSLY with quotes from a $1,000 start, not just at settlements. Current paper "
                       f"equity {cur_str} ({'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs the $1,000 baseline; "
                       f"max paper drawdown {dd}%). Pick a time window below; the readout shows the $ and % change "
-                      f"over it. Source: {src_note}. LIVE real-deploy capital = $0 — promotion to REAL still "
-                      f"requires a forward-gate PASS. Paper / hypothetical, never realized P&L."),
-                 selector,
+                      f"over it. Source: {src_note}. Toggle the Kelly what-if overlay to see the SAME realized "
+                      f"path re-sized at 0.25–1.0× Kelly (solid = past, linear sizing-scaled; dashed = a forward "
+                      f"projection at the run's realized growth, scaled per sizing; 0.50× = the deployed path). "
+                      f"LIVE real-deploy capital = $0 — promotion to REAL still requires a forward-gate PASS. "
+                      f"Paper / hypothetical what-if, never realized P&L."),
+                 selector, kelly_toggle,
                  html.Div(readout, id="run-equity-readout", style={"marginBottom": "4px"}),
                  dcc.Graph(id="run-equity-graph", figure=fig, config={"displayModeBar": False})])
 
@@ -3975,13 +4038,14 @@ def _route(active):
 # $1k paper-equity time-window selector (USER ASK 2026-06-21): re-window the equity series + readout on each
 # RadioItems pick (12hr / 1D / 3D / 1W / 1M / All). Keyed only on the selector -> does not re-render the page.
 @app.callback(Output("run-equity-graph", "figure"), Output("run-equity-readout", "children"),
-              Input("run-equity-window", "value"))
-def _run_equity_window(window):
+              Input("run-equity-window", "value"), Input("run-equity-kelly", "value"))
+def _run_equity_window(window, kelly):
     w = window or "1W"
+    overlay = bool(kelly) and "on" in kelly
     def build():
-        fig, readout, _col = _equity_figure(w)
+        fig, readout, _col = _equity_figure(w, overlay)
         return _as_dict_fig(fig), readout
-    return _cb_memo(("eqwin", w), 60.0, build)
+    return _cb_memo(("eqwin", w, overlay), 60.0, build)
 
 
 # (2026-06-22) The resolution-day current/next TOGGLE was replaced by full per-date SECTIONS rendered
