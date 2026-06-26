@@ -1727,7 +1727,7 @@ def _equity_figure(window_label):
             win = pts[-2:] if len(pts) >= 2 else pts[-1:]
     else:
         win = pts
-    win = _downsample_list(win, 240)   # PERF: cap plotted points (keeps first/last -> raw/% change exact)
+    win = _downsample_list(win, 600)   # cap plotted points (keeps first/last -> raw/% change exact); full detail
     xs = [_to_et_naive(p["dt"]) for p in win]   # ET wall-clock display (was UTC)
     ys = [p["equity"] for p in win]
     dds = [p["drawdown"] for p in win]
@@ -1915,7 +1915,7 @@ def _resolution_day_figure(resolution_date):
     if sel.empty:
         return _tpl(fig, h=300, legend=False)
     sel["dt"] = sel["dt"].dt.tz_convert(_DISPLAY_TZ).dt.tz_localize(None)   # ET wall-clock display (was UTC)
-    sel = _downsample_df(sel, 64)      # PERF: cap dense grids (5 traces x N pts x 2 dates -> keep it light)
+    sel = _downsample_df(sel, 500)     # full detail (reverted 2026-06-25): keep the dense per-resolution grid
     xs = list(sel["dt"])
     paid = [float(v) / 100.0 for v in sel["cumulative_paid_c"]]      # cents -> dollars
     value = [float(v) / 100.0 for v in sel["cumulative_value_c"]]
@@ -2313,7 +2313,7 @@ def panel_open_positions():
             lbl = f"{pts[0]:.0f}c" if pts else "—"
             return html.Span(["• ", html.Span(lbl, className="mono sub")],
                              title="accumulating price snapshots (grows each run)")
-        return _spark(_downsample_list(seq, 30), height=22, fill=False)   # PERF: 30 pts is plenty for a sparkline
+        return _spark(seq, height=22, fill=False)   # full series (SVG handles the points cheaply)
     # NET-PER-DAY SWING (USER ASK 2026-06-24: make it match the per-resolution-day charts EXACTLY). Built from
     # the SAME source as those charts -- _resday_summary(date) (last-ts cumulative paid vs value from
     # resolution_day_curve) -- so the numbers are identical to the section headers below by construction.
@@ -4394,45 +4394,41 @@ def _time_to_target(base, unc_rate, sigma_m, cap_ceiling, target_profit):
     if unc_rate <= 0:
         return (_ttt_text("not reachable", "These inputs have no positive net edge — equity does not grow "
                           "toward the target.", RED), blank)
-    n_paths, MAXM = 1200, 600
+    n_paths, MAXM = 3000, 600
+    # CAPACITY-AWARE drift AND volatility: mu_eff = min(unc_rate, cap_ceiling/E) tightens as equity grows, and
+    # volatility shrinks WITH it (sd = cv x mu_eff, cv = the validated sweep's coefficient of variation) because
+    # a capacity-bound book fills near-deterministically. Scaling sd to the UNCAPPED rate (the old bug) made the
+    # capped-upside returns wildly noisy -> a fat tail where slow paths never crossed (spurious '>50 years' at
+    # high bankroll). Times are read off the PERCENTILE PATHS (below), so the star lands exactly on the line.
+    cv = sigma_m / max(unc_rate, 1e-9)
     rng = np.random.default_rng(4242)
     E = np.full(n_paths, float(base))
-    crossed = np.full(n_paths, -1.0)
-    hist = [E.copy()]                                # per-month equity snapshots -> ONE vectorized percentile
-    half_m, m = None, 0                              # PERF: track the crossing fraction (avoids a per-month
-    while m < MAXM:                                  # np.percentile partition); run until ~97% have crossed so
-        m += 1                                       # the median + p5/p95 TIME are break-independent (correct).
-        r = np.clip(rng.normal(unc_rate, sigma_m, n_paths), -0.95, None)
-        if cap_ceiling > 0:                          # liquidity: a $ ceiling -> a tightening return ceiling
-            r = np.minimum(r, cap_ceiling / np.maximum(E, 1e-9))
-        e_prev = E
+    hist = [E.copy()]
+    m = 0
+    while m < MAXM:
+        m += 1
+        mu = np.minimum(unc_rate, cap_ceiling / np.maximum(E, 1e-9)) if cap_ceiling > 0 else np.full(n_paths, unc_rate)
+        sd = np.maximum(cv * mu, 1e-4)
+        r = np.clip(rng.normal(mu, sd), -0.95, None)
         E = E * (1.0 + r)
-        nc = (crossed < 0) & (E >= target_eq)
-        if nc.any():                                 # sub-month interpolation of the crossing time
-            crossed[nc] = (m - 1) + (target_eq - e_prev[nc]) / np.maximum(E[nc] - e_prev[nc], 1e-9)
         hist.append(E.copy())
-        frac = float((crossed >= 0).mean())
-        if half_m is None and frac >= 0.5:
-            half_m = m
-        # stop once the slow tail is in (>=97% crossed) -- but never run more than ~2.2x the median crossing
-        # (low-variance capped growth -> the tail lands quickly), so the loop stays short.
-        if frac >= 0.97 or (half_m is not None and m >= int(half_m * 2.2) + 2):
+        if float((E >= target_eq).mean()) >= 0.95:   # cheap break (no partition): lower band has reached target
             break
-    # CORRECT median/percentiles over ALL paths (non-crossed = +inf), so they don't depend on the break time.
-    # errstate: percentile may interpolate between two +inf (slow tail) -> harmless nan, handled via isfinite.
-    allcross = np.where(crossed >= 0, crossed, np.inf)
-    with np.errstate(invalid="ignore"):
-        med = float(np.percentile(allcross, 50))
-        p5t = float(np.percentile(allcross, 5))
-        _p95 = float(np.percentile(allcross, 95))
-    if not np.isfinite(med):                         # <50% of paths reach the target within 50 years
+    H = np.vstack(hist)                              # (months+1, paths); ONE vectorized percentile for the bands
+    p5a, p50a, p95a = np.percentile(H, [5, 50, 95], axis=1)
+
+    def _cross(arr):                                 # first interpolated month where a percentile path hits target
+        for i in range(1, len(arr)):
+            if arr[i - 1] < target_eq <= arr[i]:
+                return (i - 1) + (target_eq - arr[i - 1]) / max(arr[i] - arr[i - 1], 1e-9)
+        return None
+
+    med_t = _cross(p50a)                             # median path reaching the target == the headline + the star
+    if med_t is None:
         return (_ttt_text("> 50 years", f"the ${target_profit:,.0f} profit target is not reached within 50 "
                           "years at this scenario's capacity-capped growth.", AMBER), blank)
-    p5t = p5t if np.isfinite(p5t) else 0.0
-    p95t = _p95 if np.isfinite(_p95) else None
-    # ONE vectorized percentile over the (months x paths) history -> the p5/median/p95 bands for the chart
-    H = np.vstack(hist)                              # shape (n_months+1, n_paths)
-    p5a, p50a, p95a = np.percentile(H, [5, 50, 95], axis=1)
+    fast_t = _cross(p95a)                            # luckiest band (p95 equity) reaches first
+    slow_t = _cross(p5a)                             # unluckiest band (p5 equity) reaches last (may exceed the run)
     p5l, p50l, p95l = p5a.tolist(), p50a.tolist(), p95a.tolist()
     xs = list(range(len(p50l)))
     fig = _dfig(
@@ -4440,21 +4436,22 @@ def _time_to_target(base, unc_rate, sigma_m, cap_ceiling, target_profit):
           "fillcolor": "rgba(22,199,132,.10)", "line": {"width": 0}, "mode": "lines", "name": "p5–p95",
           "hoverinfo": "skip"},
          {"type": "scatter", "x": xs, "y": p50l, "mode": "lines", "name": "median equity",
-          "line": {"color": MINT, "width": 2.4, "shape": "spline", "smoothing": 0.3},
+          "line": {"color": MINT, "width": 2.4},   # linear (no spline) so the star sits exactly on the line
           "hovertemplate": "month %{x}<br>%{y:$,.0f}<extra></extra>"},
-         {"type": "scatter", "x": [med], "y": [target_eq], "mode": "markers", "name": "target reached",
+         {"type": "scatter", "x": [med_t], "y": [target_eq], "mode": "markers", "name": "target reached",
           "marker": {"size": 14, "color": AMBER, "symbol": "star", "line": {"width": 1.3, "color": "#fff"}},
-          "hovertemplate": f"target ${target_eq:,.0f}<br>~{_fmt_dur(med)}<extra></extra>"}],
+          "hovertemplate": f"target ${target_eq:,.0f}<br>~{_fmt_dur(med_t)}<extra></extra>"}],
         h=240, legend=False,
         xaxis={"title": "months from now", "nticks": 8},
         yaxis={"title": "paper equity ($)", "tickprefix": "$", "tickformat": "~s"},
         shapes=[_hline(target_eq, AMBER, 1.4, "dash"), _hline(base, AXISCOL, 1, "dot")],
         annotations=[_ann(0.0, target_eq, f"target ${target_eq:,.0f}", AMBER, 10,
                           xref="paper", yref="y", xanchor="left", yanchor="bottom")])
-    _p95s = _fmt_dur(p95t) if p95t is not None else "> 50 years"
-    detail = (f"to ${target_profit:,.0f} profit (${target_eq:,.0f} equity) · median of {n_paths:,} "
-              f"capacity-capped paths · p5–p95: {_fmt_dur(p5t)} — {_p95s}")
-    return (_ttt_text(_fmt_dur(med), detail), fig)
+    _slow_s = _fmt_dur(slow_t) if slow_t is not None else "> 50 years"
+    _fast_s = _fmt_dur(fast_t) if fast_t is not None else _fmt_dur(med_t)
+    detail = (f"to ${target_profit:,.0f} profit (${target_eq:,.0f} equity) · median path of {n_paths:,} "
+              f"capacity-capped paths · p5–p95 band reaches it in {_fast_s} — {_slow_s}")
+    return (_ttt_text(_fmt_dur(med_t), detail), fig)
 
 
 @app.callback(
@@ -4643,14 +4640,20 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     sigma_m = max(1e-4, swp_sigma * (abs(unc_rate) / max(abs(k["med"]) / 100.0, 1e-6)) if k["med"] else swp_sigma)
     months = _np.arange(0, 13)
     rng = _np.random.default_rng(12345)
-    n_paths = 2000
-    draws = _np.clip(rng.normal(unc_rate, sigma_m, size=(n_paths, 12)), -0.95, None)   # uncapped monthly returns
+    n_paths = 4000
+    # CAPACITY-AWARE drift AND volatility (2026-06-25 fix): the depth ceiling is an absolute $/mo, so as equity
+    # compounds the effective monthly return mu_eff = min(unc_rate, cap_ceiling/E) TIGHTENS -- and because a
+    # capacity-bound book fills the same size near-deterministically, its volatility shrinks WITH the return
+    # (sd = cv x mu_eff, cv = the validated sweep's coefficient of variation). Scaling sigma to the UNCAPPED
+    # rate produced wild noise with a capped upside (a fat tail) once the cap bound -- the bug behind the fan
+    # going haywire / the time-to-target stalling at high bankroll.
+    cv = sigma_m / max(unc_rate, 1e-9)
     eq = _np.empty((n_paths, 13)); eq[:, 0] = base
     for _m in range(12):
         _E = eq[:, _m]
-        _r = draws[:, _m]
-        if cap_ceiling > 0:                       # $ ceiling -> a return ceiling that TIGHTENS as equity grows
-            _r = _np.minimum(_r, cap_ceiling / _np.maximum(_E, 1e-9))
+        _mu = _np.minimum(unc_rate, cap_ceiling / _np.maximum(_E, 1e-9)) if cap_ceiling > 0 else unc_rate
+        _sd = _np.maximum(cv * _mu, 1e-4)
+        _r = _np.clip(rng.normal(_mu, _sd), -0.95, None)
         eq[:, _m + 1] = _E * (1.0 + _r)
     med_path = _np.median(eq, axis=0)
     p5_path = _np.percentile(eq, 5, axis=0)
@@ -4698,7 +4701,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     # reach $0 at low bankroll and the plateau at the ceiling is legible (the uncapped line clips off the top).
     cap_data = []; cap_shapes = []; cap_anns = []; cap_xaxis = None; cap_yaxis = None
     if cap_ceiling > 0:
-        bxs = _np.geomspace(100.0, 1e8, 48)                          # $100 -> $100M log axis (48 pts = smooth)
+        bxs = _np.geomspace(100.0, 1e8, 90)                          # $100 -> $100M log axis (full detail)
         # PER-BOOK staircase (2026-06-21): each active book fills along its OWN curve; shallow daily-low books
         # cap at a smaller size (lower bankroll) than the deep high books, so streams drop a group at a time.
         _books = _capacity_book_list(cities, s1tr, low_cities, low_trades, lockpm,
