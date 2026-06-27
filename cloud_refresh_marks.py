@@ -166,6 +166,22 @@ def refresh(eng) -> int:
     quotes = pull_quotes(tickers)
     pull_s = time.time() - t0
 
+    # Carry each position's price sparkline forward from THIS table's own last cloud write (so it GROWS across
+    # runs, not just within one static spec). price_series is stored the SAME way the producer stores it -- a
+    # json.dumps(list) STRING -- which the app parses with json.loads; reset-to-list broke the trend to one dot.
+    def _parse_series(v):
+        try:
+            seq = json.loads(v) if isinstance(v, str) else (list(v) if v else [])
+        except (ValueError, TypeError):
+            seq = []
+        return [float(x) for x in seq if x is not None]
+
+    prev_op = _read_table(eng, "open_positions")
+    prev_series = {}
+    if not prev_op.empty and "ticker" in prev_op.columns and "price_series" in prev_op.columns:
+        for _, _r in prev_op.iterrows():
+            prev_series[_r.get("ticker")] = _parse_series(_r.get("price_series"))
+
     # ---- re-mark each position (fresh quote on the side held; forward-fill last mark if the quote missed) ----
     unreal = 0.0
     cost_open = 0.0
@@ -189,13 +205,16 @@ def refresh(eng) -> int:
         if entry_c is not None and cur is not None:
             r["mark_delta"] = round(cur - entry_c, 2)
             r["direction"] = "up" if cur > entry_c else ("down" if cur < entry_c else "flat")
-        # grow the per-position sparkline
-        ser = r.get("price_series")
-        if not isinstance(ser, list):
-            ser = []
+        # grow the per-position sparkline: base = this table's own last series (accumulates), else the spec's
+        # producer-built series, else seed from entry. Append the fresh mark; store as a json STRING (app format).
+        base = prev_series.get(r.get("ticker"))
+        if base is None:
+            base = _parse_series(r.get("price_series"))
+            if not base and entry_c is not None:
+                base = [round(entry_c, 2)]
         if cur is not None:
-            ser = (ser + [round(cur, 2)])[-SPARK_CAP:]
-        r["price_series"] = ser
+            base = (base + [round(cur, 2)])[-SPARK_CAP:]
+        r["price_series"] = json.dumps(base)
         new_rows.append(r)
 
         if r.get("in_1k_book") and contracts > 0 and entry_c is not None and cur is not None:

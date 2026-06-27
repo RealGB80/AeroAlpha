@@ -1,22 +1,28 @@
 name: refresh-live-marks
 
-# Always-on, laptop-INDEPENDENT $1k live-marks refresh (paper only; public Kalshi quotes -> Neon).
-# Replaces the laptop's scheduled task, which froze whenever the laptop slept. GitHub's cron is best-effort
-# (can be delayed/skipped under load), so each run does a short DENSE loop of refreshes to keep marks fresh
-# between scheduled fires.
+# CONTINUOUS, laptop-independent $1k live-marks refresh (paper only; public Kalshi quotes -> Neon).
+# WHY this shape: GitHub's SCHEDULED cron is best-effort and fired ZERO times for this repo, so it cannot be
+# relied on for freshness. Instead -- on a PUBLIC repo (UNLIMITED Actions minutes) -- each job runs a CONTINUOUS
+# ~5.3h refresh loop and then SELF-DISPATCHES the next job, so the chain runs 24/7 without depending on the
+# scheduler. The default GITHUB_TOKEN cannot re-trigger a workflow (GitHub blocks recursion), so the re-dispatch
+# uses a small PAT secret CHAIN_PAT (fine-grained: this repo, Actions: read/write). A sparse schedule is a pure
+# WATCHDOG: if a job ever dies before re-dispatching, it restarts the chain. Paper only -- no auth/orders/money.
 on:
+  workflow_dispatch: {}
   schedule:
-    - cron: "*/5 * * * *"        # target every 5 min (GitHub best-effort)
-  workflow_dispatch: {}          # allow manual runs from the Actions tab
+    - cron: "17 */2 * * *"        # WATCHDOG only (~every 2h, off the hour). Best-effort is fine for a restarter.
+
+permissions:
+  actions: write                  # allow the API re-dispatch
 
 concurrency:
-  group: refresh-live-marks      # never run two at once (atomic writes, but avoid wasted overlap)
+  group: refresh-live-marks       # only ONE chain link active at a time (no pileup, no double-writer)
   cancel-in-progress: false
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 340          # 5.6h cap (< GitHub's 6h job limit); the loop below stops itself at 5.3h
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,15 +30,30 @@ jobs:
           python-version: "3.12"
       - name: Install deps
         run: pip install --quiet "sqlalchemy>=2.0" "psycopg2-binary>=2.9" "pandas>=2.0"
-      - name: Refresh marks (dense ~4.5 min loop)
+      - name: Continuous refresh loop (~5.3h, every 3 min)
         env:
           DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
         run: |
-          if [ -z "$DASHBOARD_DATABASE_URL" ]; then
-            echo "::error::DASHBOARD_DATABASE_URL secret is not set on this repo"; exit 1
-          fi
-          for i in 1 2 3 4; do
-            echo "--- refresh pass $i ---"
-            python cloud_refresh_marks.py || echo "::warning::refresh pass $i failed (continuing)"
-            if [ "$i" -lt 4 ]; then sleep 75; fi
+          if [ -z "$DASHBOARD_DATABASE_URL" ]; then echo "::error::DASHBOARD_DATABASE_URL secret missing"; exit 1; fi
+          END=$(( $(date +%s) + 19080 ))         # 5.3h
+          n=0
+          while [ "$(date +%s)" -lt "$END" ]; do
+            n=$((n + 1)); echo "--- refresh #$n $(date -u +%H:%M:%S)Z ---"
+            python cloud_refresh_marks.py || echo "::warning::refresh #$n failed (continuing)"
+            sleep 180
           done
+          echo "loop done after $n refreshes"
+      - name: Re-chain (start the next job before this one exits)
+        if: always()
+        env:
+          CHAIN_PAT: ${{ secrets.CHAIN_PAT }}
+        run: |
+          if [ -z "$CHAIN_PAT" ]; then
+            echo "::warning::CHAIN_PAT not set -> chain will NOT self-continue; relying on the ~2h schedule watchdog."
+            exit 0
+          fi
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $CHAIN_PAT" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/refresh-marks.yml/dispatches" \
+            -d '{"ref":"main"}')
+          echo "re-dispatch HTTP $code (204 = next job queued)"
