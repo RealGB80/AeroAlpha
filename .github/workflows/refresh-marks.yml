@@ -1,0 +1,38 @@
+name: refresh-live-marks
+
+# Always-on, laptop-INDEPENDENT $1k live-marks refresh (paper only; public Kalshi quotes -> Neon).
+# Replaces the laptop's scheduled task, which froze whenever the laptop slept. GitHub's cron is best-effort
+# (can be delayed/skipped under load), so each run does a short DENSE loop of refreshes to keep marks fresh
+# between scheduled fires.
+on:
+  schedule:
+    - cron: "*/5 * * * *"        # target every 5 min (GitHub best-effort)
+  workflow_dispatch: {}          # allow manual runs from the Actions tab
+
+concurrency:
+  group: refresh-live-marks      # never run two at once (atomic writes, but avoid wasted overlap)
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install --quiet "sqlalchemy>=2.0" "psycopg2-binary>=2.9" "pandas>=2.0"
+      - name: Refresh marks (dense ~4.5 min loop)
+        env:
+          DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
+        run: |
+          if [ -z "$DASHBOARD_DATABASE_URL" ]; then
+            echo "::error::DASHBOARD_DATABASE_URL secret is not set on this repo"; exit 1
+          fi
+          for i in 1 2 3 4; do
+            echo "--- refresh pass $i ---"
+            python cloud_refresh_marks.py || echo "::warning::refresh pass $i failed (continuing)"
+            if [ "$i" -lt 4 ]; then sleep 75; fi
+          done
