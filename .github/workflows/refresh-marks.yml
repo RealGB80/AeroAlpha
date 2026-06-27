@@ -8,7 +8,12 @@ name: refresh-live-marks
 # uses a small PAT secret CHAIN_PAT (fine-grained: this repo, Actions: read/write). A sparse schedule is a pure
 # WATCHDOG: if a job ever dies before re-dispatching, it restarts the chain. Paper only -- no auth/orders/money.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      loop_seconds:
+        description: "loop duration in seconds (default 19080 = 5.3h; pass a small value to test the re-chain)"
+        required: false
+        default: "19080"
   schedule:
     - cron: "17 */2 * * *"        # WATCHDOG only (~every 2h, off the hour). Best-effort is fine for a restarter.
 
@@ -35,7 +40,7 @@ jobs:
           DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}
         run: |
           if [ -z "$DASHBOARD_DATABASE_URL" ]; then echo "::error::DASHBOARD_DATABASE_URL secret missing"; exit 1; fi
-          END=$(( $(date +%s) + 19080 ))         # 5.3h
+          END=$(( $(date +%s) + ${{ github.event.inputs.loop_seconds || '19080' }} ))   # default 5.3h
           n=0
           while [ "$(date +%s)" -lt "$END" ]; do
             n=$((n + 1)); echo "--- refresh #$n $(date -u +%H:%M:%S)Z ---"
