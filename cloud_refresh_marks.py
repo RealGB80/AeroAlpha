@@ -252,7 +252,12 @@ def refresh(eng) -> int:
         rc = pd.concat([rc, pd.DataFrame(add)], ignore_index=True) if not rc.empty else pd.DataFrame(add)
         rc = rc[[c for c in rc_cols if c in rc.columns]].tail(RESCURVE_CAP_ROWS)
 
-    op = pd.DataFrame(new_rows)
+    # PENDING-LIST = FUNDED positions only: drop the $0 rows (watch streams + in-book-but-unfunded cold
+    # candidates) that rendered as "0 contracts / -- paid" and cluttered the pending view. They are tracked in
+    # the spec/gates, not held by the $1k run. equity/resolution above already count only contracts>0, so this
+    # is a display filter (no P&L change).
+    funded_rows = [r for r in new_rows if (_num(r.get("contracts"), 0.0) or 0.0) > 0]
+    op = pd.DataFrame(funded_rows)
     pend = pd.DataFrame(spec.get("pending_price_daily") or [])
     bmk = pd.DataFrame(spec.get("bankroll_marks") or [])
 
