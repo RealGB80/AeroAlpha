@@ -1632,6 +1632,37 @@ def _downsample_df(df, max_n):
     return df.iloc[idx]
 
 
+def _compress_constant_points(seq, keys):
+    """Plot-only cleanup for the $1k charts: collapse repeated synthetic mark rows that do not change the
+    plotted value. Keep first/last so readouts and window anchors stay exact."""
+    if len(seq) <= 2:
+        return seq
+    out = []
+    prev = object()
+    for i, row in enumerate(seq):
+        sig = tuple(row.get(k) for k in keys)
+        if i == 0 or i == len(seq) - 1 or sig != prev:
+            out.append(row)
+        prev = sig
+    return out
+
+
+def _compress_constant_df(df, cols):
+    """DataFrame version of _compress_constant_points for resolution-day value charts."""
+    cols = [c for c in cols if c in df.columns]
+    if len(df) <= 2 or not cols:
+        return df
+    keep = []
+    prev = object()
+    records = df[cols].to_dict("records")
+    for i, row in enumerate(records):
+        sig = tuple(row.get(c) for c in cols)
+        take = i == 0 or i == len(records) - 1 or sig != prev
+        keep.append(take)
+        prev = sig
+    return df.loc[keep]
+
+
 def _equity_points():
     """Return (points, source) for the $1k paper-equity chart. points = list of dicts with a real datetime x:
     {dt (pandas Timestamp), equity, drawdown}. PREFER the timestamped LIVE bankroll_equity_timeline (realized +
@@ -1737,6 +1768,8 @@ def _equity_figure(window_label, kelly_overlay=False):
             win = pts[-2:] if len(pts) >= 2 else pts[-1:]
     else:
         win = pts
+    if source == "timeline":
+        win = _compress_constant_points(win, ["equity"])
     win = _downsample_list(win, 600)   # cap plotted points (keeps first/last -> raw/% change exact); full detail
     xs = [_to_et_naive(p["dt"]) for p in win]   # ET wall-clock display (was UTC)
     ys = [p["equity"] for p in win]
@@ -1932,6 +1965,23 @@ def panel_equity_composition():
 
 
 # ---- TASK B (2026-06-21): value-vs-paid intraday curve per RESOLUTION DATE, with a current/next toggle ----
+def _active_book_resolution_dates():
+    """Resolution dates that still have funded, open $1k-book positions. This keeps the $1k page from showing
+    stale historical resolution-day charts after a repair/backfill."""
+    p = table("open_positions")
+    if p.empty or "target_date" not in p.columns:
+        return []
+    p = p.copy()
+    if "in_1k_book" in p.columns:
+        p = p[p["in_1k_book"] == True].copy()        # noqa: E712 -- explicit bool match
+    if "contracts" in p.columns:
+        p = p[p["contracts"].notna()].copy()
+    if p.empty:
+        return []
+    vals = sorted({str(v)[:10] for v in p["target_date"].dropna() if str(v)[:10]})
+    return vals
+
+
 def _resolution_dates():
     """The DISTINCT resolution_date values from resolution_day_curve, sorted ASCENDING. first = current day,
     second = next day. Data-derived (never hardcoded). Returns a list of YYYY-MM-DD strings (possibly empty)."""
@@ -1939,6 +1989,11 @@ def _resolution_dates():
     if d.empty or "resolution_date" not in d.columns:
         return []
     vals = sorted(str(v) for v in d["resolution_date"].dropna().unique())
+    active = set(_active_book_resolution_dates())
+    if active:
+        vals = [v for v in vals if v in active]
+    else:
+        vals = []
     return vals
 
 
@@ -1951,6 +2006,11 @@ def _resday_summary(resolution_date):
     sel = d[d["resolution_date"].astype(str) == str(resolution_date)].copy()
     if sel.empty:
         return None
+    if "n_entered" in sel.columns:
+        entered = pd.to_numeric(sel["n_entered"], errors="coerce").fillna(0)
+        active_rows = sel[entered > 0].copy()
+        if not active_rows.empty:
+            sel = active_rows
     # Sort by PARSED datetime (ISO8601 handles the mixed micros/no-micros ts formats) so this headline picks the
     # SAME latest row the chart plots. A plain string sort kept a micros-format row the chart was DROPPING as NaT
     # (pre-fix), so the headline "Current value" could read a different (newer) point than the chart's last point
@@ -1982,7 +2042,13 @@ def _resolution_day_figure(resolution_date):
     sel = sel.dropna(subset=["dt"]).sort_values("dt")
     if sel.empty:
         return _tpl(fig, h=300, legend=False)
+    if "n_entered" in sel.columns:
+        sel["__n_entered"] = pd.to_numeric(sel["n_entered"], errors="coerce").fillna(0)
+        sel = sel[sel["__n_entered"] > 0].copy()
+        if sel.empty:
+            return _tpl(fig, h=300, legend=False)
     sel["dt"] = sel["dt"].dt.tz_convert(_DISPLAY_TZ).dt.tz_localize(None)   # ET wall-clock display (was UTC)
+    sel = _compress_constant_df(sel, ["cumulative_paid_c", "cumulative_value_c", "n_entered", "n_contracts"])
     sel = _downsample_df(sel, 500)     # full detail (reverted 2026-06-25): keep the dense per-resolution grid
     xs = list(sel["dt"])
     paid = [float(v) / 100.0 for v in sel["cumulative_paid_c"]]      # cents -> dollars
@@ -3185,8 +3251,7 @@ def render_overview():
         cur_val = _latest_equity()
         line_col = GREEN if cur_val >= 1000 else RED
         fig = go.Figure()
-        mode = "lines" if len(x) > 1 else "markers"
-        fig.add_scatter(x=x, y=y, name="paper equity", mode=mode,
+        fig.add_scatter(x=x, y=y, name="paper equity", mode="lines+markers",
                         line=dict(color=line_col, width=2.4), marker=dict(size=6, color=line_col),
                         customdata=[str(v) for v in br["date"]] if len(br) == len(y) else None,
                         hovertemplate="$%{y:,.2f} (paper)<extra></extra>")
