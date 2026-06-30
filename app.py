@@ -3185,7 +3185,8 @@ def render_overview():
         cur_val = _latest_equity()
         line_col = GREEN if cur_val >= 1000 else RED
         fig = go.Figure()
-        fig.add_scatter(x=x, y=y, name="paper equity", mode="lines+markers",
+        mode = "lines" if len(x) > 1 else "markers"
+        fig.add_scatter(x=x, y=y, name="paper equity", mode=mode,
                         line=dict(color=line_col, width=2.4), marker=dict(size=6, color=line_col),
                         customdata=[str(v) for v in br["date"]] if len(br) == len(y) else None,
                         hovertemplate="$%{y:,.2f} (paper)<extra></extra>")
