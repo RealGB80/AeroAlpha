@@ -34,7 +34,7 @@ from sqlalchemy import create_engine, text
 KALSHI_BASE = "https://external-api.kalshi.com/trade-api/v2"
 SPEC_TABLE = "cloud_marks_spec"
 EQUITY_CAP_ROWS = 8000          # bound table growth (~28 days at a 4-min cadence); the chart downsamples anyway
-RESCURVE_CAP_ROWS = 4000
+RESCURVE_CAP_ROWS = 16000         # preserve restored per-resolution 5-min history across the full $1k test
 SPARK_CAP = 60                  # per-position sparkline length
 PULL_BUDGET_S = 90.0            # hard cap on the whole quote pull -> the job always finishes and writes
 MAX_WORKERS = 12
