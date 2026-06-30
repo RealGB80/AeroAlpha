@@ -1715,7 +1715,8 @@ def _equity_figure(window_label, kelly_overlay=False):
     realized past, linear Kelly-scaling of the P&L deviation; dashed = forward projection at the run's realized
     growth scaled per Kelly). The 0.50x member == the actual deployed path. Paper / hypothetical what-if.
     Returns (figure, readout_children, readout_color). Time-aware x (HH:MM intraday, dates for long windows).
-    Graceful with 1-2 points (renders a marker/short line, never crashes). PAPER equity, hypothetical."""
+    Graceful with 1-2 points (renders a single marker only when there is no line to draw). PAPER equity,
+    hypothetical."""
     pts, source = _equity_points()
     hours = _EQ_WINDOW_HOURS.get(window_label, None)
     fig = go.Figure()
@@ -1761,10 +1762,9 @@ def _equity_figure(window_label, kelly_overlay=False):
         cd = [[("—" if dd is None else f"{100.0*dd:.2f}%")] for dd in dds]
         hovertmpl = ("%{x|%Y-%m-%d %H:%M} ET<br>$%{y:,.2f} (paper)"
                      "<br>drawdown %{customdata[0]}<extra></extra>")
-    mode = "lines+markers" if len(win) > 1 else "markers"
-    # for the dense intraday timeline drop the per-point markers so the spline reads cleanly
-    if source == "timeline" and len(win) > 40:
-        mode = "lines"
+    # Keep the equity chart as a clean line. Sparse backfilled windows should not render as dotted markers;
+    # hover still exposes every point. Use a marker only for the degenerate one-point case.
+    mode = "lines" if len(win) > 1 else "markers"
     overlay_on = bool(kelly_overlay) and source in ("timeline", "marks", "curve") and len(win) >= 2
     if overlay_on:
         # ---- KELLY WHAT-IF FAMILY: counterfactual equity at each sizing (solid past + dashed forward). ----
