@@ -1932,14 +1932,31 @@ def panel_equity_composition():
 
 
 # ---- TASK B (2026-06-21): value-vs-paid intraday curve per RESOLUTION DATE, with a current/next toggle ----
-def _resolution_dates():
-    """The DISTINCT resolution_date values from resolution_day_curve, sorted ASCENDING. first = current day,
-    second = next day. Data-derived (never hardcoded). Returns a list of YYYY-MM-DD strings (possibly empty)."""
+def _today_et():
+    """Today's calendar date (YYYY-MM-DD) in the $1k page's display timezone (ET)."""
+    return pd.Timestamp.now(tz=_DISPLAY_TZ).date().isoformat()
+
+
+def _resolution_dates_all():
+    """ALL distinct resolution_date values in resolution_day_curve, sorted ascending (incl settled history)."""
     d = table("resolution_day_curve")
     if d.empty or "resolution_date" not in d.columns:
         return []
-    vals = sorted(str(v) for v in d["resolution_date"].dropna().unique())
-    return vals
+    return sorted(str(v) for v in d["resolution_date"].dropna().unique())
+
+
+def _resolution_dates():
+    """ACTIVE (open) resolution dates only = today + any future/pending day. Settled PAST days are EXCLUDED
+    here (they moved behind the 'past days' dropdown) -- the table now holds full 6/21+ history, so the old
+    'all dates, first = today' assumption showed 6/21 as TODAY and never dropped settled days. Ascending."""
+    today = _today_et()
+    return [d for d in _resolution_dates_all() if d >= today]
+
+
+def _resolution_dates_past():
+    """SETTLED resolution dates (before today), most-recent first -- shown on demand via the dropdown."""
+    today = _today_et()
+    return sorted((d for d in _resolution_dates_all() if d < today), reverse=True)
 
 
 def _resday_summary(resolution_date):
@@ -2060,15 +2077,19 @@ def _resday_book_summary(dates):
     return tot
 
 
-def _resday_section(resolution_date, idx):
-    """One FULL section per resolution date: header + day tag, a summary metric row (paid / current value /
-    net / positions / contracts) and the full cumulative value-vs-paid chart."""
+def _resday_section(resolution_date, idx=0):
+    """One FULL section per resolution date: header + day tag (by ACTUAL date, not list position), a summary
+    metric row (paid / current value / net / positions / contracts) and the full cumulative value-vs-paid chart."""
     s = _resday_summary(resolution_date)
-    tag = "TODAY" if idx == 0 else ("NEXT DAY" if idx == 1 else "")
+    today = _today_et()
+    nextday = (pd.Timestamp(today) + pd.Timedelta(days=1)).date().isoformat()
+    tag = ("TODAY" if resolution_date == today
+           else ("NEXT DAY" if resolution_date == nextday
+                 else ("SETTLED" if resolution_date < today else "")))
     metrics = _resday_metric_row(s) if s else html.Div()
     hdr = html.Div([html.H3(f"Resolving {resolution_date}",
                             style={"display": "inline-block", "margin": "0 8px 0 0"}),
-                    (badge(tag, "good" if idx == 0 else "neut") if tag else html.Span())],
+                    (badge(tag, "good" if tag == "TODAY" else "neut") if tag else html.Span())],
                    style={"display": "flex", "alignItems": "baseline", "marginBottom": "2px"})
     return card([hdr, metrics, graph(_resolution_day_figure(resolution_date))],
                 style={"marginBottom": "10px"})
@@ -2079,28 +2100,113 @@ def panel_resolution_day_curve():
     header (all open resolution days) + for EACH open resolution date a header + summary (paid / current value /
     net / positions / contracts) + the full cumulative value-vs-paid chart over [day-before 00:01 ->
     resolution-day 23:59]. PAPER: value = public-quote mark (or settled payout once resolved), not realized P&L."""
-    dates = _resolution_dates()
-    if not dates:
+    dates = _resolution_dates()           # OPEN days only (today + next); settled days -> the dropdown below
+    past = _resolution_dates_past()
+    if not dates and not past:
         return card([html.H3("Positions Resolving — Cumulative Value vs Paid"),
                      empty_state("Fills from the resolution_day_curve table once positions are entered.")])
-    intro = _cap("A BOOK TOTAL across all open resolution days, then one section PER resolution date. The "
+    intro = _cap("A BOOK TOTAL across the OPEN resolution days, then one section PER open resolution date. The "
                  "prominent line = cumulative VALUE of the positions resolving that day (fluctuates with public "
                  "quotes, or the settled payout once resolved); the dotted line = cumulative PRICE PAID (cost "
                  "basis, steps up as positions are entered). Band is GREEN when value > paid, RED when under. "
-                 "Each spans 12:01 AM the day before through 11:59 PM the resolution day (ET). PAPER / UNREALIZED — "
-                 "$0 real, no orders.")
+                 "Each spans 12:01 AM the day before through 11:59 PM the resolution day (ET). Settled past days "
+                 "move to the dropdown at the bottom. PAPER / UNREALIZED — $0 real, no orders.")
     bs = _resday_book_summary(dates)
     book = []
     if bs:
-        book = [card([html.Div([html.H3("All open resolution days — book total",
+        book = [card([html.Div([html.H3("Open resolution days — book total",
                                         style={"display": "inline-block", "margin": "0 8px 0 0"}),
-                                badge(f"{len(dates)} days", "neut")],
+                                badge(f"{len(dates)} open", "neut")],
                                style={"display": "flex", "alignItems": "baseline", "marginBottom": "2px"}),
                       _resday_metric_row(bs, big=True)],
                      style={"marginBottom": "12px",
                             "borderColor": "color-mix(in srgb, var(--mint) 35%, transparent)"})]
-    sections = [_resday_section(dt, i) for i, dt in enumerate(dates)]
-    return html.Div([section("Positions Resolving — Value vs Paid (per day)"), intro] + book + sections)
+    sections = [_resday_section(dt) for dt in dates]
+    if not sections:
+        sections = [_cap("No open resolution days right now — next-day positions appear after the day-ahead scan.")]
+    # SETTLED past days -> a dropdown (on-demand chart) so they don't clutter the live view but stay accessible.
+    past_block = []
+    if past:
+        past_block = [card([
+            html.Div([html.H3("Past (settled) resolution days",
+                              style={"display": "inline-block", "margin": "0 8px 0 0"}),
+                      badge(f"{len(past)} settled", "neut")],
+                     style={"display": "flex", "alignItems": "baseline", "marginBottom": "4px"}),
+            _cap("Already-resolved days. Pick one to view its final cumulative value-vs-paid chart."),
+            dcc.Dropdown(id="resday-past-select",
+                         options=[{"label": f"Resolved {d}", "value": d} for d in past],
+                         placeholder="Select a past resolution day…",
+                         className="sb-dropdown", style={"maxWidth": "340px", "marginBottom": "8px"}),
+            html.Div(id="resday-past-section")],
+            style={"marginBottom": "10px"})]
+    return html.Div([section("Positions Resolving — Value vs Paid (per day)"), intro]
+                    + book + sections + past_block)
+
+
+def panel_daily_pnl():
+    """DAILY paper P&L calendar (USER ASK 2026-07-01): ONE SQUARE PER CALENDAR DAY, colored by that day's paper
+    P&L = the CHANGE in $1k equity over the day (end-of-day equity minus the prior day's) — GREEN = up day, RED
+    = down day — in the same weekday×week calendar format as the settlement-surprise chart. Sourced from the
+    authoritative bankroll_equity_timeline (NOT the resolution marks, which don't reflect true settlements), so
+    the squares SUM EXACTLY to equity − $1,000 = the run's total P&L. PAPER, no real money."""
+    et = table("bankroll_equity_timeline")
+    if et.empty or "ts" not in et.columns or "equity" not in et.columns:
+        return card([html.H3("Daily Paper P&L Calendar"),
+                     empty_state("Fills as the $1k equity series accumulates.")])
+    import pandas as _pd
+    e = et.copy()
+    e["dt"] = _pd.to_datetime(e["ts"], utc=True, format="ISO8601", errors="coerce")
+    e["equity"] = _pd.to_numeric(e["equity"], errors="coerce")
+    e = e.dropna(subset=["dt", "equity"]).sort_values("dt")
+    if e.empty:
+        return card([html.H3("Daily Paper P&L Calendar"), empty_state("No equity data yet.")])
+    e["date"] = e["dt"].dt.tz_convert(_DISPLAY_TZ).dt.strftime("%Y-%m-%d")   # ET calendar day
+    daily = e.groupby("date", sort=True)["equity"].last().reset_index()
+    start = float(_run_meta("bankroll_start", 1000.0) or 1000.0)
+    rows, prev = [], start
+    for _, r in daily.iterrows():
+        rows.append({"date": r["date"], "pnl": float(r["equity"]) - prev, "eq": float(r["equity"])})
+        prev = float(r["equity"])
+    df = _pd.DataFrame(rows)
+    df["dt"] = _pd.to_datetime(df["date"], errors="coerce")
+    df["week"] = df["dt"].dt.strftime("%Y-W%U")
+    df["dow"] = df["dt"].dt.dayofweek
+    dows = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    weeks = list(dict.fromkeys(df["week"]))
+    wi = {w: i for i, w in enumerate(weeks)}
+    z = [[None] * len(weeks) for _ in range(7)]
+    cd = [[None] * len(weeks) for _ in range(7)]
+    nullmask = [[1] * len(weeks) for _ in range(7)]
+    for _, r in df.iterrows():
+        di, wj = int(r["dow"]), wi[r["week"]]
+        z[di][wj] = float(r["pnl"])
+        cd[di][wj] = [str(r["date"]), f"{'+' if r['pnl'] >= 0 else '−'}${abs(r['pnl']):,.2f}",
+                      f"${r['eq']:,.2f}"]
+        nullmask[di][wj] = None
+    zmax = max((abs(float(v)) for v in df["pnl"]), default=1.0) or 1.0
+    fig = go.Figure()
+    fig.add_trace(go.Heatmap(z=nullmask, x=weeks, y=dows, xgap=3, ygap=3, showscale=False,
+                             colorscale=[[0, NEUTRAL_DK], [1, NEUTRAL_DK]], hoverinfo="skip"))
+    # diverging: RED (down day) -> slate (flat) -> GREEN (up day), symmetric about 0
+    fig.add_trace(go.Heatmap(z=z, x=weeks, y=dows, customdata=cd, xgap=3, ygap=3,
+                             colorscale=[[0.0, RED], [0.5, NEUTRAL_DK], [1.0, GREEN]],
+                             zmin=-zmax, zmax=zmax, zmid=0,
+                             colorbar=dict(title="$ / day", thickness=10, len=0.8,
+                                           tickfont=dict(size=10, color=DIM)),
+                             hovertemplate="%{customdata[0]}<br>day P&L %{customdata[1]} · "
+                                           "end equity %{customdata[2]}<extra></extra>"))
+    fig.update_layout(title=None)
+    fig.update_xaxes(title="", showticklabels=False, nticks=12)
+    fig.update_yaxes(title="", autorange="reversed")
+    tot = float(df["pnl"].sum()); nd = len(df)
+    wins = int((df["pnl"] > 0).sum()); losses = int((df["pnl"] < 0).sum())
+    return card([html.H3("Daily Paper P&L Calendar"),
+                 _cap(f"One square per CALENDAR day, colored by that day's paper P&L = the change in $1,000 "
+                      f"equity over the day (GREEN = up, RED = down, slate = flat / no data). From the "
+                      f"authoritative equity series, so the squares SUM EXACTLY to the run total. {nd} days · "
+                      f"{wins} up / {losses} down · cumulative {'+' if tot >= 0 else '−'}${abs(tot):,.2f} "
+                      f"(= equity − $1,000). PAPER — $0 real, no orders."),
+                 graph(_tpl(fig, h=240, legend=False))])
 
 
 def panel_run_projection():
@@ -2375,13 +2481,23 @@ def panel_open_positions():
         except (ValueError, TypeError):
             seq = []
         seq = [float(v) for v in seq if v is not None]
+        ep = row.get("entry_price"); cp = row.get("current_price")
+        ep_f = None if _isnull(ep) else float(ep)
+        # ANCHOR the trend at the ENTRY price (cost basis) so the sparkline's shape AND color reflect P&L
+        # vs entry -- matching the "mark" chip. Coloring by first-snapshot-vs-last put GREEN lines on
+        # positions that are actually BELOW entry (and RED on winners) whenever the first snapshot != entry
+        # (2026-07-01 fix: 9/28 positions were mismatched). The anchor also fixes flat-at-0 losers.
+        if ep_f is not None and (not seq or abs(seq[0] - ep_f) > 1e-9):
+            seq = [ep_f] + seq
         if len(seq) < 2:
             # one point (or none) -> a single dot so the cell is non-empty + honest about thin history
-            pts = seq or ([row.get("entry_price")] if not _isnull(row.get("entry_price")) else [])
+            pts = seq or ([ep_f] if ep_f is not None else [])
             lbl = f"{pts[0]:.0f}c" if pts else "—"
             return html.Span(["• ", html.Span(lbl, className="mono sub")],
                              title="accumulating price snapshots (grows each run)")
-        return _spark(seq, height=22, fill=False)   # full series (SVG handles the points cheaply)
+        # color EXPLICITLY by current-vs-entry (the P&L sign) so it can NEVER disagree with the mark chip
+        col = (GREEN if float(cp) >= ep_f else RED) if (not _isnull(cp) and ep_f is not None) else None
+        return _spark(seq, color=col, height=30, fill=True)   # taller + filled = more detail
     # NET-PER-DAY SWING (USER ASK 2026-06-24: make it match the per-resolution-day charts EXACTLY). Built from
     # the SAME source as those charts -- _resday_summary(date) (last-ts cumulative paid vs value from
     # resolution_day_curve) -- so the numbers are identical to the section headers below by construction.
@@ -2553,6 +2669,8 @@ def render_bankroll():
                                html.Div(panel_staged_alloc(), className="col-7")], className="grid12",
                               style={"marginTop": "10px"}),
                      html.Div([html.Div(panel_equity_composition(), className="col-12")], className="grid12",
+                              style={"marginTop": "10px"}),
+                     html.Div([html.Div(panel_daily_pnl(), className="col-12")], className="grid12",
                               style={"marginTop": "10px"}),
                      html.Div([html.Div(panel_resolution_day_curve(), className="col-12")], className="grid12",
                               style={"marginTop": "10px"}),
@@ -4049,7 +4167,16 @@ def _run_equity_window(window, kelly):
 
 
 # (2026-06-22) The resolution-day current/next TOGGLE was replaced by full per-date SECTIONS rendered
-# statically in panel_resolution_day_curve (_resday_section), so this callback + its component IDs are gone.
+# statically in panel_resolution_day_curve (_resday_section).
+# (2026-07-01) SETTLED past resolution days moved behind a dropdown (they no longer render as live sections);
+# this callback renders the picked past day's full value-vs-paid section on demand.
+@app.callback(Output("resday-past-section", "children"), Input("resday-past-select", "value"))
+def _resday_past_section(date):
+    if not date:
+        return html.Div()
+    def build():
+        return _resday_section(date)
+    return _cb_memo(("resdaypast", str(date)), 120.0, build)
 
 
 # Per-stream calibration deck (Bayes feed): the dropdown drives the chip + PIT + coverage + meta line.
