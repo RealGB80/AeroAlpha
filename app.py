@@ -2136,9 +2136,12 @@ def panel_resolution_day_curve():
             dcc.Dropdown(id="resday-past-select",
                          options=[{"label": f"Resolved {d}", "value": d} for d in past],
                          placeholder="Select a past resolution day…",
+                         maxHeight=340,
                          className="sb-dropdown", style={"maxWidth": "340px", "marginBottom": "8px"}),
             html.Div(id="resday-past-section")],
-            style={"marginBottom": "10px"})]
+            # overflow VISIBLE so the open dropdown menu isn't clipped by the card's overflow:hidden
+            # (that clipping was why past days couldn't be selected); z-index keeps it above sibling cards.
+            style={"marginBottom": "10px", "overflow": "visible", "position": "relative", "zIndex": 20})]
     return html.Div([section("Positions Resolving — Value vs Paid (per day)"), intro]
                     + book + sections + past_block)
 
@@ -2167,45 +2170,71 @@ def panel_daily_pnl():
     for _, r in daily.iterrows():
         rows.append({"date": r["date"], "pnl": float(r["equity"]) - prev, "eq": float(r["equity"])})
         prev = float(r["equity"])
-    df = _pd.DataFrame(rows)
-    df["dt"] = _pd.to_datetime(df["date"], errors="coerce")
-    df["week"] = df["dt"].dt.strftime("%Y-W%U")
-    df["dow"] = df["dt"].dt.dayofweek
+    import datetime as _dtmod
+    # date -> (pnl, eq) for days that actually HAVE equity data (the only ones we color)
+    data_by_date = {r["date"]: (float(r["pnl"]), float(r["eq"])) for r in rows}
+    def _d(s):
+        return _dtmod.date.fromisoformat(s)
+    first = min(_d(k) for k in data_by_date)
+    last_data = max(_d(k) for k in data_by_date)
+    today_et = _pd.Timestamp.now(tz=_DISPLAY_TZ).date()
+    # show ~a week of upcoming (no-data) days in gray; snap the grid to whole Mon..Sun weeks
+    horizon = max(today_et, last_data) + _dtmod.timedelta(days=7)
+    grid_start = first - _dtmod.timedelta(days=first.weekday())          # back to Monday
+    grid_end = horizon + _dtmod.timedelta(days=(6 - horizon.weekday()))  # forward to Sunday
     dows = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    weeks = list(dict.fromkeys(df["week"]))
-    wi = {w: i for i, w in enumerate(weeks)}
-    z = [[None] * len(weeks) for _ in range(7)]
-    cd = [[None] * len(weeks) for _ in range(7)]
-    nullmask = [[1] * len(weeks) for _ in range(7)]
-    for _, r in df.iterrows():
-        di, wj = int(r["dow"]), wi[r["week"]]
-        z[di][wj] = float(r["pnl"])
-        cd[di][wj] = [str(r["date"]), f"{'+' if r['pnl'] >= 0 else '−'}${abs(r['pnl']):,.2f}",
-                      f"${r['eq']:,.2f}"]
-        nullmask[di][wj] = None
-    zmax = max((abs(float(v)) for v in df["pnl"]), default=1.0) or 1.0
+    week_starts, wcur = [], grid_start
+    while wcur <= grid_end:
+        week_starts.append(wcur)
+        wcur += _dtmod.timedelta(days=7)
+    weeks = [f"{w.strftime('%b')} {w.day}" for w in week_starts]         # column = week-of Monday
+    nweeks = len(week_starts)
+    z = [[None] * nweeks for _ in range(7)]        # colored P&L, data days only
+    cd = [[None] * nweeks for _ in range(7)]
+    future = [[None] * nweeks for _ in range(7)]   # gray squares for upcoming no-data days
+    for wj, ws in enumerate(week_starts):
+        for di in range(7):
+            day = ws + _dtmod.timedelta(days=di)
+            key = day.isoformat()
+            if key in data_by_date:
+                pnl, eq = data_by_date[key]
+                z[di][wj] = pnl
+                cd[di][wj] = [key, f"{'+' if pnl >= 0 else '−'}${abs(pnl):,.2f}", f"${eq:,.2f}"]
+            elif day > today_et:                   # future -> gray "no data yet"
+                future[di][wj] = 1
+                cd[di][wj] = [key, "no data yet", "upcoming day"]
+            # else: past day with no equity data -> left transparent (only show days WITH data)
+    zmax = max((abs(p) for p, _ in data_by_date.values()), default=1.0) or 1.0
     fig = go.Figure()
-    fig.add_trace(go.Heatmap(z=nullmask, x=weeks, y=dows, xgap=3, ygap=3, showscale=False,
-                             colorscale=[[0, NEUTRAL_DK], [1, NEUTRAL_DK]], hoverinfo="skip"))
-    # diverging: RED (down day) -> slate (flat) -> GREEN (up day), symmetric about 0
+    # FUTURE gray layer (upcoming days, no data yet)
+    fig.add_trace(go.Heatmap(z=future, x=weeks, y=dows, xgap=3, ygap=3, showscale=False,
+                             colorscale=[[0, NEUTRAL_DK], [1, NEUTRAL_DK]], customdata=cd,
+                             hovertemplate="%{customdata[0]}<br>%{customdata[1]}<extra></extra>"))
+    # DATA layer: diverging RED (down) -> AMBER (flat / mid) -> GREEN (up), symmetric about 0
     fig.add_trace(go.Heatmap(z=z, x=weeks, y=dows, customdata=cd, xgap=3, ygap=3,
-                             colorscale=[[0.0, RED], [0.5, NEUTRAL_DK], [1.0, GREEN]],
+                             colorscale=[[0.0, RED], [0.5, AMBER], [1.0, GREEN]],
                              zmin=-zmax, zmax=zmax, zmid=0,
                              colorbar=dict(title="$ / day", thickness=10, len=0.8,
                                            tickfont=dict(size=10, color=DIM)),
                              hovertemplate="%{customdata[0]}<br>day P&L %{customdata[1]} · "
                                            "end equity %{customdata[2]}<extra></extra>"))
     fig.update_layout(title=None)
-    fig.update_xaxes(title="", showticklabels=False, nticks=12)
+    fig.update_xaxes(title="", showticklabels=True, side="top", tickangle=0,
+                     tickfont=dict(size=9, color=DIM))
     fig.update_yaxes(title="", autorange="reversed")
-    tot = float(df["pnl"].sum()); nd = len(df)
-    wins = int((df["pnl"] > 0).sum()); losses = int((df["pnl"] < 0).sum())
+    # SQUARE tiles: lock 1:1 data aspect so every cell is a square regardless of week count
+    fig.update_yaxes(scaleanchor="x", scaleratio=1, constrain="domain")
+    fig.update_xaxes(constrain="domain")
+    vals = list(data_by_date.values())
+    tot = float(sum(p for p, _ in vals)); nd = len(vals)
+    wins = sum(1 for p, _ in vals if p > 0); losses = sum(1 for p, _ in vals if p < 0)
     return card([html.H3("Daily Paper P&L Calendar"),
-                 _cap(f"One square per CALENDAR day, colored by that day's paper P&L = the change in $1,000 "
-                      f"equity over the day (GREEN = up, RED = down, slate = flat / no data). From the "
-                      f"authoritative equity series, so the squares SUM EXACTLY to the run total. {nd} days · "
-                      f"{wins} up / {losses} down · cumulative {'+' if tot >= 0 else '−'}${abs(tot):,.2f} "
-                      f"(= equity − $1,000). PAPER — $0 real, no orders."),
+                 _cap(f"One SQUARE per calendar day with data, colored by that day's paper P&L = the change in "
+                      f"$1,000 equity over the day (GREEN = up, AMBER = flat, RED = down); upcoming days show "
+                      f"GRAY (no data yet). From the authoritative equity series, so the squares SUM EXACTLY to "
+                      f"the run total. {nd} days · {wins} up / {losses} down · cumulative "
+                      f"{'+' if tot >= 0 else '−'}${abs(tot):,.2f} (= equity − $1,000). PAPER — $0 real, "
+                      f"no orders."),
                  graph(_tpl(fig, h=240, legend=False))])
 
 

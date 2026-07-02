@@ -491,7 +491,11 @@ a, a:visited { color: var(--cyan); }
 .Select--single > .Select-control .Select-value .Select-value-label,
 .Select-value-label, .Select-placeholder, .Select-input > input,
 .Select-control .Select-value-label { color: var(--ink) !important; }
-.Select-menu-outer { background: var(--bg2) !important; border: 1px solid var(--border) !important; }
+.Select-menu-outer { background: var(--bg2) !important; border: 1px solid var(--border) !important;
+                     z-index: 1000 !important; max-height: 320px !important; }
+.Select-menu { max-height: 318px !important; }
+/* keep the open menu above neighbouring cards so day options are clickable, not clipped */
+.Select.is-open, .Select.is-focused { position: relative; z-index: 1000; }
 .Select-option { background: var(--bg2) !important; color: var(--ink) !important; }
 .Select-option.is-focused { background: var(--panel-2) !important; color: var(--ink) !important; }
 .Select-option.is-selected { background: color-mix(in srgb, var(--accent) 18%, transparent) !important;
