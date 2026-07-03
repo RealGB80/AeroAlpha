@@ -31,7 +31,7 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, ALL, ctx
 from dash.development.base_component import Component
 
 from data import table, meta_value
-from components import icon as svg_icon, info as info_tooltip   # WP-03 design-system primitives
+from components import icon as svg_icon, info as info_tooltip, scope_bar   # WP-03/06 design-system primitives
 
 # ---- palette (mirrors assets/theme.css; SHARP RED/GREEN quant-terminal retheme 2026-06-19) ----
 # HARD RULE: every CHART uses ONLY green / red / neutral. Positive = bright GREEN, negative = bright RED,
@@ -1011,13 +1011,13 @@ def kpi_spark_row():
     # cumulative paper backtest net (cents) -> the "total return (paper)" headline, clearly backtest
     cum = float(eq["equity_c"].iloc[-1]) if not eq.empty else None
     cards = [
-        # WP-01: DROP the mismatched sparks -- "NY DAY-AHEAD RMSE" was plotting latency_s (lock-in seconds)
-        # and "BEST STREAM EDGE" was plotting monthly_net_c. Honest blank beats a wrong-metric trend; re-wire
-        # to ny_rmse / best_edge_c once WP-05 emits those series in the kpi_spark table.
-        kpi_spark_card("NY DAY-AHEAD RMSE", ny_rmse, "F", "WALK-FORWARD", None,
+        # WP-06: re-wired to the HONEST series WP-05 now emits (ny_rmse = rolling day-ahead RMSE;
+        # best_edge_c = per-stream validated-edge distribution). WP-01 had blanked these because they were
+        # plotting the wrong metrics (latency_s / monthly_net_c).
+        kpi_spark_card("NY DAY-AHEAD RMSE", ny_rmse, "F", "WALK-FORWARD", "ny_rmse",
                        spark_color=NEUTRAL),
         kpi_spark_card("NY S1 EDGE (S2X)", ny_edge, "c/contract", "BACKTEST", "ny_edge_c"),
-        kpi_spark_card("BEST STREAM EDGE", best_edge, "c/contract", "BACKTEST", None),
+        kpi_spark_card("BEST STREAM EDGE", best_edge, "c/contract", "BACKTEST", "best_edge_c"),
         kpi_spark_card("CITIES BEAT MARKET", cities, "cities", "BACKTEST", None),
         kpi_spark_card("PAPER NET (BACKTEST)", cum, "c/contract", "BACKTEST", "equity_c",
                        tip=PAPER_NET_TIP),
@@ -3645,14 +3645,16 @@ def _content_multicity():
         fig.update_yaxes(title="S1 net (cents / contract)", ticksuffix="c", tickformat="+.0f")
         # per-city deployed-status badges (the honesty fix: near-pass CIs != tradable)
         order = ["tradable", "watch", "not-deployed", "not-built"]
+        # WP-06: season scope is now DATA-DRIVEN from the city_s1.season_scope column (WP-05), replacing the
+        # WP-01 _COLD_ONLY_CITIES hardcode.
+        scope_by_city = (dict(zip(d["city"], d["season_scope"])) if "season_scope" in d.columns else {})
         status_chips = []
         for st in order:
             cities = [c for c in d["city"] if d.set_index("city").loc[c, "status"] == st]
             if cities:
                 _, kind, lbl = _STATUS_STYLE[st]
-                # WP-01 interim: mark CHI cold-only in the tradable group (season_scope column arrives in WP-05)
-                city_str = ", ".join((c + " (cold-only)" if (st == "tradable" and str(c).upper()
-                                       in _COLD_ONLY_CITIES) else c) for c in cities)
+                city_str = ", ".join((c + " (cold-only)" if (st == "tradable"
+                                       and scope_by_city.get(c) == "cold") else c) for c in cities)
                 status_chips.append(html.Div([badge(lbl, kind),
                                               html.Span("  " + city_str, className="sub")],
                                              style={"marginRight": "18px"}))
@@ -3676,39 +3678,28 @@ def _content_multicity():
                                present_df=False)]))
     else:
         blocks.append(card("Per-city S1 validation table fills from the latest revival-validate run."))
-    # NEW-CITY EXPANSION watchlist. WP-01: was hardcoded-stale (missing the LV/MIN cold streams that are
-    # the biggest live story). Corrected to 2026-07 truth and made DATA-SHAPED (one dict per row) so WP-05
-    # swaps this literal list for the producer `expansion_watchlist` table with zero UI change.
-    # [(name, tier_label, badge_kind, note)]
-    _expansion_rows = [
-        ("LV-high / MIN-high", "ALIVE · A6 WATCH", "good",
-         "The live story: LV +9.19c and MIN +9.89c COLD edges passed the settlement-audit and are WIRED as "
-         "A6 watch ($0 capital), forward-logging since 2026-06-22 toward the n>=110-cold gate."),
-        ("SEA-high", "WATCH", "warn",
-         "+4.77c artifact-checked (P=.972) — a live WATCH candidate on a pre-registered forward gate; not "
-         "yet promoted."),
-        ("DC / OKC-high", "WATCH", "warn",
-         "Settlement-audit watch — candidate cold edges pending a wire-up to forward logging."),
-        ("SATX-high (warm)", "RE-SCREEN", "neut",
-         "Warm leg +12.4c but n=16 and never tested at scope -> A6.1 warm re-screen after the summer."),
-        ("SFO-high", "DEAD", "bad",
-         "S1 edge vanished on dedup (+2.88c -> +0.46c) — a collinear-pool artifact."),
-        ("PHX / DAL / BOS-high", "PARKED", "neut",
-         "PHX forecast is strong (RMSE 1.555) but the desert market is too sharp for an S1 edge; DAL/BOS "
-         "show no market-beating Brier."),
-    ]
-
+    # NEW-CITY EXPANSION watchlist. WP-06: now DATA-DRIVEN from the producer `expansion_watchlist` table
+    # (WP-05), so the narrative lives in one place (src/build_dashboard_dataset.py) instead of hardcoded here.
     def _wl_row(name, tier, kind, note):
         return html.Div([badge(tier, kind),
                          html.Span(f"  {name}  ", className="sub", style={"fontWeight": "700"}),
                          html.Span(note, className="sub")], style={"marginBottom": "6px"})
 
+    wl = table("expansion_watchlist")
+    if not wl.empty:
+        def _wl_name(r):
+            e = r.get("edge_c")
+            suffix = f"  ({r['market']}, {e:+.1f}c)" if not _isnull(e) else f"  ({r['market']})"
+            return f"{r['city']}{suffix}"
+        wl_rows = [_wl_row(_wl_name(r), r["tier"], r.get("kind") or "neut", r["note"])
+                   for _, r in wl.iterrows()]
+    else:
+        wl_rows = [empty_state("Fills from the expansion_watchlist table (producer).")]
     blocks.append(card(
-        [html.H3("New-City Expansion — Candidate Watchlist (2026-07 status)")]
-        + [_wl_row(*row) for row in _expansion_rows]
-        + [html.Div("Backtest probes + settlement audits (Magellan -> Kelvin -> Falcon -> Verity); NONE "
-                    "carry real capital. LV/MIN are wired as $0 A6 watch accruing forward; the rest are "
-                    "pre-gate. Paper/forward, never realized P&L.",
+        [html.H3("New-City Expansion — Candidate Watchlist")]
+        + wl_rows
+        + [html.Div("Backtest probes + settlement audits; NONE carry real capital. LV/MIN are wired as $0 "
+                    "A6 watch accruing forward; the rest are pre-gate. Paper/forward, never realized P&L.",
                     className="sub", style={"marginTop": "8px", "opacity": ".82"})]))
     # WP-01: the "Airport Lock-In Channel" card was removed here -- lock-in was RETIRED 2026-06-25 (latency
     # artifact). Its single retrospective lives on the Capacity & Risk page.
@@ -4116,11 +4107,120 @@ def render_capacity():
                     + _content_risk())
 
 
+# WP-06: per-stream forward-net visualization off the WP-05 equity_curve_stream / monthly_returns_stream
+# tables, driven by the multi-city scope bar. Stream hues mirror the tokens.css --stream-* set.
+_STREAM_HUES = {
+    "NY_high": "#00e08a", "LAX_high": "#36c5f0", "CHI_high": "#d9a23a", "MIA_high": "#5fd0c0",
+    "LV_high": "#b0e057", "MIN_high": "#57b0e0",
+    "NY_low": "#9ad04a", "AUS_low": "#b07ff0", "LAX_low": "#ff8a5b", "DEN_low": "#7fd6a0",
+    "MIA_low": "#e85f8a", "CHI_low": "#e0c04a", "PHIL_low": "#8a9ff0", "PHX_low": "#f0a04a",
+}
+# the deployed $1k book order (high cities, then low), so the scope bar reads deployed-first
+_STREAM_ORDER = ["NY_high", "LAX_high", "CHI_high", "NY_low", "AUS_low", "LAX_low", "DEN_low", "MIA_low"]
+
+
+def _stream_color(s):
+    return _STREAM_HUES.get(s, NEUTRAL)
+
+
+def _stream_label2(s):
+    parts = str(s).rsplit("_", 1)
+    return f"{parts[0]} · {parts[1]}" if len(parts) == 2 else str(s)
+
+
+def _stream_scopes():
+    es = table("equity_curve_stream")
+    if es.empty or "stream" not in es.columns:
+        return []
+    present = list(dict.fromkeys(es["stream"]))
+    return [s for s in _STREAM_ORDER if s in present] + [s for s in present if s not in _STREAM_ORDER]
+
+
+def _stream_forward_view(scope):
+    """The chart body for the per-stream forward-net section. scope='ALL' -> overlay of every stream's
+    cumulative net + a summary table; a single stream id -> that stream's equity line + monthly bars."""
+    es = table("equity_curve_stream")
+    if es.empty:
+        return empty_state("Fills from the per-stream forward-signal logs (equity_curve_stream).")
+    es = es.copy()
+    scopes = _stream_scopes()
+    if scope == "ALL":
+        fig = go.Figure()
+        rowsum = []
+        for s in scopes:
+            d = es[es["stream"] == s].sort_values("date")
+            if d.empty:
+                continue
+            fig.add_scatter(x=d["date"], y=d["equity_c"], mode="lines", name=_stream_label2(s),
+                            line=dict(color=_stream_color(s), width=2, shape="linear"),
+                            hovertemplate=_stream_label2(s) + "<br>%{x}<br>cum %{y:+,.0f}c<extra></extra>")
+            rowsum.append({"stream": _stream_label2(s), "signals": int(d["trades"].sum()),
+                           "net_c": round(float(d["equity_c"].iloc[-1]), 1)})
+        fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
+        fig.update_yaxes(title="cumulative forward net (c / contract)", ticksuffix="c", tickformat="+,.0f")
+        fig.update_xaxes(title="", nticks=8)
+        tbl = pd.DataFrame(rowsum).sort_values("net_c", ascending=False) if rowsum else pd.DataFrame()
+        return html.Div([graph(_tpl(fig, h=340, legend=True)),
+                         (pro_table(present(tbl, rename={"net_c": "Cum Net", "signals": "Signals"},
+                                            fmt={"net_c": _cents1}),
+                                    present_df=False, align_left=("Stream",)) if not tbl.empty else html.Div())])
+    # single stream
+    d = es[es["stream"] == scope].sort_values("date")
+    if d.empty:
+        return empty_state(f"No settled forward signals for {_stream_label2(scope)} yet.")
+    col = _stream_color(scope)
+    eqf = go.Figure()
+    eqf.add_scatter(x=d["date"], y=d["equity_c"], mode="lines", name="cum net",
+                    line=dict(color=col, width=2.4), fill="tozeroy",
+                    fillcolor=f"rgba({_rgb(col)},.10)",
+                    hovertemplate="%{x}<br>cum %{y:+,.0f}c<extra></extra>")
+    eqf.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
+    eqf.update_yaxes(title="cumulative forward net (c/ct)", ticksuffix="c", tickformat="+,.0f")
+    eqf.update_xaxes(title="", nticks=8)
+    mr = table("monthly_returns_stream")
+    mfig_el = html.Div()
+    if not mr.empty:
+        md = mr[mr["stream"] == scope].sort_values("month")
+        if not md.empty:
+            colors = [GREEN if v >= 0 else RED for v in md["net_c"]]
+            mfig = go.Figure()
+            mfig.add_bar(x=md["month"], y=md["net_c"], marker_color=colors, width=0.7,
+                         hovertemplate="%{x}<br>%{y:+.0f}c · %{customdata} signals<extra></extra>",
+                         customdata=md["trades"])
+            mfig.add_hline(y=0, line=dict(color=AXISCOL, width=1))
+            mfig.update_yaxes(title="monthly net (c/ct)", ticksuffix="c", tickformat="+,.0f")
+            mfig.update_xaxes(title="")
+            mfig_el = html.Div([html.Div("Monthly forward net", className="sub",
+                                         style={"margin": "8px 0 2px"}),
+                                graph(_tpl(mfig, h=240, legend=False))])
+    return html.Div([graph(_tpl(eqf, h=300, legend=False)), mfig_el])
+
+
+def panel_stream_forward():
+    """Per-stream FORWARD paper net (cents/contract), scoped by the multi-city scope bar. Source: the WP-05
+    equity_curve_stream / monthly_returns_stream tables (settled forward signals). Distinct from the NY
+    walk-forward BACKTEST curve below — this is the deployed streams' FORWARD track. Paper, never realized."""
+    scopes = _stream_scopes()
+    if not scopes:
+        return card([html.H3("Per-Stream Forward Net"),
+                     empty_state("Fills from the per-stream forward-signal logs (equity_curve_stream).")])
+    return card([html.H3("Per-Stream Forward Net — Deployed Streams"),
+                 _cap("Cumulative FORWARD paper net per deployed stream from settled forward signals "
+                      "(distinct from the NY walk-forward backtest below). Pick ALL for the overlay + a "
+                      "summary, or a single stream for its equity line and monthly bars. Paper/forward, "
+                      "never realized P&L."),
+                 scope_bar(scopes, active="ALL"),
+                 html.Div(_stream_forward_view("ALL"), id="stream-fwd-charts")],
+                id="stream-forward-card")
+
+
 def render_lab():
-    """Lab = the interactive Sandbox + the leak-free backtest research panels (old Quant Lab)."""
+    """Lab = the interactive Sandbox + per-stream forward net + the leak-free backtest research panels."""
     return html.Div([section("Lab — Interactive Sandbox & Backtest Research")]
                     + _content_sandbox()
-                    + [html.H3("Backtest Research", style={"margin": "16px 0 4px"}),
+                    + [html.H3("Per-Stream Forward Net", style={"margin": "16px 0 4px"}),
+                       html.Div([html.Div(panel_stream_forward(), className="col-12")], className="grid12"),
+                       html.H3("Backtest Research", style={"margin": "16px 0 4px"}),
                        html.Div("Leak-free walk-forward backtest diagnostics in cents/contract or °F — "
                                 "NOT dollars, NOT live, never realized P&L.", className="sub",
                                 style={"marginBottom": "10px"}),
@@ -4334,6 +4434,19 @@ def _calib_stream(stream):
                 f"paper/backtest.")
         return chip, pit, cov, meta
     return _cb_memo(("calib", stream), 60.0, build)
+
+
+# WP-06: the multi-city scope bar on the Lab per-stream section. A chip click re-scopes the chart body and
+# repaints the active-chip state. prevent_initial_call -> the page already renders the ALL view by default.
+@app.callback(Output("stream-fwd-charts", "children"),
+              Output({"type": "scope-chip", "key": ALL}, "className"),
+              Input({"type": "scope-chip", "key": ALL}, "n_clicks"),
+              prevent_initial_call=True)
+def _stream_fwd(_clicks):
+    key = ctx.triggered_id.get("key") if isinstance(ctx.triggered_id, dict) else "ALL"
+    classes = ["scope-chip active" if o["id"]["key"] == key else "scope-chip"
+               for o in ctx.outputs_list[1]]
+    return _stream_forward_view(key), classes
 
 
 @app.callback(Output("tb-clock", "children"), Output("tb-tickers", "children"),
