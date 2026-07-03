@@ -126,8 +126,13 @@ body {
        margin-right: 6px; vertical-align: middle; }
 
 /* ---- market-ticker strip (topbar) ------------------------------------- */
-/* WP-01: cap the strip width and scroll horizontally so all wired cities show without pushing the topbar */
-#tb-tickers { flex-wrap: nowrap; max-width: 44vw; overflow-x: auto; scrollbar-width: thin; }
+/* Cap the strip width; overflow scrolls (trackpad / shift-wheel) but the scrollbar CHROME is hidden and a
+   soft right-edge fade hints there's more — no ugly horizontal scrollbar in the topbar. */
+#tb-tickers { flex-wrap: nowrap; max-width: 44vw; overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none; -ms-overflow-style: none;
+  -webkit-mask-image: linear-gradient(to right, #000 90%, transparent);
+  mask-image: linear-gradient(to right, #000 90%, transparent); }
+#tb-tickers::-webkit-scrollbar { display: none; height: 0; }
 .ticker { display: flex; align-items: baseline; gap: 6px; font-size: 11.5px; white-space: nowrap; flex: 0 0 auto; }
 .ticker .k { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: var(--track);
              font-weight: 700; }
