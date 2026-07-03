@@ -31,7 +31,8 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, ALL, ctx
 from dash.development.base_component import Component
 
 from data import table, meta_value
-from components import icon as svg_icon, info as info_tooltip, scope_bar   # WP-03/06 design-system primitives
+from components import (icon as svg_icon, info as info_tooltip, scope_bar,   # WP-03/06 design-system
+                        panel, caption_drawer)
 
 # ---- palette (mirrors assets/theme.css; SHARP RED/GREEN quant-terminal retheme 2026-06-19) ----
 # HARD RULE: every CHART uses ONLY green / red / neutral. Positive = bright GREEN, negative = bright RED,
@@ -855,13 +856,15 @@ def panel_latency():
     fig.update_layout(title=None)
     fig.update_yaxes(title="scans")
     fig.update_xaxes(title="orderbook-publish latency after the :51 obs (seconds)")
-    return card([html.H3("Lock-In Post-Mortem — Why We Killed It (2026-06-25)"),
-                 _cap(f"Seconds between the :51 KNYC observation and when the priced orderbook updated "
-                      f"(n={len(v)} paper scans). Median was {med:.0f}s and {100*frac:.0f}% sat at/above the "
-                      f"~128s METAR floor — which is WHY NYC lock-in was RETIRED: it was a latency artifact of "
-                      f"KNYC's slow feed, not a fat edge, and no faster free KNYC source exists. Kept as a "
-                      f"retrospective."),
-                 graph(_tpl(fig, h=300, legend=False))])
+    return panel("Lock-In Post-Mortem — Why We Killed It (2026-06-25)",
+                 [graph(_tpl(fig, h=300, legend=False))],
+                 caption=f"Median publish latency was {med:.0f}s with {100*frac:.0f}% at/above the ~128s METAR "
+                         f"floor — the artifact that retired NYC lock-in.",
+                 drawer=f"Seconds between the :51 KNYC observation and when the priced orderbook updated "
+                        f"(n={len(v)} paper scans). Median was {med:.0f}s and {100*frac:.0f}% sat at/above the "
+                        f"~128s METAR floor — which is WHY NYC lock-in was RETIRED: it was a latency artifact of "
+                        f"KNYC's slow feed, not a fat edge, and no faster free KNYC source exists. Kept as a "
+                        f"retrospective.")
 
 
 def panel_emos_skill():
@@ -3810,10 +3813,16 @@ def _content_scalability():
     # headline strip: real-curve count vs accruing count (audit-corrected; no more 'dead-book gaps')
     n_real = int((cap["real_curve"] == True).sum()) if (not cap.empty and "real_curve" in cap) else 0  # noqa: E712
     n_accr = int((cap["depth_state"] == "accruing").sum()) if (not cap.empty and "depth_state" in cap) else 0
-    intro = card([
-        html.Div("Scalability is a FILLS problem — and an HONESTY problem.", className="u-label",
-                 style={"marginBottom": "6px"}),
-        html.Div(["Each edge sits on a finite order book, and contract counts are ", html.B("per-market "
+    live_note = (html.Div(["⟳ Live from the curated fill tables — ", html.B(_scal_data_asof())],
+                          className="sub", style={"fontSize": "11px", "opacity": .85})
+                 if _scal_data_asof() else html.Div())
+    intro = panel(
+        "Scalability — a Fills Problem, and an Honesty Problem",
+        [live_note],
+        caption=(f"Contract counts are per-market (per-strike, per-day). All three deployed high cities now "
+                 f"have real fill data; the rest are accruing forward. {n_real} real-curve, {n_accr} "
+                 f"accruing."),
+        drawer=html.Div(["Each edge sits on a finite order book, and contract counts are ", html.B("per-market "
                   "(per-strike, per-day)"), ". All ", html.B("three deployed high cities"), " now have real "
                   "fill data: ", html.B("NY-high"), " from its median LOCK-MOMENT signal book, and ",
                   html.B("LAX-high + CHI-high"), " from a 9-day periodic STANDING-book depth archive — "
@@ -3823,13 +3832,7 @@ def _content_scalability():
                   "curve is ", html.B("accruing forward"), ", so we show '≥25ct confirmed' and NO fabricated "
                   "ceiling. Degenerate cent-floor longshot 'ceilings' (e.g. the old 174k/27k figures) stay "
                   "removed as tick-floor artifacts. ", html.B("Paper / public-data orderbook reads — no "
-                  "auth, no orders, never realized P&L."),
-                  f" {n_real} streams with a real curve; {n_accr} with accruing depth data."],
-                 className="sub"),
-        (html.Div(["⟳ Live from the curated fill tables — ", html.B(_scal_data_asof())],
-                  className="sub", style={"fontSize": "11px", "marginTop": "6px", "opacity": .85})
-         if _scal_data_asof() else html.Div())],
-        style={"borderColor": "color-mix(in srgb, var(--amber) 30%, transparent)"})
+                  "auth, no orders, never realized P&L.")]))
     return [html.Div([html.Div(intro, className="col-12")], className="grid12"),
             html.Div([html.Div(panel_scalability_curve(), className="col-12")], className="grid12"),
             html.Div([html.Div(panel_scalability_headroom(), className="col-12")], className="grid12")]
@@ -4087,10 +4090,8 @@ def _content_risk():
              ("Lock-in reality", "NYC lock-in was RETIRED (2026-06-25) as a latency artifact at the ~128s METAR "
               "floor (no faster KNYC feed exists). Airport-city lock-in is a thin speed race, not a fat edge.",
               "neut")]
-    return [html.Div([card([html.Div([html.H3(t), badge(k.upper(), k)],
-                                      style={"display": "flex", "justifyContent": "space-between",
-                                             "alignItems": "center"}),
-                            html.Div(d, className="sub")]) for t, d, k in items]),
+    return [html.Div([panel(t, [], badges=[badge(k.upper(), k)], caption=d, cls="stack")
+                      for t, d, k in items]),
             html.Div([html.Div(panel_latency(), className="col-12")], className="grid12")]
 
 
