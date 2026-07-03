@@ -10,7 +10,7 @@
 /* ---- design tokens (dark = default) ----------------------------------- */
 :root {
   /* type scale (denser quant-terminal: smaller across the board) */
-  --fs-xs:   10px;     /* uppercase micro-labels */
+  --fs-xs:   11px;     /* uppercase micro-labels (WP-03: 11px readability floor, was 10px) */
   --fs-s:    11.5px;   /* body / sub */
   --fs-m:    13px;     /* card titles, table */
   --fs-l:    18px;     /* section sub-heads */
@@ -96,6 +96,16 @@ body {
         letter-spacing: var(--track); border: 1px solid var(--border); color: var(--dim); }
 .pill.paper { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent);
               background: color-mix(in srgb, var(--amber) 8%, transparent); }
+
+/* WP-03: global paper-honesty banner (persistent under the topbar so per-card captions can drop the tail) */
+.paper-banner { position: sticky; top: 51px; z-index: 28; display: flex; align-items: baseline; gap: 8px;
+  padding: 5px 22px; font-size: 11px; letter-spacing: .2px;
+  background: color-mix(in srgb, var(--amber) 9%, var(--panel));
+  border-bottom: 1px solid color-mix(in srgb, var(--amber) 22%, var(--border)); backdrop-filter: blur(6px); }
+.paper-banner .pb-tag { color: var(--amber); font-weight: 800; text-transform: uppercase;
+  letter-spacing: var(--track); white-space: nowrap; }
+.paper-banner .pb-text { color: var(--dim); }
+@media (max-width: 720px) { .paper-banner { padding: 5px 12px; font-size: 10px; } }
 
 /* staleness chip (global) */
 .stale-chip { padding: 3px 9px; border-radius: 6px; font-size: 10.5px; font-weight: 700;
@@ -220,8 +230,9 @@ body {
 .grid { display: flex; flex-wrap: wrap; gap: var(--gutter); }
 
 /* ---- cards (denser) --------------------------------------------------- */
+/* WP-03: solid opaque surface (backdrop blur removed — cheaper + sharper), restrained shadow. */
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 11px; padding: 12px 14px;
-        backdrop-filter: blur(8px); box-shadow: 0 4px 16px rgba(0,0,0,.24); position: relative; overflow: hidden;
+        box-shadow: 0 1px 3px rgba(0,0,0,.18); position: relative; overflow: hidden;
         transition: border-color .12s ease, transform .12s ease; }
 .card:hover { border-color: var(--border-hi); transform: translateY(-1px); }
 .card h3 { margin: 0 0 3px; font-size: var(--fs-m); font-weight: 700; letter-spacing: .2px; }
@@ -437,57 +448,14 @@ a, a:visited { color: var(--cyan); }
 .ss-e.pos { color: var(--accent); } .ss-e.neg { color: var(--red); }
 
 /* ============================================================
-   NEON BLOOM (2026-06-20) — ultrabright glow pass, DARK MODE ONLY.
-   Pure additive layer: neon-green / red / amber bloom on data values,
-   status chips, active nav, and the Plotly trace layers (lines/areas/
-   bars). No base colours or layout changed. Auto-disabled on the light
-   investor-deck theme (glow tokens -> none).
-   ============================================================ */
-:root {
-  --glow-green:   0 0 7px rgba(0, 224, 138, .50), 0 0 15px rgba(0, 224, 138, .22);
-  --glow-green-s: 0 0 6px rgba(0, 224, 138, .42);
-  --glow-red:     0 0 7px rgba(255, 77, 94, .45), 0 0 15px rgba(255, 77, 94, .20);
-  --glow-amber:   0 0 7px rgba(217, 162, 58, .45);
-  --glow-ink:     0 0 9px rgba(120, 255, 190, .17);
-  /* chart bloom: soft green-white halo so green lines go neon and red lines
-     still read red (kept low-radius to avoid muddying multi-series charts) */
-  --glow-chart:   drop-shadow(0 0 1.4px rgba(120, 255, 190, .55))
-                  drop-shadow(0 0 5px rgba(0, 224, 138, .30));
-}
-[data-theme="light"] {
-  --glow-green: none; --glow-green-s: none; --glow-red: none;
-  --glow-amber: none; --glow-ink: none; --glow-chart: none;
-}
-
-/* brand accent + KPI / scenario big values bloom */
-.brand .a1            { text-shadow: var(--glow-green); }
-.kpi .val,
-.sc-val,
-.val.mono             { text-shadow: var(--glow-ink); }
-
-/* sign-aware data bloom: positive -> green halo, negative -> red halo */
-.kpi-delta.pos, .cn-edge.pos, .qb-edge.pos, .ss-e.pos,
-.ticker .v.up, .pro-table .pt-r.pos, .statusbar .sb-ok {
-  text-shadow: var(--glow-green);
-}
-.kpi-delta.neg, .cn-edge.neg, .qb-edge.neg, .ss-e.neg,
-.ticker .v.down, .pro-table .pt-r.neg {
-  text-shadow: var(--glow-red);
-}
-
-/* status chips + active nav + KPI accent bar glow */
-.pill.live        { box-shadow: var(--glow-green-s); text-shadow: var(--glow-green); }
-.pill.paper       { box-shadow: var(--glow-amber); }
-.nav-item.active  { box-shadow: inset 3px 0 0 var(--accent), 0 0 11px rgba(0, 224, 138, .20); }
-.kpi::before      { box-shadow: var(--glow-green-s); }
-
-/* card hover lift gets a faint neon edge */
-.card:hover       { box-shadow: 0 4px 16px rgba(0,0,0,.28), 0 0 14px rgba(0, 224, 138, .10); }
-
-/* THE chart bloom — glow the Plotly trace layers (lines / areas / bars),
-   NOT the axis/tick/legend text (those live in .infolayer, untouched) */
-.js-plotly-plot .scatterlayer,
-.js-plotly-plot .barlayer { filter: var(--glow-chart); }
+   WP-03: the NEON BLOOM layer was REMOVED (2026-07-03). It text-shadow-glowed
+   every data value + status chip + active nav, and — most costly — ran a
+   per-frame SVG drop-shadow FILTER on every Plotly scatter/bar layer. The
+   "quiet terminal" direction is flat, crisp surfaces: glow budget is now
+   exactly two elements (the live pulse dot and the active-nav inset bar,
+   both defined in their base rules above). One subtle live accent survives:
+   the LIVE pill keeps a faint ring to mark the single genuinely-live element. */
+.pill.live { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
 
 /* ---- dcc.Dropdown (react-select) theming (2026-06-22): without this its text defaults to dark #333,
    nearly unreadable in DARK mode. Flip text/menu to var(--ink) so it reads in BOTH themes. ---- */

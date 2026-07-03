@@ -31,6 +31,7 @@ from dash import Dash, dcc, html, dash_table, Input, Output, State, ALL, ctx
 from dash.development.base_component import Component
 
 from data import table, meta_value
+from components import icon as svg_icon, info as info_tooltip   # WP-03 design-system primitives
 
 # ---- palette (mirrors assets/theme.css; SHARP RED/GREEN quant-terminal retheme 2026-06-19) ----
 # HARD RULE: every CHART uses ONLY green / red / neutral. Positive = bright GREEN, negative = bright RED,
@@ -1465,7 +1466,9 @@ PAPER_NET_TIP = ("Avg net cents/contract a simulated trade would earn after mode
 
 
 def info_dot(tip=PAPER_NET_TIP):
-    return html.Span("ⓘ", className="info-dot", title=tip)
+    # WP-03: delegate to the keyboard-focusable, touch-friendly CSS tooltip (tokens.css .info2). Replaces the
+    # native title= dot (invisible on touch, 1s hover delay). One helper -> every info dot on the site upgrades.
+    return info_tooltip(tip)
 
 
 def _run_meta(key, default="—"):
@@ -2759,9 +2762,10 @@ def section(title):
     return html.Div(title, className="page-title")
 
 
-def empty_state(msg, icon="◴"):
-    """Standard empty panel: icon + 'fills when X runs' message."""
-    return html.Div([html.Div(icon, className="es-ic"), html.Div(msg, className="es-msg")],
+def empty_state(msg, icon=None):
+    """Standard empty panel: icon + 'fills when X runs' message. WP-03: unicode glyph -> SVG clock."""
+    ic = icon if icon is not None else svg_icon("clock", size=24)
+    return html.Div([html.Div(ic, className="es-ic"), html.Div(msg, className="es-msg")],
                     className="empty-state")
 
 
@@ -4180,6 +4184,15 @@ def _system_status():
                      className="sb-item sb-ok")
 
 
+def paper_banner():
+    """WP-03: one persistent honesty banner under the topbar. Because it's always on screen, the repeated
+    'never realized P&L' tail can come off individual one-line captions (full caveats stay in each card)."""
+    return html.Div([html.Span("PAPER RESEARCH", className="pb-tag"),
+                     html.Span(" — simulated results on public data. No orders, no account, no real money, "
+                               "never realized P&L.", className="pb-text")],
+                    className="paper-banner")
+
+
 def statusbar():
     return html.Div(className="statusbar", children=[
         html.Span([html.Span(className="dot"), "DATA STREAM"], className="sb-item"),
@@ -4189,10 +4202,15 @@ def statusbar():
         html.Span(_system_status(), id="status-verdict")])
 
 
+_NAV_ICON = {"overview": "overview", "bankroll": "run", "markets": "markets", "model": "model",
+             "edges": "edges", "capacity": "capacity", "lab": "lab", "methodology": "methodology"}
+
+
 def sidebar():
     # WP-02: real links (dcc.Link -> <a href>). Deep-linkable + browser back/forward work; active state is
-    # driven by the URL in _nav_style.
-    items = [dcc.Link([html.Span(ic, className="ic"), html.Span(lbl)], href=KEY_TO_PATH[k],
+    # driven by the URL in _nav_style. WP-03: unicode glyphs -> inline-SVG icon set (consistent across OS).
+    items = [dcc.Link([html.Span(svg_icon(_NAV_ICON.get(k, "chevron"), size=17), className="ic"),
+                       html.Span(lbl)], href=KEY_TO_PATH[k],
                       className="nav-item", id={"type": "nav", "key": k}) for k, ic, lbl in NAV]
     items.append(html.Div([html.Div("BOT ENGINE", className="lbl"),
                            html.Div([html.Span(className="dot"), html.Span("RUNNING", className="st")]),
@@ -4206,6 +4224,7 @@ app.layout = html.Div([
     dcc.Store(id="theme-store", storage_type="local", data="dark"),
     dcc.Interval(id="tick", interval=60_000, n_intervals=0),
     topbar(),
+    paper_banner(),
     html.Div(className="shell", children=[sidebar(), html.Div(id="main", className="main")]),
     statusbar(),
 ])
