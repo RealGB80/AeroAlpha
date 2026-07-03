@@ -1,0 +1,102 @@
+/* ============================================================
+   AeroAlpha — DESIGN TOKENS v2 (redesign infrastructure, 2026-07-02)
+   Additive layer: new custom properties + utility classes that nothing
+   references yet (adopted by the WP-03 design-system pass). The ONLY
+   behavioral rule in this file is the light-theme chart inset at the
+   bottom, which fixes the broken light mode (charts are rendered with
+   dark-theme colors server-side; in light mode they sit on a dark
+   instrument surface instead of becoming illegible).
+   ============================================================ */
+:root {
+  /* spacing scale (4px base) — snap all new margins/paddings to these */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
+
+  /* type ramp v2 (11px floor — no UI text below --fs-xs2) */
+  --fs-xs2: 11px;      /* micro-labels, chips (floor) */
+  --fs-s2:  12.5px;    /* body / captions */
+  --fs-m2:  13.5px;    /* card titles, table cells */
+  --fs-l2:  18px;      /* section heads */
+  --fs-xl2: 26px;      /* KPI values */
+
+  /* radii + borders */
+  --r-s: 6px; --r-m: 10px; --r-l: 14px;
+
+  /* z-index scale */
+  --z-card: 1; --z-scope: 15; --z-topbar: 30; --z-menu: 1000; --z-tip: 1100;
+
+  /* motion (the only three durations) */
+  --t-hover: 120ms; --t-route: 200ms; --t-bar: 300ms;
+
+  /* per-stream distinct hues (sanctioned exception to green/red/neutral —
+     used ONLY where streams must be told apart on one chart) */
+  --stream-ny-high:  #00e08a;
+  --stream-lax-high: #36c5f0;
+  --stream-chi-high: #d9a23a;
+  --stream-mia-high: #5fd0c0;
+  --stream-ny-low:   #9ad04a;
+  --stream-aus-low:  #b07ff0;
+  --stream-lax-low:  #ff8a5b;
+  --stream-den-low:  #7fd6a0;
+  --stream-mia-low:  #e85f8a;
+}
+
+/* ---- utilities (inert until classes are applied by WP-03) -------------- */
+.row-baseline { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; }
+.row-center   { display: flex; align-items: center;   gap: var(--sp-2); flex-wrap: wrap; }
+.row-between  { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.stack        { display: flex; flex-direction: column; gap: var(--sp-3); }
+.chip-row     { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; }
+.metric-tile  { flex: 1; min-width: 96px; }
+
+/* panel v2 (components.panel) */
+.panel2 .p2-head { display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-2); margin-bottom: var(--sp-1); flex-wrap: wrap; }
+.panel2 .p2-title { font-size: var(--fs-m2); font-weight: 700; letter-spacing: .2px; margin: 0; }
+.panel2 .p2-cap { color: var(--dim); font-size: var(--fs-s2); line-height: 1.45;
+  margin: 0 0 var(--sp-2); }
+.panel2 details.drawer { margin-top: var(--sp-2); }
+.panel2 details.drawer > summary { cursor: pointer; color: var(--dim); font-size: var(--fs-xs2);
+  text-transform: uppercase; letter-spacing: var(--track); user-select: none; list-style: none; }
+.panel2 details.drawer > summary::before { content: "▸ "; }
+.panel2 details.drawer[open] > summary::before { content: "▾ "; }
+.panel2 details.drawer > div { color: var(--dim); font-size: var(--fs-s2); line-height: 1.5;
+  padding: var(--sp-2) 0 0; }
+
+/* CSS tooltip (components.info) — keyboard-focusable, touch-friendly */
+.info2 { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
+  border-radius: 50%; border: 1px solid var(--border-hi); color: var(--dim); font-size: 9.5px;
+  font-weight: 700; cursor: help; vertical-align: middle; margin-left: var(--sp-1);
+  position: relative; line-height: 1; }
+.info2:hover, .info2:focus-visible { color: var(--ink); border-color: var(--accent); outline: none; }
+.info2::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%;
+  transform: translateX(-50%); width: max-content; max-width: 300px; padding: 8px 10px;
+  background: var(--bg2); border: 1px solid var(--border-hi); border-radius: var(--r-s);
+  color: var(--ink); font-size: var(--fs-xs2); font-weight: 400; line-height: 1.45; text-align: left;
+  white-space: normal; opacity: 0; pointer-events: none; transition: opacity var(--t-hover) ease;
+  z-index: var(--z-tip); }
+.info2:hover::after, .info2:focus-visible::after { opacity: 1; }
+
+/* scope bar (components.scope_bar) — the multi-city selector chips */
+.scope-bar { position: sticky; top: 52px; z-index: var(--z-scope); display: flex; gap: var(--sp-2);
+  flex-wrap: wrap; padding: var(--sp-2) 0; margin-bottom: var(--sp-3);
+  background: linear-gradient(180deg, var(--bg), transparent); }
+.scope-chip { padding: 7px 13px; min-height: 32px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--panel-2); color: var(--dim); font-size: var(--fs-xs2); font-weight: 700;
+  letter-spacing: .3px; cursor: pointer; user-select: none;
+  transition: color var(--t-hover) ease, border-color var(--t-hover) ease; }
+.scope-chip:hover { color: var(--ink); border-color: var(--border-hi); }
+.scope-chip.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent); }
+
+/* small-multiples grid (WP-06) */
+.mini-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--gutter); }
+
+/* ---- ACTIVE RULE: light-theme chart inset (fixes illegible light mode) --
+   Figures are styled server-side for dark; in light mode they render on a
+   dark instrument surface ("instruments stay dark"), keeping them legible. */
+[data-theme="light"] .js-plotly-plot {
+  background: #0c0f11; border-radius: var(--r-m);
+  border: 1px solid rgba(40, 50, 60, 0.18);
+}
