@@ -295,12 +295,14 @@ def panel_fills_waterfall():
                                         html.Span(f"  n={int(r['n'])}", className="sub")]),
                               graph(_tpl(fig, h=230, legend=False))],
                              className="col-4"))
-    return card([html.H3("Fills-Realism Waterfall — Quoted Edge to Realized Net"),
-                 _cap("Per paper stream: the gross model edge at top-of-book, minus modeled fee and minus "
-                      "VWAP slippage, lands at the settled realized net. Net is paper/backtest c/contract "
-                      "on a thin settled sample (n shown) — never realized P&L. Negative streams (S3/S3early) "
-                      "show the fills reality: a quoted edge does not survive frictions."),
-                 html.Div(figs, className="grid12")])
+    return panel("Fills-Realism Waterfall — Quoted Edge to Realized Net",
+                 [html.Div(figs, className="grid12")],
+                 caption="Per stream: gross model edge minus modeled fee and VWAP slippage lands at the "
+                         "settled realized net (thin sample, never realized P&L).",
+                 drawer=("Per paper stream: the gross model edge at top-of-book, minus modeled fee and minus "
+                         "VWAP slippage, lands at the settled realized net. Net is paper/backtest c/contract "
+                         "on a thin settled sample (n shown) — never realized P&L. Negative streams "
+                         "(S3/S3early) show the fills reality: a quoted edge does not survive frictions."))
 
 
 def panel_divergence():
@@ -342,13 +344,15 @@ def panel_divergence():
     fig.update_layout(title=None)
     fig.update_xaxes(title="market mid (implied P)", range=[0, 1], tickformat=".0%")
     fig.update_yaxes(title="model P(yes)", range=[0, 1], tickformat=".0%")
-    return card([html.H3("Market-Divergence — Where We Fired vs the Market, by Outcome"),
-                 _cap("Each point is a scanned contract: our model P(yes) vs the market mid, colored by "
-                      "settled outcome (green = won, red = lost, dim = not yet settled). The strategy "
-                      "(S1/S3/S3early) is in the hover. On the dashed agreement line we have no view; the "
-                      "green band (model above market) is our buy-YES edge zone, red the opposite. "
-                      "Paper/forward scans only."),
-                 graph(_tpl(fig, h=360))])
+    return panel("Market-Divergence — Where We Fired vs the Market, by Outcome",
+                 [graph(_tpl(fig, h=360))],
+                 caption="Model P(yes) vs market mid per scanned contract, colored by settled outcome "
+                         "(green won / red lost / dim pending).",
+                 drawer=("Each point is a scanned contract: our model P(yes) vs the market mid, colored by "
+                         "settled outcome (green = won, red = lost, dim = not yet settled). The strategy "
+                         "(S1/S3/S3early) is in the hover. On the dashed agreement line we have no view; the "
+                         "green band (model above market) is our buy-YES edge zone, red the opposite. "
+                         "Paper/forward scans only."))
 
 
 def panel_edge_success():
@@ -399,12 +403,14 @@ def panel_edge_success():
     fig.update_layout(title=None)
     fig.update_xaxes(title="model edge magnitude  |edge|  (implied-prob)", tickformat=".0%")
     fig.update_yaxes(title="paper net ($ / contract)", tickprefix="$", tickformat="+.2f")
-    return card([html.H3("Edge vs Outcome — Does a Bigger Edge Pay?"),
-                 _cap("Each settled paper signal: model edge magnitude (x) vs realized paper NET per contract "
-                      "(y), colored by win/loss; the grey line is the binned mean. Success is paper RETURN "
-                      "(EV), NOT hit-rate — a big-edge longshot can lose often yet pay, so we measure dollars, "
-                      f"not wins. n={len(d)} settled, paper/forward, thin — directional only.{rtxt}"),
-                 graph(_tpl(fig, h=340))])
+    return panel("Edge vs Outcome — Does a Bigger Edge Pay?",
+                 [graph(_tpl(fig, h=340))],
+                 caption=(f"Model edge magnitude vs realized paper net per contract (win/loss + binned mean); "
+                          f"success = EV, not hit-rate. n={len(d)} settled.{rtxt}"),
+                 drawer=("Each settled paper signal: model edge magnitude (x) vs realized paper NET per "
+                         "contract (y), colored by win/loss; the grey line is the binned mean. Success is paper "
+                         "RETURN (EV), NOT hit-rate — a big-edge longshot can lose often yet pay, so we measure "
+                         f"dollars, not wins. n={len(d)} settled, paper/forward, thin — directional only.{rtxt}"))
 
 
 def panel_pit():
@@ -631,13 +637,15 @@ def panel_brier_decomp():
                    f"Its reliability term ({float(md['reliability'].iloc[0]):.4f}) is the calibration penalty "
                    f"(lower = better); its resolution ({float(md['resolution'].iloc[0]):.4f}) is the "
                    f"discrimination credit (higher = better). ")
-    return card([html.H3("Brier Decomposition (Murphy) — Why the Model Scores Well"),
-                 _cap(f"{verdict}Brier = reliability − resolution + uncertainty over n={n} settled paper "
-                      f"signals. RED reliability is a penalty (low = calibrated); GREEN resolution is a "
-                      f"credit (high = discriminates winners from losers); NEUTRAL uncertainty is the "
-                      f"irreducible base-rate term, shared by both. Small sample — paper/backtest, the same "
-                      f"settled set the forward gates accumulate."),
-                 graph(_tpl(fig, h=340))])
+    return panel("Brier Decomposition (Murphy) — Why the Model Scores Well",
+                 [graph(_tpl(fig, h=340))],
+                 caption=(f"{verdict}Brier = reliability − resolution + uncertainty over n={n} settled "
+                          f"paper signals."),
+                 drawer=(f"{verdict}Brier = reliability − resolution + uncertainty over n={n} settled paper "
+                         f"signals. RED reliability is a penalty (low = calibrated); GREEN resolution is a "
+                         f"credit (high = discriminates winners from losers); NEUTRAL uncertainty is the "
+                         f"irreducible base-rate term, shared by both. Small sample — paper/backtest, the same "
+                         f"settled set the forward gates accumulate."))
 
 
 def panel_lead_decay():
@@ -692,11 +700,13 @@ def panel_fan():
     fig.update_yaxes(title="daily high (°F)", ticksuffix="°F")
     fig.update_xaxes(title="", nticks=8)
     cov = ((d["observed_f"] >= d["lo1"]) & (d["observed_f"] <= d["hi1"])).mean()
-    return card([html.H3("Forecast Fan — Predictive Band vs Realized High"),
-                 _cap(f"Deployed day-ahead forecast (σ=1.66°F one-day-ahead) with ±1σ/±2σ predictive bands; "
-                      f"dots are the realized settlement high. Over these {len(d)} days {100*cov:.0f}% of "
-                      f"realized highs land inside ±1σ (well-calibrated band ≈ 68%). Backtest replay."),
-                 graph(_tpl(fig, h=340))])
+    return panel("Forecast Fan — Predictive Band vs Realized High",
+                 [graph(_tpl(fig, h=340))],
+                 caption=(f"Day-ahead forecast ±1σ/±2σ vs realized settlement highs; over {len(d)} days "
+                          f"{100*cov:.0f}% land inside ±1σ (≈68% is well-calibrated)."),
+                 drawer=(f"Deployed day-ahead forecast (σ=1.66°F one-day-ahead) with ±1σ/±2σ predictive bands; "
+                         f"dots are the realized settlement high. Over these {len(d)} days {100*cov:.0f}% of "
+                         f"realized highs land inside ±1σ (well-calibrated band ≈ 68%). Backtest replay."))
 
 
 def panel_surprise():
@@ -764,13 +774,15 @@ def panel_surprise():
     fig.update_xaxes(title="", showticklabels=False, nticks=12)
     fig.update_yaxes(title="", autorange="reversed")
     mae = float(d["error_f"].abs().mean())
-    return card([html.H3("Settlement-Surprise Calendar — Forecast Closeness"),
-                 _cap(f"GitHub-style date grid colored by how CLOSE the forecast was on each of ~{len(d)} "
-                      f"settled days. The color scale is HIGH-RESOLUTION in the 0–3°F band (green → teal → "
-                      f"yellow-green → amber) so small day-to-day deviations are distinguishable, with RED "
-                      f"reserved for larger |error| (>3°F) surprise days; slate-gray = no settled data. Mean "
-                      f"absolute error {mae:.2f}°F. Red clusters reveal regime surprises. Backtest."),
-                 graph(_tpl(fig, h=240, legend=False))])
+    return panel("Settlement-Surprise Calendar — Forecast Closeness",
+                 [graph(_tpl(fig, h=240, legend=False))],
+                 caption=(f"Date grid colored by forecast closeness over ~{len(d)} settled days (green = "
+                          f"close, red = >3°F miss); mean absolute error {mae:.2f}°F."),
+                 drawer=(f"GitHub-style date grid colored by how CLOSE the forecast was on each of ~{len(d)} "
+                         f"settled days. The color scale is HIGH-RESOLUTION in the 0–3°F band (green → teal → "
+                         f"yellow-green → amber) so small day-to-day deviations are distinguishable, with RED "
+                         f"reserved for larger |error| (>3°F) surprise days; slate-gray = no settled data. Mean "
+                         f"absolute error {mae:.2f}°F. Red clusters reveal regime surprises. Backtest."))
 
 
 def panel_blotter():
@@ -784,11 +796,13 @@ def panel_blotter():
                         "entry": lambda v: "—" if _isnull(v) else f"{v:.2f}",
                         "win": lambda v: "WIN" if v == 1 else ("LOSS" if v == 0 else "—")},
                    order=["city", "stream", "ticker", "side", "model_edge_c", "entry", "net_c", "win"])
-    return card([html.H3(["Trade Blotter — Recent Settled Paper Signals  ", info_dot()]),
-                 _cap("The last settled paper signals across streams/cities: model edge at entry, effective "
-                      "entry price, realized paper net, and win/loss. Individual outcomes are noisy (small "
-                      "stakes, thin sample); the edge lives in the average, not any one row. Paper/forward."),
-                 pro_table(show, present_df=False, align_left=("Win",))])
+    return panel(["Trade Blotter — Recent Settled Paper Signals  ", info_dot()],
+                 [pro_table(show, present_df=False, align_left=("Win",))],
+                 caption="The last settled paper signals: model edge at entry, entry price, realized net, "
+                         "win/loss. The edge lives in the average, not any one row.",
+                 drawer=("The last settled paper signals across streams/cities: model edge at entry, effective "
+                         "entry price, realized paper net, and win/loss. Individual outcomes are noisy (small "
+                         "stakes, thin sample); the edge lives in the average, not any one row. Paper/forward."))
 
 
 def panel_funnel():
@@ -803,11 +817,13 @@ def panel_funnel():
                               connector=dict(line=dict(color=GRIDCOL, width=1)),
                               hovertemplate="%{y}<br>%{x} signals<extra></extra>"))
     fig.update_layout(title=None, margin=dict(l=160, r=20, t=10, b=20))
-    return card([html.H3("Signal Funnel — Candidate to Net-Positive"),
-                 _cap("How many scanned contracts survive each gate: a model disagreement, the spread+size "
-                      "filters, depth/fillability, and finally a settled net-positive outcome. Most "
-                      "candidates are filtered out by design — selectivity is the point. Paper counts."),
-                 graph(_tpl(fig, h=300, legend=False))])
+    return panel("Signal Funnel — Candidate to Net-Positive",
+                 [graph(_tpl(fig, h=300, legend=False))],
+                 caption="How scanned contracts narrow through each gate to a settled net-positive outcome — "
+                         "selectivity is the point.",
+                 drawer=("How many scanned contracts survive each gate: a model disagreement, the spread+size "
+                         "filters, depth/fillability, and finally a settled net-positive outcome. Most "
+                         "candidates are filtered out by design — selectivity is the point. Paper counts."))
 
 
 def panel_decay():
@@ -829,11 +845,14 @@ def panel_decay():
     fig.update_layout(title=None)
     fig.update_yaxes(title="running mean net (c / contract)", ticksuffix="c", tickformat="+.0f")
     fig.update_xaxes(title="settled signal # (chronological)")
-    return card([html.H3("Edge Decay — Running Mean Net per Stream"),
-                 _cap("Cumulative-mean realized net as each settled paper signal lands, per stream. A line "
-                      "drifting toward or below zero is an edge decaying or never-real (the early-warning we "
-                      "want before committing). Thin samples — directional, not conclusive. Paper/backtest."),
-                 graph(_tpl(fig, h=300))])
+    return panel("Edge Decay — Running Mean Net per Stream",
+                 [graph(_tpl(fig, h=300))],
+                 caption="Cumulative-mean realized net per stream as signals settle — a line drifting toward "
+                         "zero is an edge decaying or never-real.",
+                 drawer=("Cumulative-mean realized net as each settled paper signal lands, per stream. A line "
+                         "drifting toward or below zero is an edge decaying or never-real (the early-warning "
+                         "we want before committing). Thin samples — directional, not conclusive. "
+                         "Paper/backtest."))
 
 
 def panel_latency():
@@ -1155,11 +1174,13 @@ def panel_city_network():
                     showlakes=False, framecolor="rgba(0,0,0,0)")
     fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=340, paper_bgcolor="rgba(0,0,0,0)",
                       geo=dict(bgcolor="rgba(0,0,0,0)"))
-    return card([html.H3("City Network — Day-Ahead Forecast & Paper Edge"),
-                 _cap("The seven Kalshi daily-high cities at their settlement stations. Node size = "
-                      "validated paper S1 edge magnitude; color = deployed status (green tradable / amber "
-                      "watch / slate not-deployed). Arcs are illustrative. Paper/forward, never live P&L."),
-                 graph(fig)])
+    return panel("City Network — Day-Ahead Forecast & Paper Edge",
+                 [graph(fig)],
+                 caption="Kalshi daily-high cities at their settlement stations; node size = paper S1 edge, "
+                         "color = deployed status.",
+                 drawer=("The seven Kalshi daily-high cities at their settlement stations. Node size = "
+                         "validated paper S1 edge magnitude; color = deployed status (green tradable / amber "
+                         "watch / slate not-deployed). Arcs are illustrative. Paper/forward, never live P&L."))
 
 
 # WP-01 interim: CHI-high is deployed COLD-ONLY (see CLAUDE.md / monitor_multicity_s1). Until WP-05 adds a
@@ -1271,12 +1292,14 @@ def panel_strategy_perf():
                         "pf": lambda v: "—" if _isnull(v) else f"{v:.2f}", "n": _intf,
                         "status": lambda v: str(v).upper()},
                    order=["strategy", "edge_c", "win_rate", "pf", "n", "status", "note"])
-    return card([html.H3(["Strategy Performance — Paper Streams  ", info_dot()]),
-                 _cap("Every paper stream: validated edge (c/contract), win-rate, profit factor, deploy "
-                      "status, and the honest one-line note. TRADABLE = live paper signal; WATCH = logged "
-                      "not trusted; DEPRIORITIZED = real but not bankable. Paper/backtest, never live P&L."),
-                 pro_table(show, present_df=False, align_left=("Strategy", "Status", "Note"))],
-                id="strategy-perf-card")
+    return panel(["Strategy Performance — Paper Streams  ", info_dot()],
+                 [pro_table(show, present_df=False, align_left=("Strategy", "Status", "Note"))],
+                 caption="Every paper stream: validated edge, win-rate, profit factor, deploy status, and an "
+                         "honest one-line note.",
+                 drawer=("Every paper stream: validated edge (c/contract), win-rate, profit factor, deploy "
+                         "status, and the honest one-line note. TRADABLE = live paper signal; WATCH = logged "
+                         "not trusted; DEPRIORITIZED = real but not bankable. Paper/backtest, never live P&L."),
+                 id="strategy-perf-card")
 
 
 # ---------- Quant Lab page panels ----------
@@ -1451,12 +1474,14 @@ def panel_dailylow_edge():
     fig.update_layout(title=None)
     fig.update_yaxes(title="daily-low S1 net (c / contract)", ticksuffix="c", tickformat="+,.0f")
     fig.update_xaxes(title="")
-    return card([html.H3("Daily-Low S1 Edge — the Orthogonal Overnight Book"),
-                 _cap("Validated daily-LOW S1 net per city with 95% bootstrap CIs (green = TRADABLE, amber = "
-                      "WATCH). The overnight-low market is roughly orthogonal to the daily high — a real "
-                      "diversifier. The edge concentrates in the cold season; recent-quarter is the forward "
-                      "decay watch. Paper/backtest, never realized P&L."),
-                 graph(_tpl(fig, h=320, legend=False))])
+    return panel("Daily-Low S1 Edge — the Orthogonal Overnight Book",
+                 [graph(_tpl(fig, h=320, legend=False))],
+                 caption="Validated daily-LOW S1 net per city with 95% CIs (green tradable / amber watch) — "
+                         "a diversifier roughly orthogonal to the daily high.",
+                 drawer=("Validated daily-LOW S1 net per city with 95% bootstrap CIs (green = TRADABLE, amber "
+                         "= WATCH). The overnight-low market is roughly orthogonal to the daily high — a real "
+                         "diversifier. The edge concentrates in the cold season; recent-quarter is the forward "
+                         "decay watch. Paper/backtest, never realized P&L."))
 
 
 # ============================================================================================
@@ -1970,13 +1995,15 @@ def panel_equity_composition():
         style={"flex": "1", "minWidth": "260px", "paddingLeft": "8px"})
     body = html.Div([html.Div(graph(fig), style={"flex": "0 0 250px", "minWidth": "220px"}), legend],
                     style={"display": "flex", "alignItems": "center", "gap": "16px", "flexWrap": "wrap"})
-    return card([html.H3("Cash vs Positions"),
-                 _cap("How the $1,000 paper net equity splits. CASH = uninvested bankroll ($1,000 + realized − "
-                      "cost of open positions). IN POSITIONS = current market value of what we hold (cost + "
-                      "unrealized). The two always sum to net equity. REALIZED P&L is locked in once a market "
-                      "SETTLES; UNREALIZED is the still-moving paper mark on positions we still hold (not real "
-                      "until they settle). Paper only — never real money."),
-                 body])
+    return panel("Cash vs Positions",
+                 [body],
+                 caption="How the $1,000 paper equity splits into cash vs open-position market value "
+                         "(realized locked-in, unrealized still moving with quotes).",
+                 drawer=("How the $1,000 paper net equity splits. CASH = uninvested bankroll ($1,000 + realized "
+                         "− cost of open positions). IN POSITIONS = current market value of what we hold (cost + "
+                         "unrealized). The two always sum to net equity. REALIZED P&L is locked in once a market "
+                         "SETTLES; UNREALIZED is the still-moving paper mark on positions we still hold (not "
+                         "real until they settle). Paper only — never real money."))
 
 
 # ---- TASK B (2026-06-21): value-vs-paid intraday curve per RESOLUTION DATE, with a current/next toggle ----
@@ -3278,8 +3305,12 @@ def panel_scalability_curve():
                 html.Div(lines, style={"padding": "14px 4px 6px"})],
                 className="col-6 card",
                 style={"borderColor": "color-mix(in srgb, var(--amber) 22%, transparent)"}))
-    children = [html.H3("Scalability Curve — Net Edge vs Order Size"),
-                _cap("Units: every contract count is PER-MARKET (per-strike, per-day). Each city lists ~2–3 "
+    return panel("Scalability Curve — Net Edge vs Order Size",
+                [html.Div(figs, className="grid12")],
+                caption="Net edge after fills vs order size (per-market). All three deployed high cities have a "
+                        "real fill curve; the rest show 'confirmed ≥25ct, curve accruing' with no fabricated "
+                        "ceiling.",
+                drawer=("Units: every contract count is PER-MARKET (per-strike, per-day). Each city lists ~2–3 "
                      "strikes/day, each its own market with its own book; MONTHLY throughput ≈ per-market "
                      "depth × ~2–3 strikes/day × ~21 trading days. All THREE deployed high cities now have a "
                      "real per-size fill curve: NY-high from the median LOCK-MOMENT signal book, and LAX-high "
@@ -3291,9 +3322,7 @@ def panel_scalability_curve():
                      "stream) are NOT in this archive — they keep the honest 'confirmed ≥25ct, curve ACCRUING' "
                      "state with NO fabricated ceiling. Cent-floor & near-certain books are excluded, so no "
                      "tick-floor ceiling can appear. Model edge held fixed = the FILLS side of capacity only. "
-                     "Paper / public-data read — never realized P&L."),
-                html.Div(figs, className="grid12")]
-    return card(children)
+                     "Paper / public-data read — never realized P&L."))
 
 
 def panel_scalability_headroom():
@@ -3365,18 +3394,20 @@ def panel_scalability_headroom():
                 graph(_tpl(fig, h=200, legend=False)),
                 html.Div("≥25ct confirmed; per-tier depth cap not yet measurable (curve accruing).",
                          className="sub", style={"fontSize": "9.5px"})], className="col-4"))
-    return card([html.H3("Bankroll Headroom — Where Depth Stops Linear Scaling"),
-                 _cap("Contracts here are PER-MARKET (per-strike, per-day). The light ghost bar = contracts a "
-                      "flat 5%-of-bankroll stake would want at each tier; the solid bar = what the book actually "
-                      "fills within the net-positive size. All three deployed high cities have a measured depth "
-                      "cap now (NY-high from its lock-moment curve, LAX-high + CHI-high from the 9-day STANDING-"
-                      "book archive — periodic snapshot, not lock-moment): where the solid bar is shorter "
-                      "(red ▲), DEPTH binds — more bankroll buys NO extra size and profit plateaus. The "
-                      "remaining streams (daily-LOW books + MIA-high watch) show only 'bankroll wants' "
+    return panel("Bankroll Headroom — Where Depth Stops Linear Scaling",
+                 [html.Div(facets, className="grid12")],
+                 caption="Per-market: ghost bar = what a flat 5% stake wants, solid bar = what the book fills. "
+                         "Where the solid bar is shorter (red ▲), depth binds and profit plateaus.",
+                 drawer=("Contracts here are PER-MARKET (per-strike, per-day). The light ghost bar = contracts "
+                      "a flat 5%-of-bankroll stake would want at each tier; the solid bar = what the book "
+                      "actually fills within the net-positive size. All three deployed high cities have a "
+                      "measured depth cap now (NY-high from its lock-moment curve, LAX-high + CHI-high from the "
+                      "9-day STANDING-book archive — periodic snapshot, not lock-moment): where the solid bar "
+                      "is shorter (red ▲), DEPTH binds — more bankroll buys NO extra size and profit plateaus. "
+                      "The remaining streams (daily-LOW books + MIA-high watch) show only 'bankroll wants' "
                       "(translucent) because their per-tier depth cap is still ACCRUING (≥25ct confirmed) — we "
                       "do not plot a fabricated cap. Illustrative flat 5% stake, NOT the live Kelly engine. "
-                      "Paper / public-data read — never realized P&L."),
-                 html.Div(facets, className="grid12")])
+                      "Paper / public-data read — never realized P&L."))
 
 
 # ============================== PAGES ==============================
