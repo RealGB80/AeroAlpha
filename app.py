@@ -152,6 +152,10 @@ def _render_page(key):
 
 
 def _prewarm_loop():
+    # WP-08: stagger each gunicorn worker's first sweep so N workers don't rebuild all pages in lockstep
+    # (a thundering herd against Neon on cold start). Jitter is per-process, once.
+    import random
+    time.sleep(random.uniform(0, 12))
     while True:
         for key in list(RENDER.keys()):
             try:
@@ -817,7 +821,7 @@ def panel_decay():
             continue
         cummean = sub["net_c"].expanding().mean()
         fig.add_scatter(x=sub["seq"], y=cummean, mode="lines+markers", name=f"{strat} (cum. mean)",
-                        line=dict(color=color, width=2, shape="spline", smoothing=0.4),
+                        line=dict(color=color, width=2, shape="linear"),
                         marker=dict(size=4),
                         hovertemplate=strat + " · signal %{x}<br>running net %{y:+.2f} c/ct<extra></extra>")
     fig.add_hline(y=0, line=dict(color=AXISCOL, width=1, dash="dot"))
@@ -882,40 +886,31 @@ def panel_emos_skill():
 
 
 def panel_brier_gauges():
-    """Per-city Brier skill-score radial gauges: model vs market (skill = 1 - model/market)."""
+    """Per-city Brier skill vs market as horizontal BULLET BARS (WP-09: replaced the six radial gauges —
+    low data-ink, hard to compare — with one sorted bar row, zero line, green/red by sign)."""
     d = table("brier_gauge")
     if d.empty:
-        return card([html.H3("Brier Skill Gauges"), empty_state("Fills from the multi-city edge run.")])
-    d = d.sort_values("skill", ascending=False).reset_index(drop=True)
-    n = len(d)
-    cols = min(n, 6)
+        return card([html.H3("Brier Skill vs Market — Per City"),
+                     empty_state("Fills from the multi-city edge run.")])
+    d = d.sort_values("skill", ascending=True).reset_index(drop=True)   # ascending -> best at top on a barh
+    sk = [float(v) * 100.0 for v in d["skill"]]
+    colors = [GREEN if v > 0 else RED for v in sk]
     fig = go.Figure()
-    for i, (_, r) in enumerate(d.iterrows()):
-        sk = float(r["skill"]) * 100.0
-        col = MINT if sk > 0 else RED
-        fig.add_trace(go.Indicator(
-            mode="gauge+number", value=sk,
-            number={"suffix": "%", "font": {"size": 20, "color": col}},
-            title={"text": f"{r['city']}", "font": {"size": 12, "color": INK}},
-            gauge={"axis": {"range": [-8, 8], "tickwidth": 1, "tickcolor": AXISCOL,
-                            "tickfont": {"size": 8, "color": DIM}},
-                   "bar": {"color": col, "thickness": 0.7},
-                   "bgcolor": "rgba(0,0,0,0)", "borderwidth": 0,
-                   "steps": [{"range": [-8, 0], "color": "rgba(234,57,67,.10)"},
-                             {"range": [0, 8], "color": "rgba(22,199,132,.10)"}],
-                   "threshold": {"line": {"color": DIM, "width": 1.5}, "thickness": 0.8, "value": 0}},
-            domain={"row": 0, "column": i}))
-    fig.update_layout(grid={"rows": 1, "columns": cols, "pattern": "independent"},
-                      template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
-                      plot_bgcolor="rgba(0,0,0,0)", margin=dict(l=10, r=10, t=30, b=10), height=180,
-                      font=dict(color=INK, family="Inter, system-ui"))
+    fig.add_bar(y=list(d["city"]), x=sk, orientation="h", marker_color=colors, width=0.62,
+                text=[f"{v:+.1f}%" for v in sk], textposition="outside", cliponaxis=False,
+                textfont=dict(size=11, color=INK),
+                hovertemplate="<b>%{y}</b><br>Brier skill %{x:+.1f}% vs market<extra></extra>")
+    fig.add_vline(x=0, line=dict(color=DIM, width=1.2, dash="dot"))
+    lim = max(8.0, max(abs(v) for v in sk) * 1.25)
+    fig.update_xaxes(title="Brier skill vs market (%)", range=[-lim, lim], ticksuffix="%")
+    fig.update_yaxes(title="")
     return card([html.H3("Brier Skill vs Market — Per City"),
                  _cap("Brier skill score = 1 − (model Brier ÷ market Brier) on ALL settled day-ahead "
                       "contracts; positive (green) = our probabilities beat the market on aggregate accuracy. "
                       "Only NY clears on this raw-skill aggregate — the validated multi-city S1 edge comes "
                       "from the market's overconfidence on selected contracts, not raw skill everywhere. "
                       "Honest framing, paper/backtest."),
-                 graph(fig)])
+                 graph(_tpl(fig, h=max(180, 40 + 30 * len(d)), legend=False))])
 
 
 # ============================================================================================
@@ -1291,7 +1286,7 @@ def panel_equity_curve():
     last = float(d["equity_c"].iloc[-1])
     eqcol = GREEN if last >= 0 else RED
     fig.add_scatter(x=d["date"], y=d["equity_c"], mode="lines", name="paper S1 (backtest)",
-                    line=dict(color=eqcol, width=2.2, shape="spline", smoothing=0.4),
+                    line=dict(color=eqcol, width=2.2, shape="linear"),
                     fill="tozeroy", fillcolor=f"rgba({_rgb(eqcol)},.10)",
                     customdata=d["trades"],
                     hovertemplate="%{x}<br>cumulative %{y:+,.0f}c"
@@ -1787,7 +1782,7 @@ def _equity_figure(window_label, kelly_overlay=False):
     col = GREEN if raw >= 0 else RED
     # SMOOTH spline for the live realized+unrealized timeline; hv-step for realized-only marks; linear else.
     if source == "timeline":
-        line_kw = dict(color=col, width=2.4, shape="spline", smoothing=0.4)
+        line_kw = dict(color=col, width=2.4, shape="linear")
     elif source == "marks":
         line_kw = dict(color=col, width=2.4, shape="hv")
     else:
@@ -1837,7 +1832,7 @@ def _equity_figure(window_label, kelly_overlay=False):
             all_y += hist_y + fwd_y
             lbl = f"{kf:.2f}x Kelly" + ("  (deployed)" if abs(kf - kdep) < 1e-9 else "")
             fig.add_scatter(x=xs, y=hist_y, mode="lines", name=lbl, legendgroup=lbl,
-                            line=dict(color=ckf, width=wkf, shape="spline", smoothing=0.35),
+                            line=dict(color=ckf, width=wkf, shape="linear"),
                             hovertemplate="%{x|%b %d %H:%M} ET<br>$%{y:,.2f}<br>" + f"{kf:.2f}x Kelly<extra></extra>")
             fig.add_scatter(x=fwd_x, y=fwd_y, mode="lines", name=lbl, legendgroup=lbl, showlegend=False,
                             line=dict(color=ckf, width=wkf, dash="dot"),
@@ -1999,9 +1994,25 @@ def _resolution_dates_past():
     return sorted((d for d in _resolution_dates_all() if d < today), reverse=True)
 
 
+_RESDAY_MEMO: dict = {}   # WP-08: (resolution_date, 20s-bucket) -> summary; collapses the ~10 repeat calls
+                          # per $1k render (net-per-day block + book summary + sections) to one filter/sort.
+
+
 def _resday_summary(resolution_date):
     """Latest-ts totals for one resolution date from resolution_day_curve: dict(paid$, value$, net$, pct,
     n_pos, n_ct) or None. The last ts row holds the current cumulative paid / value / contracts."""
+    _bucket = int(time.time() // 20)   # <=20s staleness on a paper mark -> fine; bounds repeated work
+    _key = (str(resolution_date), _bucket)
+    if _key in _RESDAY_MEMO:
+        return _RESDAY_MEMO[_key]
+    if len(_RESDAY_MEMO) > 256:        # keep the memo from growing unbounded across buckets
+        _RESDAY_MEMO.clear()
+    val = _resday_summary_uncached(resolution_date)
+    _RESDAY_MEMO[_key] = val
+    return val
+
+
+def _resday_summary_uncached(resolution_date):
     d = table("resolution_day_curve")
     if d.empty or "resolution_date" not in d.columns or "ts" not in d.columns:
         return None
@@ -2150,7 +2161,10 @@ def panel_resolution_day_curve():
                  "quotes, or the settled payout once resolved); the dotted line = cumulative PRICE PAID (cost "
                  "basis, steps up as positions are entered). Band is GREEN when value > paid, RED when under. "
                  "Each spans 12:01 AM the day before through 11:59 PM the resolution day (ET). Settled past days "
-                 "move to the dropdown at the bottom. PAPER / UNREALIZED — $0 real, no orders.")
+                 "move to the dropdown at the bottom. NOTE: each day's net here is the LIFETIME value − paid on "
+                 "just the positions resolving THAT date — a different measure from the whole-book Daily Equity "
+                 "Change calendar above (that day's total-equity swing), so the two 'today' figures differ by "
+                 "construction. PAPER / UNREALIZED — $0 real, no orders.")
     bs = _resday_book_summary(dates)
     book = []
     if bs:
@@ -2194,7 +2208,7 @@ def panel_daily_pnl():
     the squares SUM EXACTLY to equity − $1,000 = the run's total P&L. PAPER, no real money."""
     et = table("bankroll_equity_timeline")
     if et.empty or "ts" not in et.columns or "equity" not in et.columns:
-        return card([html.H3("Daily Paper P&L Calendar"),
+        return card([html.H3("Daily Equity Change — Whole-Book Calendar"),
                      empty_state("Fills as the $1k equity series accumulates.")])
     import pandas as _pd
     e = et.copy()
@@ -2202,7 +2216,7 @@ def panel_daily_pnl():
     e["equity"] = _pd.to_numeric(e["equity"], errors="coerce")
     e = e.dropna(subset=["dt", "equity"]).sort_values("dt")
     if e.empty:
-        return card([html.H3("Daily Paper P&L Calendar"), empty_state("No equity data yet.")])
+        return card([html.H3("Daily Equity Change — Whole-Book Calendar"), empty_state("No equity data yet.")])
     e["date"] = e["dt"].dt.tz_convert(_DISPLAY_TZ).dt.strftime("%Y-%m-%d")   # ET calendar day
     daily = e.groupby("date", sort=True)["equity"].last().reset_index()
     start = float(_run_meta("bankroll_start", 1000.0) or 1000.0)
@@ -2268,11 +2282,14 @@ def panel_daily_pnl():
     vals = list(data_by_date.values())
     tot = float(sum(p for p, _ in vals)); nd = len(vals)
     wins = sum(1 for p, _ in vals if p > 0); losses = sum(1 for p, _ in vals if p < 0)
-    return card([html.H3("Daily Paper P&L Calendar"),
-                 _cap(f"One SQUARE per calendar day with data, colored by that day's paper P&L = the change in "
-                      f"$1,000 equity over the day (GREEN = up, AMBER = flat, RED = down); upcoming days show "
-                      f"GRAY (no data yet). From the authoritative equity series, so the squares SUM EXACTLY to "
-                      f"the run total. {nd} days · {wins} up / {losses} down · cumulative "
+    return card([html.H3("Daily Equity Change — Whole-Book Calendar"),
+                 _cap(f"One SQUARE per calendar day, colored by that day's change in TOTAL $1,000 equity "
+                      f"(GREEN = up, AMBER = flat, RED = down); upcoming days show GRAY. This is the "
+                      f"WHOLE-BOOK daily swing — every open position marked to quotes, plus anything that "
+                      f"settled that day — so it SUMS EXACTLY to equity − $1,000. It is a DIFFERENT measure "
+                      f"from the per-resolution-day 'value vs paid' below (which is one settlement date's "
+                      f"LIFETIME net on just the positions resolving that date), so the two 'today' numbers "
+                      f"are not expected to match. {nd} days · {wins} up / {losses} down · cumulative "
                       f"{'+' if tot >= 0 else '−'}${abs(tot):,.2f} (= equity − $1,000). PAPER — $0 real, "
                       f"no orders."),
                  graph(_tpl(fig, h=240, legend=False))])
@@ -2781,7 +2798,7 @@ def fmt(value, unit, dash="—"):
     if _isnull(value):
         return dash, ""
     if unit == "$":
-        return f"${value:,.0f}", ""
+        return (f"${value:,.2f}" if abs(value) < 10000 else f"${value:,.0f}"), ""   # WP-09: cents under $10k
     if unit in ("c/contract", "c/ct"):
         return f"{value:+.2f}", " c/ct"
     if unit in ("F", "°F"):
@@ -4320,12 +4337,14 @@ def sidebar():
 
 
 app.layout = html.Div([
+    html.A("Skip to content", href="#main", className="skip-link"),   # WP-07: keyboard skip link
     dcc.Location(id="url", refresh=False),
     dcc.Store(id="theme-store", storage_type="local", data="dark"),
     dcc.Interval(id="tick", interval=60_000, n_intervals=0),
     topbar(),
     paper_banner(),
-    html.Div(className="shell", children=[sidebar(), html.Div(id="main", className="main")]),
+    html.Div(className="shell", children=[sidebar(),
+             html.Div(id="main", className="main", tabIndex="-1")]),
     statusbar(),
 ])
 

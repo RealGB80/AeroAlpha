@@ -26,7 +26,7 @@
   --border:    rgba(120, 132, 140, 0.18);   /* neutral slate structure */
   --border-hi: rgba(120, 132, 140, 0.36);
   --ink:       #eef2f3;
-  --dim:       #8a949b;
+  --dim:       #98a2aa;                      /* WP-07: lifted from #8a949b for contrast at small sizes */
   --grid:      rgba(138, 150, 158, 0.13);   /* gridlines: neutral slate */
 
   /* SHARP GREEN primary (gains/up) + SHARP RED negative (losses/down) + NEUTRAL slate series */
@@ -48,7 +48,7 @@
   --border:    rgba(40, 50, 60, 0.14);
   --border-hi: rgba(40, 50, 60, 0.28);
   --ink:       #161b1f;
-  --dim:       #5a646c;
+  --dim:       #4d565e;                      /* WP-07: darker on white paper for contrast */
   --grid:      rgba(40, 50, 60, 0.12);
   --accent:    #00a866;   /* green, darker for white paper */
   --accent-mut:#0c8757;
@@ -422,7 +422,19 @@ a, a:visited { color: var(--cyan); }
   70%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); opacity: .85; }
   100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); opacity: 1; }
 }
-@media (prefers-reduced-motion: reduce) { .stream-pulse { animation: none; } }
+/* WP-07: honor reduced-motion across ALL our motions (was only the pulse) */
+@media (prefers-reduced-motion: reduce) {
+  .stream-pulse { animation: none; }
+  .main { animation: none; }
+  .card:hover { transform: none; }
+  .ss-row:first-child { animation: none; }
+  .gb-card:hover, .cn-row:hover, .qb-tile:hover { transform: none; }
+}
+
+/* WP-07: keyboard skip-to-content link (visually hidden until focused) */
+.skip-link { position: absolute; left: -9999px; top: 0; z-index: 9999; padding: 8px 14px;
+  background: var(--accent); color: #05140d; font-weight: 700; border-radius: 0 0 8px 0; }
+.skip-link:focus { left: 0; }
 
 /* live per-city quote board */
 .qb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 9px; }
