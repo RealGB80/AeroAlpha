@@ -54,14 +54,22 @@ GRIDCOL = "rgba(138,150,158,0.13)"        # gridlines: neutral slate
 AXISCOL = "rgba(138,150,158,0.28)"        # axis lines / ticks: neutral slate
 STALE_AFTER_MIN = 90                       # global staleness threshold
 
-NAV = [("overview", "◉", "Overview"), ("markets", "❖", "Markets / Live"),
-       ("bankroll", "$", "$1,000 Run"),
-       ("forecasts", "☉", "Forecasts"), ("edges", "↑", "Edges"),
-       ("multicity", "▦", "Multi-City"), ("accuracy", "◎", "Forecast Accuracy"),
-       ("quantlab", "⊞", "Quant Lab"), ("forward", "✓", "Forward Validation"),
-       ("scalability", "⤢", "Scalability"),
-       ("sandbox", "⚙", "Sandbox"), ("risk", "⚠", "Risk & Honesty"),
-       ("methodology", "≡", "Methodology")]
+# WP-02: 8-page IA with real URL routes. ROUTES = [(path, render-key, icon-glyph, nav-label)]; SVG icons
+# arrive in WP-03 (glyphs kept meanwhile). LEGACY_ROUTES redirect old deep links to their new parent.
+ROUTES = [("/", "overview", "◉", "Overview"),
+          ("/run", "bankroll", "$", "$1,000 Run"),
+          ("/markets", "markets", "❖", "Markets"),
+          ("/model", "model", "◎", "Model & Accuracy"),
+          ("/edges", "edges", "↑", "Edges & Validation"),
+          ("/capacity", "capacity", "⤢", "Capacity & Risk"),
+          ("/lab", "lab", "⚙", "Lab"),
+          ("/methodology", "methodology", "≡", "Methodology")]
+PATH_TO_KEY = {p: k for p, k, _, _ in ROUTES}
+KEY_TO_PATH = {k: p for p, k, _, _ in ROUTES}
+LEGACY_ROUTES = {"/overview": "/", "/forecasts": "/model", "/accuracy": "/model",
+                 "/multicity": "/edges", "/forward": "/edges", "/quantlab": "/lab",
+                 "/scalability": "/capacity", "/risk": "/capacity", "/sandbox": "/lab"}
+NAV = [(k, ic, lbl) for _, k, ic, lbl in ROUTES]
 
 
 def _tpl(fig, h=300, legend=None):
@@ -3396,35 +3404,23 @@ def render_overview():
 
 
 def render_markets():
+    # WP-02: de-duplicated. city_network + alerts are canonical on Overview; open_positions is canonical on
+    # the $1,000 Run page. Markets keeps the live quote surfaces + source health/drift.
     return html.Div([section("Markets / Live — Public Quote Scans (Paper)"),
                      html.Div("Live public market context the bot watches. PAPER scans of public Kalshi "
                               "quotes and public weather feeds — no orders, no account, no real money.",
                               className="sub", style={"marginBottom": "10px"}),
-                     html.Div([html.Div(panel_city_network(), className="col-7"),
-                               html.Div(panel_city_rank(), className="col-5")], className="grid12"),
                      html.Div([html.Div(panel_quote_board(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_market_feed(), className="col-7"),
                                html.Div(panel_scan_stream(), className="col-5")], className="grid12"),
-                     html.Div([html.Div(panel_open_positions(), className="col-12")], className="grid12"),
+                     html.Div([html.Div(panel_city_rank(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_source_health(), className="col-6"),
-                               html.Div(panel_model_drift(), className="col-6")], className="grid12"),
-                     html.Div([html.Div(panel_alerts(), className="col-12")], className="grid12")])
+                               html.Div(panel_model_drift(), className="col-6")], className="grid12")])
 
 
-def render_quantlab():
-    return html.Div([section("Quant Lab — Backtest Research"),
-                     html.Div("Leak-free walk-forward backtest diagnostics. Every figure is paper/backtest "
-                              "research in cents/contract or °F — NOT dollars, NOT live, never realized P&L.",
-                              className="sub", style={"marginBottom": "10px"}),
-                     html.Div([html.Div(panel_equity_curve(), className="col-8"),
-                               html.Div(panel_model_compare(), className="col-4")], className="grid12"),
-                     html.Div([html.Div(panel_drawdown(), className="col-6"),
-                               html.Div(panel_monthly_returns(), className="col-6")], className="grid12"),
-                     html.Div([html.Div(panel_dailylow_edge(), className="col-7"),
-                               html.Div(panel_emos_skill(), className="col-5")], className="grid12"),
-                     html.Div([html.Div(panel_pit(), className="col-6"),
-                               html.Div(panel_fan(), className="col-6")], className="grid12"),
-                     html.Div([html.Div(panel_scenario(), className="col-12")], className="grid12")])
+# WP-02: render_quantlab was REMOVED. Its panels are redistributed to their canonical homes: model_compare,
+# emos_skill, pit, fan -> Model & Accuracy; dailylow_edge -> Edges & Validation; equity_curve, drawdown,
+# monthly_returns, scenario -> Lab.
 
 
 def panel_city_source_attribution():
@@ -3488,14 +3484,14 @@ def panel_city_source_attribution():
                  html.Div(blocks, className="grid12")], id="city-pool-card")
 
 
-def render_forecasts():
+def _content_forecasts():
+    """Forecasts-by-source content (WP-02: absorbed into the Model & Accuracy page). Returns a list."""
     sf = table("source_forecast")
     if sf.empty:
-        return html.Div([section("Forecasts by source"),
-                         card("No source-forecast snapshot yet "
-                              "(snapshot_source_forecasts.py runs in the pipeline; panel fills shortly)."),
-                         html.Div([html.Div(panel_city_source_attribution(), className="col-12")],
-                                  className="grid12")])
+        return [card("No source-forecast snapshot yet "
+                     "(snapshot_source_forecasts.py runs in the pipeline; panel fills shortly)."),
+                html.Div([html.Div(panel_city_source_attribution(), className="col-12")],
+                         className="grid12")]
     members = sf[sf["source"] != "ENSEMBLE_MEAN"].copy()
     ens = sf[sf["source"] == "ENSEMBLE_MEAN"].copy()
     # spread chart: each source a point per city, ensemble a diamond
@@ -3522,15 +3518,14 @@ def render_forecasts():
         piv_fmt[c] = piv_fmt[c].map(_degf)
     piv_fmt = piv_fmt.rename(columns={"city": "City", **{c: _titlecase(c) for c in src_cols}})
     tgt = sf["target_date"].iloc[0] if "target_date" in sf else "—"
-    return html.Div([section("Forecasts by source"),
-                     card([html.H3(f"Ensemble Members · Target {tgt}"),
-                           html.Div("The deployed model is an EMOS ensemble; here are the individual member "
-                                    "forecasts and their spread per city. Wide spread = high model "
-                                    "disagreement (a no-trade signal).", className="sub"),
-                           graph(_tpl(fig, h=340))]),
-                     html.Div([html.Div(panel_city_source_attribution(), className="col-12")],
-                              className="grid12"),
-                     card([html.H3("Per-Source Detail (°F)"), dt(piv_fmt, present_df=False, page_size=8)])])
+    return [card([html.H3(f"Ensemble Members · Target {tgt}"),
+                  html.Div("The deployed model is an EMOS ensemble; here are the individual member "
+                           "forecasts and their spread per city. Wide spread = high model "
+                           "disagreement (a no-trade signal).", className="sub"),
+                  graph(_tpl(fig, h=340))]),
+            html.Div([html.Div(panel_city_source_attribution(), className="col-12")],
+                     className="grid12"),
+            card([html.H3("Per-Source Detail (°F)"), dt(piv_fmt, present_df=False, page_size=8)])]
 
 
 # Coherent edge classification — fixes the bug where a POSITIVE net bar keyed on beats_market
@@ -3555,10 +3550,12 @@ def _edge_class(net, beats):
     return "neither"
 
 
-def render_edges():
+def _content_edges_core():
+    """Edge panels (WP-02: the core Edges content; the merged Edges & Validation page adds multi-city +
+    the daily-low edge + the forward gate board). Returns a list."""
     e = table("edge")
     if e.empty:
-        return html.Div([section("Edges"), card("No edge data yet.")])
+        return [card("No edge data yet.")]
     s1 = e[e["stream"] == "S1_S2X"].copy()
     fig = None
     if not s1.empty and s1["avg_net_c"].notna().any():
@@ -3581,8 +3578,7 @@ def render_edges():
                "Amber = positive net but does NOT beat market (ambiguous, not a clean edge). "
                "Cyan = beats market but net is not positive. Red = negative net and no Brier edge. "
                "Net is paper/backtest c/contract after modeled fills; never realized P&L.")
-    body = [section("Edges"),
-            card([html.H3("S1 Edge by City"),
+    return [card([html.H3("S1 Edge by City"),
                   html.Div(caption, className="sub", style={"marginBottom": "6px"}),
                   graph(_tpl(fig, h=340))] if fig is not None else
                  [html.H3("S1 Edge by City"), html.Div("S1 net pending more cities.", className="sub")]),
@@ -3595,7 +3591,6 @@ def render_edges():
                       html.Div(panel_decay(), className="col-6")], className="grid12"),
             html.Div([html.Div(panel_edge_success(), className="col-12")], className="grid12"),
             html.Div([html.Div(panel_funnel(), className="col-12")], className="grid12")]
-    return html.Div(body)
 
 
 # DEPLOYED STATUS — source of truth for which day-ahead S1 HIGH city models are LIVE in the paper path.
@@ -3624,9 +3619,10 @@ def _city_status(cs1):
     return [CITY_S1_STATUS.get(c, "not-built") for c in cs1["city"]]
 
 
-def render_multicity():
+def _content_multicity():
+    """Multi-city S1 validation content (WP-02: absorbed into Edges & Validation). Returns a list."""
     cs1 = table("city_s1")
-    blocks = [section("Multi-City Scalability")]
+    blocks = []
     if not cs1.empty:
         d = cs1.copy()
         d["status"] = _city_status(d)
@@ -3711,14 +3707,15 @@ def render_multicity():
                     "pre-gate. Paper/forward, never realized P&L.",
                     className="sub", style={"marginTop": "8px", "opacity": ".82"})]))
     # WP-01: the "Airport Lock-In Channel" card was removed here -- lock-in was RETIRED 2026-06-25 (latency
-    # artifact) and should not be Multi-City furniture. Its single retrospective lives on the Risk page.
-    return html.Div(blocks)
+    # artifact). Its single retrospective lives on the Capacity & Risk page.
+    return blocks
 
 
-def render_accuracy():
+def _content_accuracy():
+    """Forecast-accuracy content (WP-02: absorbed into Model & Accuracy). Returns a list."""
     r = table("forecast_rmse")
     if r.empty:
-        return html.Div([section("Forecast Accuracy"), card("No forecast RMSE yet.")])
+        return [card("No forecast RMSE yet.")]
     m = r.melt(id_vars="city", value_vars=["members_rmse", "s2x_rmse"], var_name="model", value_name="rmse")
     m["model"] = m["model"].map({"members_rmse": "Members-only", "s2x_rmse": "S2X (deployed)"})
     fig = px.bar(m, x="city", y="rmse", color="model", barmode="group",
@@ -3733,32 +3730,35 @@ def render_accuracy():
         f.update_traces(hovertemplate="<b>%{x}</b> · %{fullData.name}<br>%{y:.2f}°F<extra></extra>")
     # WP-01: these cards had NO H3 -> the px title set above was wiped by _tpl(title=None), leaving the two
     # lead Accuracy charts title-less. Give them real card titles (H3 owns the title, never Plotly).
-    return html.Div([section("Forecast Accuracy"),
-                     html.Div([html.Div(card([html.H3("Day-Ahead RMSE by City — Members-only vs S2X"),
-                                              graph(_tpl(fig))]), style={"flex": "1", "minWidth": "380px"}),
-                               html.Div(card([html.H3("Seasonal RMSE — Warm vs Cold"),
-                                              graph(_tpl(fig2))]), style={"flex": "1", "minWidth": "380px"})],
-                              className="grid"),
-                     card([html.H3("RMSE Detail (°F)"),
-                           dt(present(r, order=["city", "members_rmse", "s2x_rmse", "warm", "cold", "n"]),
-                              present_df=False)]),
-                     html.Div([html.Div(panel_calibration_streams(), className="col-7"),
-                               html.Div(panel_emos_skill(), className="col-5")], className="grid12"),
-                     html.Div([html.Div(panel_pit(), className="col-6"),
-                               html.Div(panel_brier_decomp(), className="col-6")], className="grid12"),
-                     html.Div([html.Div(panel_lead_decay(), className="col-12")], className="grid12"),
-                     html.Div([html.Div(panel_fan(), className="col-12")], className="grid12"),
-                     html.Div([html.Div(panel_surprise(), className="col-12")], className="grid12")])
+    return [html.Div([html.Div(card([html.H3("Day-Ahead RMSE by City — Members-only vs S2X"),
+                                     graph(_tpl(fig))]), style={"flex": "1", "minWidth": "380px"}),
+                      html.Div(card([html.H3("Seasonal RMSE — Warm vs Cold"),
+                                     graph(_tpl(fig2))]), style={"flex": "1", "minWidth": "380px"})],
+                     className="grid"),
+            card([html.H3("RMSE Detail (°F)"),
+                  dt(present(r, order=["city", "members_rmse", "s2x_rmse", "warm", "cold", "n"]),
+                     present_df=False)]),
+            html.Div([html.Div(panel_calibration_streams(), className="col-7"),
+                      html.Div(panel_emos_skill(), className="col-5")], className="grid12"),
+            html.Div([html.Div(panel_pit(), className="col-6"),
+                      html.Div(panel_brier_decomp(), className="col-6")], className="grid12"),
+            html.Div([html.Div(panel_fan(), className="col-12")], className="grid12"),
+            html.Div([html.Div(panel_surprise(), className="col-12")], className="grid12"),
+            # WP-02: the permanently-empty lead-decay panel (single-horizon archive) moves into a collapsed
+            # drawer so it stops occupying prime space until the multi-lead archive exists.
+            html.Details([html.Summary("Planned diagnostics (not yet buildable)",
+                                       style={"cursor": "pointer", "color": DIM, "fontSize": "12px",
+                                              "margin": "6px 0"}),
+                          html.Div([html.Div(panel_lead_decay(), className="col-12")], className="grid12")])]
 
 
-def render_forward():
-    # FIX 3 (2026-06-19): read the SAME run_gates table the $1,000 Run gate board uses, so the two pages
-    # AGREE by construction and the NEW pre-registered gate set (A4 daily-low multi-city) is reflected here.
+def _content_forward():
+    """Forward-validation gate board (WP-02: absorbed into Edges & Validation). Reads the SAME run_gates
+    table the $1,000 Run board uses so the pages agree by construction. Returns a list."""
     g = table("run_gates")
     if g.empty:
-        return html.Div([section("Forward Validation"),
-                         card([html.H3("Pre-registered forward gates"),
-                               empty_state("Fills from the $1,000 staged-harness ledger + monitor logs.")])])
+        return [card([html.H3("Pre-registered forward gates"),
+                      empty_state("Fills from the $1,000 staged-harness ledger + monitor logs.")])]
     bars = []
     for _, r in g.iterrows():
         nset = int(r["n_settled"] or 0); nreq = int(r["n_required"] or 1)
@@ -3779,23 +3779,21 @@ def render_forward():
                                 style={"fontSize": "11px", "color": DIM})]),
             html.Div(html.Div(className="bar-fill", style={"width": f"{pct}%", "background": bar_col}),
                      className="bar-track", style={"margin": "5px 0 14px"})]))
-    return html.Div([section("Forward Validation"),
-                     card([html.H3("Pre-registered forward gates"),
-                           # WP-01: the long enumerated gate list drifted (missing A6 LV/MIN, A8/FDR). The
-                           # board below IS the live gate state (same run_gates table as the $1k page), so it
-                           # speaks for itself; keep the prose to the pointer + the honest framing.
-                           html.Div(["Thresholds are fixed in advance in docs/FORWARD_PROTOCOL.md. The board "
-                                     "below is the live gate state — the SAME run_gates table as the $1,000 "
-                                     "Run board, so the two pages agree by construction. Every row is still "
-                                     "ACCUMULATING settled signals; none is a proven live edge yet, and REAL "
-                                     "capital moves only on a gate PASS. Paper/forward, never realized P&L."],
-                                    className="sub"),
-                           html.Div(bars, style={"marginTop": "12px"})])])
+    return [card([html.H3("Pre-registered forward gates"),
+                  # WP-01: the long enumerated gate list drifted (missing A6 LV/MIN, A8/FDR). The board below
+                  # IS the live gate state (same run_gates table as the $1k page), so it speaks for itself.
+                  html.Div(["Thresholds are fixed in advance in docs/FORWARD_PROTOCOL.md. The board "
+                            "below is the live gate state — the SAME run_gates table as the $1,000 "
+                            "Run board, so the two pages agree by construction. Every row is still "
+                            "ACCUMULATING settled signals; none is a proven live edge yet, and REAL "
+                            "capital moves only on a gate PASS. Paper/forward, never realized P&L."],
+                           className="sub"),
+                  html.Div(bars, style={"marginTop": "12px"})])]
 
 
-def render_scalability():
-    """Scalability page (Mosaic -> Iris): the per-stream fill-cost curve + bankroll headroom = the honest
-    'more money != linearly more profit' story that backs the sandbox's non-linear depth model."""
+def _content_scalability():
+    """Scalability content (Mosaic -> Iris): per-stream fill-cost curve + bankroll headroom = the honest
+    'more money != linearly more profit' story. WP-02: absorbed into Capacity & Risk. Returns a list."""
     cap = table("fill_capacity")
     # headline strip: real-curve count vs accruing count (audit-corrected; no more 'dead-book gaps')
     n_real = int((cap["real_curve"] == True).sum()) if (not cap.empty and "real_curve" in cap) else 0  # noqa: E712
@@ -3820,13 +3818,14 @@ def render_scalability():
                   className="sub", style={"fontSize": "11px", "marginTop": "6px", "opacity": .85})
          if _scal_data_asof() else html.Div())],
         style={"borderColor": "color-mix(in srgb, var(--amber) 30%, transparent)"})
-    return html.Div([section("Scalability — Fill-Size vs Net Edge"),
-                     html.Div([html.Div(intro, className="col-12")], className="grid12"),
-                     html.Div([html.Div(panel_scalability_curve(), className="col-12")], className="grid12"),
-                     html.Div([html.Div(panel_scalability_headroom(), className="col-12")], className="grid12")])
+    return [html.Div([html.Div(intro, className="col-12")], className="grid12"),
+            html.Div([html.Div(panel_scalability_curve(), className="col-12")], className="grid12"),
+            html.Div([html.Div(panel_scalability_headroom(), className="col-12")], className="grid12")]
 
 
-def render_sandbox():
+def _content_sandbox():
+    """Interactive risk/return sandbox content (WP-02: absorbed into the Lab page). Returns a list. All the
+    sandbox input/output IDs are unchanged, so its callbacks are unaffected."""
     def field(id_, label, val, step="any", mn=None, mx=None):
         kw = {"id": id_, "type": "number", "value": val, "step": step}
         if mn is not None:
@@ -4042,7 +4041,7 @@ def render_sandbox():
                    "flexWrap": "wrap"}),
         dcc.Graph(id="sb-ttt-chart", config={"displayModeBar": False})])
 
-    return html.Div([section("Sandbox — Interactive Risk / Return Lab"),
+    return [
         html.Div("Tune the edges, capital, and risk profile. Every output is a transparent paper model "
                  "(see the note at the bottom) — research only, never realized P&L.", className="sub",
                  style={"marginBottom": "10px"}),
@@ -4059,10 +4058,11 @@ def render_sandbox():
                  className="grid12"),
         html.Div([html.Div(chart_ruin, className="col-12")], className="grid12"),
         html.Div([html.Div(chart_cap, className="col-12")], className="grid12"),
-        html.Div([html.Div(disclaimer, className="col-12")], className="grid12")])
+        html.Div([html.Div(disclaimer, className="col-12")], className="grid12")]
 
 
-def render_risk():
+def _content_risk():
+    """Risk & honesty content (WP-02: absorbed into Capacity & Risk). Returns a list."""
     items = [("Capacity ceiling", "Each edge is depth-capacity-bounded; absolute $ per city has a ceiling that "
               "does NOT grow with bankroll. Scale comes from MORE validated cities, not more capital per city.",
               "warn"),
@@ -4072,29 +4072,70 @@ def render_risk():
               "lower bound is small — real but fragile. Sized conservatively.", "warn"),
              ("Paper only", "No authentication, no orders, no account, no real money — anywhere. Every figure "
               "is a paper/backtest/forward estimate, never realized P&L.", "bad"),
-             ("Lock-in reality", "NYC lock-in is a latency artifact at the ~128s METAR floor (no faster KNYC feed "
-              "exists). Airport-city lock-in is a thin speed race, not a fat edge.", "neut")]
-    return html.Div([section("Risk & Honesty"),
-                     html.Div([card([html.Div([html.H3(t), badge(k.upper(), k)],
-                                              style={"display": "flex", "justifyContent": "space-between",
-                                                     "alignItems": "center"}),
-                                     html.Div(d, className="sub")]) for t, d, k in items]),
-                     html.Div([html.Div(panel_latency(), className="col-12")], className="grid12")])
+             ("Lock-in reality", "NYC lock-in was RETIRED (2026-06-25) as a latency artifact at the ~128s METAR "
+              "floor (no faster KNYC feed exists). Airport-city lock-in is a thin speed race, not a fat edge.",
+              "neut")]
+    return [html.Div([card([html.Div([html.H3(t), badge(k.upper(), k)],
+                                      style={"display": "flex", "justifyContent": "space-between",
+                                             "alignItems": "center"}),
+                            html.Div(d, className="sub")]) for t, d, k in items]),
+            html.Div([html.Div(panel_latency(), className="col-12")], className="grid12")]
+
+
+# ============================== MERGED PAGES (WP-02: 13 -> 8) ==============================
+def render_model():
+    """Model & Accuracy = the old Forecasts + Forecast-Accuracy pages, one canonical home for every
+    forecast/calibration panel (calibration deck, PIT, fan, surprise, EMOS skill, model compare)."""
+    return html.Div([section("Model & Accuracy — Forecast Skill & Calibration")]
+                    + _content_forecasts()
+                    + _content_accuracy()
+                    + [html.Div([html.Div(panel_model_compare(), className="col-12")], className="grid12")])
+
+
+def render_edges():
+    """Edges & Validation = the old Edges + Multi-City + Forward-Validation pages."""
+    return html.Div(
+        [section("Edges & Validation — Per-City Signal & Pre-Registered Gates")]
+        + _content_edges_core()
+        + [html.Div([html.Div(panel_dailylow_edge(), className="col-12")], className="grid12"),
+           html.H3("Multi-City S1", style={"margin": "14px 0 4px"})]
+        + _content_multicity()
+        + [html.H3("Forward Validation", style={"margin": "14px 0 4px"})]
+        + _content_forward())
+
+
+def render_capacity():
+    """Capacity & Risk = the old Scalability + Risk & Honesty pages."""
+    return html.Div([section("Capacity & Risk — Fill-Size vs Net Edge, and the Honest Caveats")]
+                    + _content_scalability()
+                    + [html.H3("Risk & Honesty", style={"margin": "14px 0 4px"})]
+                    + _content_risk())
+
+
+def render_lab():
+    """Lab = the interactive Sandbox + the leak-free backtest research panels (old Quant Lab)."""
+    return html.Div([section("Lab — Interactive Sandbox & Backtest Research")]
+                    + _content_sandbox()
+                    + [html.H3("Backtest Research", style={"margin": "16px 0 4px"}),
+                       html.Div("Leak-free walk-forward backtest diagnostics in cents/contract or °F — "
+                                "NOT dollars, NOT live, never realized P&L.", className="sub",
+                                style={"marginBottom": "10px"}),
+                       html.Div([html.Div(panel_equity_curve(), className="col-8"),
+                                 html.Div(panel_drawdown(), className="col-4")], className="grid12"),
+                       html.Div([html.Div(panel_monthly_returns(), className="col-6"),
+                                 html.Div(panel_scenario(), className="col-6")], className="grid12")])
 
 
 def render_methodology():
     m = table("methodology")
+    # WP-02: the per-stream calibration deck is canonical on Model & Accuracy now (dropped here).
     return html.Div([section("Methodology & Provenance"),
-                     card(dt(m, page_size=20) if not m.empty else html.Div("—", className="sub")),
-                     html.Div([html.Div(panel_calibration_streams(), className="col-12")],
-                              className="grid12", style={"marginTop": "10px"})])
+                     card(dt(m, page_size=20) if not m.empty else html.Div("—", className="sub"))])
 
 
-RENDER = {"overview": render_overview, "markets": render_markets, "bankroll": render_bankroll,
-          "forecasts": render_forecasts, "edges": render_edges, "multicity": render_multicity,
-          "accuracy": render_accuracy, "quantlab": render_quantlab, "forward": render_forward,
-          "scalability": render_scalability,
-          "sandbox": render_sandbox, "risk": render_risk, "methodology": render_methodology}
+RENDER = {"overview": render_overview, "bankroll": render_bankroll, "markets": render_markets,
+          "model": render_model, "edges": render_edges, "capacity": render_capacity,
+          "lab": render_lab, "methodology": render_methodology}
 
 # ============================== APP ==============================
 app = Dash(__name__, title="AeroAlpha — Investor View", update_title=None,
@@ -4149,8 +4190,10 @@ def statusbar():
 
 
 def sidebar():
-    items = [html.Div([html.Span(ic, className="ic"), html.Span(lbl)], className="nav-item",
-                      id={"type": "nav", "key": k}, n_clicks=0) for k, ic, lbl in NAV]
+    # WP-02: real links (dcc.Link -> <a href>). Deep-linkable + browser back/forward work; active state is
+    # driven by the URL in _nav_style.
+    items = [dcc.Link([html.Span(ic, className="ic"), html.Span(lbl)], href=KEY_TO_PATH[k],
+                      className="nav-item", id={"type": "nav", "key": k}) for k, ic, lbl in NAV]
     items.append(html.Div([html.Div("BOT ENGINE", className="lbl"),
                            html.Div([html.Span(className="dot"), html.Span("RUNNING", className="st")]),
                            html.Div(id="sb-uptime", className="lbl", style={"marginTop": "6px"})],
@@ -4159,7 +4202,7 @@ def sidebar():
 
 
 app.layout = html.Div([
-    dcc.Store(id="active", data="overview"),
+    dcc.Location(id="url", refresh=False),
     dcc.Store(id="theme-store", storage_type="local", data="dark"),
     dcc.Interval(id="tick", interval=60_000, n_intervals=0),
     topbar(),
@@ -4188,30 +4231,33 @@ app.clientside_callback(
 )
 
 
-@app.callback(Output("active", "data"), Input({"type": "nav", "key": ALL}, "n_clicks"),
-              prevent_initial_call=True)
-def _nav(_clicks):
-    t = ctx.triggered_id
-    return t["key"] if t else "overview"
+# WP-02: URL-driven routing. dcc.Link sets url.pathname; _route resolves it (normalizing legacy paths and
+# emitting a redirect so the address bar shows the canonical route) and serves the cached page. Routing on
+# the URL (not the 60s tick) preserves the BUG-FIX #1 property: the active page is not re-rendered on tick,
+# so Sandbox inputs survive; live elements update via their own small callbacks.
+def _resolve_key(pathname):
+    path = pathname or "/"
+    path = LEGACY_ROUTES.get(path, path)
+    return PATH_TO_KEY.get(path, "overview")
 
 
-@app.callback(Output({"type": "nav", "key": ALL}, "className"), Input("active", "data"))
-def _nav_style(active):
-    return [f"nav-item active" if o["id"]["key"] == active else "nav-item"
-            for o in ctx.outputs_list]
-
-
-# BUG FIX #1: route ONLY on nav change (dcc.Store "active"), NOT on the 60s tick. Re-rendering the whole
-# page every minute wiped Sandbox inputs and made nav sluggish. Live elements (clock/tickers/staleness/
-# market-feed) update via their OWN small callbacks below, never by re-rendering the active page.
-@app.callback(Output("main", "children"), Input("active", "data"))
-def _route(active):
+@app.callback(Output("main", "children"), Output("url", "pathname"), Input("url", "pathname"))
+def _route(pathname):
     _ensure_prewarm()
-    key = active if active in RENDER else "overview"
+    path = pathname or "/"
+    redirect = dash.no_update
+    if path in LEGACY_ROUTES:                       # old deep link -> canonicalize the address bar
+        redirect = LEGACY_ROUTES[path]
+    key = _resolve_key(path)
     hit = _PAGE_CACHE.get(key)
-    if hit and time.time() - hit[0] < _PAGE_TTL:   # cache hit -> serve the dict-ified tree (fast re-serialize)
-        return hit[1]
-    return _render_page(key)                        # miss (cold / expired) -> build once, cache, dict-ify
+    tree = hit[1] if (hit and time.time() - hit[0] < _PAGE_TTL) else _render_page(key)
+    return tree, redirect
+
+
+@app.callback(Output({"type": "nav", "key": ALL}, "className"), Input("url", "pathname"))
+def _nav_style(pathname):
+    key = _resolve_key(pathname)
+    return ["nav-item active" if o["id"]["key"] == key else "nav-item" for o in ctx.outputs_list]
 
 
 # $1k paper-equity time-window selector (USER ASK 2026-06-21): re-window the equity series + readout on each
