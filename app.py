@@ -663,10 +663,10 @@ def panel_fan():
         return card([html.H3("Forecast Fan Chart"), empty_state("Fills from the replay dataset.")])
     fig = go.Figure()
     fig.add_scatter(x=list(d["date"]) + list(d["date"])[::-1], y=list(d["hi2"]) + list(d["lo2"])[::-1],
-                    fill="toself", fillcolor="rgba(74,144,184,.08)", line=dict(width=0), mode="lines",
+                    fill="toself", fillcolor="rgba(174,184,192,.10)", line=dict(width=0), mode="lines",
                     name="±2σ", hoverinfo="skip")
     fig.add_scatter(x=list(d["date"]) + list(d["date"])[::-1], y=list(d["hi1"]) + list(d["lo1"])[::-1],
-                    fill="toself", fillcolor="rgba(74,144,184,.16)", line=dict(width=0), mode="lines",
+                    fill="toself", fillcolor="rgba(174,184,192,.18)", line=dict(width=0), mode="lines",
                     name="±1σ", hoverinfo="skip")
     fig.add_scatter(x=d["date"], y=d["forecast_f"], mode="lines", name="forecast",
                     line=dict(color=CYAN, width=2, shape="spline", smoothing=0.4),
@@ -785,7 +785,7 @@ def panel_funnel():
     top = max(d["count"].max(), 1)
     fig = go.Figure(go.Funnel(y=d["stage"], x=d["count"], textposition="inside",
                               textinfo="value+percent initial",
-                              marker=dict(color=[MINT, CYAN, VIOLET, AMBER, "#7fb0a0"]),
+                              marker=dict(color=[GREEN, GREEN_DK, NEUTRAL, NEUTRAL_DK, VIOLET]),
                               connector=dict(line=dict(color=GRIDCOL, width=1)),
                               hovertemplate="%{y}<br>%{x} signals<extra></extra>"))
     fig.update_layout(title=None, margin=dict(l=160, r=20, t=10, b=20))
@@ -842,11 +842,12 @@ def panel_latency():
     fig.update_layout(title=None)
     fig.update_yaxes(title="scans")
     fig.update_xaxes(title="orderbook-publish latency after the :51 obs (seconds)")
-    return card([html.H3("Lock-In Latency — Distribution vs the 128s Floor"),
-                 _cap(f"Seconds between the :51 KNYC observation and when the priced orderbook updates "
-                      f"(n={len(v)} paper scans). Median {med:.0f}s and {100*frac:.0f}% sit at/above the ~128s "
-                      f"METAR floor — confirming NYC lock-in is a latency artifact of KNYC's slow feed, not a "
-                      f"fat edge. No faster free KNYC source exists."),
+    return card([html.H3("Lock-In Post-Mortem — Why We Killed It (2026-06-25)"),
+                 _cap(f"Seconds between the :51 KNYC observation and when the priced orderbook updated "
+                      f"(n={len(v)} paper scans). Median was {med:.0f}s and {100*frac:.0f}% sat at/above the "
+                      f"~128s METAR floor — which is WHY NYC lock-in was RETIRED: it was a latency artifact of "
+                      f"KNYC's slow feed, not a fat edge, and no faster free KNYC source exists. Kept as a "
+                      f"retrospective."),
                  graph(_tpl(fig, h=300, legend=False))])
 
 
@@ -1001,10 +1002,13 @@ def kpi_spark_row():
     # cumulative paper backtest net (cents) -> the "total return (paper)" headline, clearly backtest
     cum = float(eq["equity_c"].iloc[-1]) if not eq.empty else None
     cards = [
-        kpi_spark_card("NY DAY-AHEAD RMSE", ny_rmse, "F", "WALK-FORWARD", "latency_s",
+        # WP-01: DROP the mismatched sparks -- "NY DAY-AHEAD RMSE" was plotting latency_s (lock-in seconds)
+        # and "BEST STREAM EDGE" was plotting monthly_net_c. Honest blank beats a wrong-metric trend; re-wire
+        # to ny_rmse / best_edge_c once WP-05 emits those series in the kpi_spark table.
+        kpi_spark_card("NY DAY-AHEAD RMSE", ny_rmse, "F", "WALK-FORWARD", None,
                        spark_color=NEUTRAL),
         kpi_spark_card("NY S1 EDGE (S2X)", ny_edge, "c/contract", "BACKTEST", "ny_edge_c"),
-        kpi_spark_card("BEST STREAM EDGE", best_edge, "c/contract", "BACKTEST", "monthly_net_c"),
+        kpi_spark_card("BEST STREAM EDGE", best_edge, "c/contract", "BACKTEST", None),
         kpi_spark_card("CITIES BEAT MARKET", cities, "cities", "BACKTEST", None),
         kpi_spark_card("PAPER NET (BACKTEST)", cum, "c/contract", "BACKTEST", "equity_c",
                        tip=PAPER_NET_TIP),
@@ -1014,6 +1018,18 @@ def kpi_spark_row():
 
 
 # ---------- Markets / Live page panels ----------
+def _utc_to_et_str(v, fmt="%m-%d %H:%M ET"):
+    """WP-01: display a UTC scan timestamp as ET wall-clock (the market's clock; site-wide standard).
+    Safe on unparseable input -> returns the raw string."""
+    try:
+        t = pd.to_datetime(v, utc=True, errors="coerce")
+        if pd.isna(t):
+            return "—" if _isnull(v) else str(v)
+        return t.tz_convert("America/New_York").strftime(fmt)
+    except (ValueError, TypeError):
+        return "—" if _isnull(v) else str(v)
+
+
 def panel_market_feed(compact=False):
     """Live-ish Kalshi market feed: recent scanned quotes per city/market (time/city/market/quote/edge/side).
     Honest: these are PAPER scans of public quotes, NOT orders. Source: forward monitor logs."""
@@ -1022,14 +1038,15 @@ def panel_market_feed(compact=False):
         return card([html.H3("Live Market Feed"), empty_state("Fills as the paper monitors scan quotes.")])
     show = present(d, drop=["status"],
                    rename={"scan_utc": "Time", "quote_c": "Quote", "model_p": "Model P", "edge_c": "Edge"},
-                   fmt={"quote_c": lambda v: "—" if _isnull(v) else f"{v:.0f}c",
+                   fmt={"scan_utc": _utc_to_et_str,
+                        "quote_c": lambda v: "—" if _isnull(v) else f"{v:.0f}c",
                         "model_p": lambda v: "—" if _isnull(v) else f"{v:.0%}",
                         "edge_c": _cents1},
                    order=["scan_utc", "city", "market", "ticker", "side", "quote_c", "model_p", "edge_c"])
     return card([html.H3("Live Market Feed — Paper Quote Scans"),
                  _cap("Most-recent public Kalshi quotes the paper monitors scanned, per city/market: the "
                       "quoted entry, our model probability, and the signed edge. PAPER scans of public "
-                      "data — never orders, never real money. Time is UTC."),
+                      "data — never orders, never real money. Time is ET."),
                  pro_table(show, present_df=False, max_rows=18 if compact else 40,
                            align_left=("Side", "Market"))], cls="feed-card", id="market-feed-card")
 
@@ -1083,14 +1100,14 @@ def panel_scan_stream():
         ecls = "pos" if (not _isnull(e) and e >= 0) else ("neg" if not _isnull(e) else "")
         ev = "—" if _isnull(e) else f"{e:+.1f}c"
         rows.append(html.Div([
-            html.Span(str(r["scan_utc"]), className="ss-t mono"),
+            html.Span(_utc_to_et_str(r["scan_utc"]), className="ss-t mono"),
             html.Span(str(r["city"]), className="ss-c"),
             html.Span(str(r["market"]), className="ss-m"),
             html.Span(str(r["side"]) if not _isnull(r["side"]) else "—", className="ss-s"),
             html.Span(str(r["ticker"]) if not _isnull(r["ticker"]) else "—", className="ss-tk mono"),
             html.Span(ev, className=f"ss-e mono {ecls}")], className="ss-row"))
     return card([html.H3(["Scan Stream — Last 14 Paper Scans  ", html.Span(className="stream-pulse")]),
-                 _cap("Rolling tape of the most recent public-quote scans across the forward monitors (UTC). "
+                 _cap("Rolling tape of the most recent public-quote scans across the forward monitors (ET). "
                       "These are PAPER scans of public data — not a trade tape, no orders, no real money."),
                  html.Div(rows, className="ss-list")], id="scan-stream-card")
 
@@ -1138,6 +1155,18 @@ def panel_city_network():
                  graph(fig)])
 
 
+# WP-01 interim: CHI-high is deployed COLD-ONLY (see CLAUDE.md / monitor_multicity_s1). Until WP-05 adds a
+# `season_scope` store column, surface the restriction display-side so a tradable chip never implies
+# all-season. Keyed on the city code; safe on any label ("TRADABLE"/"TRADABLE" variants).
+_COLD_ONLY_CITIES = {"CHI"}
+
+
+def _season_scoped_label(city, base_label):
+    if str(city).upper() in _COLD_ONLY_CITIES and base_label.upper().startswith("TRADABLE"):
+        return base_label + " · COLD-ONLY"
+    return base_label
+
+
 def panel_city_rank():
     """Ranked city cards (rank, city, station, forecast, paper edge + status) -- the reference 'city cards'."""
     d = table("city_network")
@@ -1158,7 +1187,7 @@ def panel_city_rank():
                       html.Div(r["station"], className="cn-station")], className="cn-id"),
             html.Div(fc, className="cn-temp mono"),
             html.Div(edge, className=f"cn-edge mono {ecls}"),
-            badge(str(r["status"]).upper().replace("-", " "),
+            badge(_season_scoped_label(r["city"], str(r["status"]).upper().replace("-", " ")),
                   stat_kind.get(r["status"], "neut"))], className="cn-row"))
     return card([html.H3("City Rankings — by Paper Edge"),
                  _cap("Ranked by validated paper S1 edge. Forecast = ensemble day-ahead high. Status is the "
@@ -3304,23 +3333,9 @@ def render_overview():
     # bankroll
     if br.empty:
         # $1k DOLLAR curve stays OFF until separate approval. Fill this prime real estate with the REAL
-        # forward-evidence graphics instead of a blank placeholder: the signal funnel + the decay/skill.
-        _fn = table("funnel")
-        if not _fn.empty:
-            funnel_content = graph(_tpl(go.Figure(go.Funnel(
-                y=_fn["stage"], x=_fn["count"], textposition="inside",
-                textinfo="value+percent initial",
-                marker=dict(color=[MINT, CYAN, VIOLET, AMBER, "#c07fb0"]),
-                connector=dict(line=dict(color=GRIDCOL, width=1)),
-                hovertemplate="%{y}<br>%{x} signals<extra></extra>")).update_layout(
-                title=None, margin=dict(l=160, r=20, t=10, b=20)), h=260, legend=False))
-        else:
-            funnel_content = empty_state("Wired and ready. Forward evidence fills as paper signals settle.")
-        bank = card([html.H3("Forward Evidence — Signal Funnel"),
-                     _cap("The $1,000 paper-run equity curve stays off until separately approved; until then "
-                          "this space shows the live forward evidence. Below: how scanned contracts narrow to "
-                          "net-positive settled paper signals."),
-                     funnel_content])
+        # forward-evidence graphics. WP-01: reuse the canonical panel_funnel() (was a duplicated inline
+        # go.Funnel build with an off-palette pink marker); it guards its own empty case.
+        bank = panel_funnel()
     else:
         # $1,000 staged run is now surfaced (its own page). Overview shows the HONEST paper equity curve
         # (LIVE allocation $0; it moves only as activated PAPER signals settle) + a pointer to the gate tracker.
@@ -3335,7 +3350,7 @@ def render_overview():
         fig.add_scatter(x=x, y=y, name="paper equity", mode="lines+markers",
                         line=dict(color=line_col, width=2.4), marker=dict(size=6, color=line_col),
                         customdata=[str(v) for v in br["date"]] if len(br) == len(y) else None,
-                        hovertemplate="$%{y:,.2f} (paper)<extra></extra>")
+                        hovertemplate="%{customdata}<br>$%{y:,.2f} (paper)<extra></extra>")
         fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
                       annotation_text="$1,000 baseline", annotation_position="bottom right",
                       annotation_font=dict(color=NEUTRAL, size=10))
@@ -3352,9 +3367,16 @@ def render_overview():
                           "P&L; the curve advances one step per settled contract, NOT by calendar time. Smooth "
                           "because settlements are evenly spaced here. (The $1,000 Run page plots the same "
                           "equity against real datetime, including the unrealized mark of open positions.)")])
-    # confirmed-cities mini panel
-    rev = cs1[cs1["revived"] == 1] if not cs1.empty and "revived" in cs1 else cs1.iloc[0:0]
-    chips = [badge(f"{r['city']}  +{r['s1_net_c']:.1f}c", "good") for _, r in rev.iterrows()] or [badge("NY", "good")]
+    # confirmed-cities mini panel. WP-01: key on DEPLOY STATUS (tradable), not `revived` -- statistical
+    # revival != deployed, exactly the conflation the Multi-City page warns about.
+    if not cs1.empty:
+        _cs = cs1.copy()
+        _cs["status"] = _city_status(_cs)
+        trad = _cs[_cs["status"] == "tradable"]
+    else:
+        trad = cs1.iloc[0:0]
+    chips = [badge(f"{r['city']}  +{r['s1_net_c']:.1f}c", "good")
+             for _, r in trad.iterrows()] or [badge("NY", "good")]
     status_card = card([html.H3("System status"),
                         html.Div([html.Span(html.Span(className="dot")), "Pipeline LIVE · paper-only · ",
                                   html.Span(id="ov-updated", className="mono")], className="sub"),
@@ -3488,7 +3510,6 @@ def render_forecasts():
         fig.add_scatter(x=ens["city"], y=ens["forecast_f"], mode="markers", name="ENSEMBLE mean",
                         marker=dict(symbol="diamond", size=15, color=AMBER,
                                     line=dict(width=1.5, color="#fff")))
-    fig.update_layout(title="Day-Ahead High Forecast by Source (tomorrow, per city)")
     fig.update_yaxes(title="forecast high (°F)", ticksuffix="°F")
     fig.update_xaxes(title="")
     fig.update_traces(hovertemplate="<b>%{x}</b><br>%{y:.1f}°F<extra></extra>")
@@ -3553,8 +3574,7 @@ def render_edges():
                         customdata=[[b] for b in sub["beats_market"]],
                         hovertemplate="<b>%{x}</b><br>Avg net: %{y:+.2f}c/contract<br>"
                                       "Beats market: %{customdata[0]}<extra></extra>")
-        fig.update_layout(title="S1 Edge by City (S2X model) — color = coherent edge criterion",
-                          barmode="overlay")
+        fig.update_layout(barmode="overlay")
         fig.update_yaxes(title="S1 avg net (cents / contract)", ticksuffix="c", tickformat="+.1f")
     caption = ("Color encodes BOTH tests, so nothing above zero looks like flat 'no edge'. "
                "Green = beats the market on Brier AND has positive net (the trustworthy edge). "
@@ -3605,7 +3625,7 @@ def _city_status(cs1):
 
 
 def render_multicity():
-    cs1 = table("city_s1"); ll = table("lockin_lead")
+    cs1 = table("city_s1")
     blocks = [section("Multi-City Scalability")]
     if not cs1.empty:
         d = cs1.copy()
@@ -3622,7 +3642,6 @@ def render_multicity():
                                   "Status: %{customdata}<extra></extra>",
                     error_y=dict(type="data", array=err_plus, arrayminus=err_minus,
                                  color=DIM, thickness=1.4, width=4))
-        fig.update_layout(title="Per-City S1 Net — 95% Bootstrap CI (color = deployed status)")
         fig.update_yaxes(title="S1 net (cents / contract)", ticksuffix="c", tickformat="+.0f")
         # per-city deployed-status badges (the honesty fix: near-pass CIs != tradable)
         order = ["tradable", "watch", "not-deployed", "not-built"]
@@ -3631,8 +3650,11 @@ def render_multicity():
             cities = [c for c in d["city"] if d.set_index("city").loc[c, "status"] == st]
             if cities:
                 _, kind, lbl = _STATUS_STYLE[st]
+                # WP-01 interim: mark CHI cold-only in the tradable group (season_scope column arrives in WP-05)
+                city_str = ", ".join((c + " (cold-only)" if (st == "tradable" and str(c).upper()
+                                       in _COLD_ONLY_CITIES) else c) for c in cities)
                 status_chips.append(html.Div([badge(lbl, kind),
-                                              html.Span("  " + ", ".join(cities), className="sub")],
+                                              html.Span("  " + city_str, className="sub")],
                                              style={"marginRight": "18px"}))
         blocks.append(card([html.H3("Day-Ahead S1 by City — Expanded Per-City Pool"),
                             html.Div(status_chips, style={"display": "flex", "flexWrap": "wrap",
@@ -3654,42 +3676,42 @@ def render_multicity():
                                present_df=False)]))
     else:
         blocks.append(card("Per-city S1 validation table fills from the latest revival-validate run."))
-    # NEW-CITY EXPANSION watchlist (Magellan -> Kelvin -> Falcon -> Verity, Jun 2026). Reflects SEA-high
-    # WATCH + the ruled-out cities. BACKTEST probes only; none deployed; SEA is the sole live WATCH candidate.
-    blocks.append(card([
-        html.H3("New-City Expansion — Candidate Watchlist (Jun 2026 backtest probe)"),
-        html.Div([badge("WATCH", "warn"),
-                  html.Span("  SEA-high  ", className="sub", style={"fontWeight": "700"}),
-                  html.Span("+4.25c dedup, but P(net>0)=.979 fails the k=6 99.17% Bonferroni bar (needs "
-                            ".9958); fill-fragile (+1c slippage re-touches 0) and not lambda-robust on the "
-                            "deduped pool. Pre-registered promotion gate; not yet logging forward.",
-                            className="sub")], style={"marginBottom": "6px"}),
-        html.Div([badge("DEAD", "bad"),
-                  html.Span("  SFO-high  ", className="sub", style={"fontWeight": "700"}),
-                  html.Span("S1 edge vanished on dedup (+2.88c -> +0.46c) — a collinear-pool artifact.",
-                            className="sub")], style={"marginBottom": "6px"}),
-        html.Div([badge("PARKED", "neut"),
-                  html.Span("  PHX / DAL / BOS-high  ", className="sub", style={"fontWeight": "700"}),
-                  html.Span("PHX is a strong forecast (RMSE 1.555) but the desert market is too sharp for an "
-                            "S1 edge -> lock-in candidate, not S1; DAL/BOS show no market-beating Brier.",
-                            className="sub")]),
-        html.Div("Backtest probes only (Magellan -> Kelvin -> Falcon -> Verity); none deployed. SEA is the "
-                 "sole live WATCH candidate, on a pre-registered forward gate. Paper/forward, never realized "
-                 "P&L.", className="sub", style={"marginTop": "8px", "opacity": ".82"}),
-    ]))
-    if not ll.empty:
-        d = ll.copy()
-        fig2 = go.Figure()
-        fig2.add_bar(x=d["city"], y=d["lead_min"], name="Detection lead", marker_color=CYAN, width=0.62,
-                     hovertemplate="<b>%{x}</b><br>Median lead: %{y:.0f} min<extra></extra>")
-        fig2.update_layout(title="Airport 5-Min HF Feed — Lock Detection Lead vs Hourly METAR")
-        fig2.update_yaxes(title="median lead (minutes)", ticksuffix=" min")
-        blocks.append(card([html.H3("Airport Lock-In Channel (the cities KNYC can't match)"),
-                            html.Div("Non-NYC cities settle on airport ASOS with a free 5-min HF feed; it "
-                                     "detects the locked daily high minutes before the hourly METAR. The gap is "
-                                     "thin (markets watch it too) — a capacity story, not a fat edge.",
-                                     className="sub"), graph(_tpl(fig2, legend=False)),
-                            dt(d, page_size=7)]))
+    # NEW-CITY EXPANSION watchlist. WP-01: was hardcoded-stale (missing the LV/MIN cold streams that are
+    # the biggest live story). Corrected to 2026-07 truth and made DATA-SHAPED (one dict per row) so WP-05
+    # swaps this literal list for the producer `expansion_watchlist` table with zero UI change.
+    # [(name, tier_label, badge_kind, note)]
+    _expansion_rows = [
+        ("LV-high / MIN-high", "ALIVE · A6 WATCH", "good",
+         "The live story: LV +9.19c and MIN +9.89c COLD edges passed the settlement-audit and are WIRED as "
+         "A6 watch ($0 capital), forward-logging since 2026-06-22 toward the n>=110-cold gate."),
+        ("SEA-high", "WATCH", "warn",
+         "+4.77c artifact-checked (P=.972) — a live WATCH candidate on a pre-registered forward gate; not "
+         "yet promoted."),
+        ("DC / OKC-high", "WATCH", "warn",
+         "Settlement-audit watch — candidate cold edges pending a wire-up to forward logging."),
+        ("SATX-high (warm)", "RE-SCREEN", "neut",
+         "Warm leg +12.4c but n=16 and never tested at scope -> A6.1 warm re-screen after the summer."),
+        ("SFO-high", "DEAD", "bad",
+         "S1 edge vanished on dedup (+2.88c -> +0.46c) — a collinear-pool artifact."),
+        ("PHX / DAL / BOS-high", "PARKED", "neut",
+         "PHX forecast is strong (RMSE 1.555) but the desert market is too sharp for an S1 edge; DAL/BOS "
+         "show no market-beating Brier."),
+    ]
+
+    def _wl_row(name, tier, kind, note):
+        return html.Div([badge(tier, kind),
+                         html.Span(f"  {name}  ", className="sub", style={"fontWeight": "700"}),
+                         html.Span(note, className="sub")], style={"marginBottom": "6px"})
+
+    blocks.append(card(
+        [html.H3("New-City Expansion — Candidate Watchlist (2026-07 status)")]
+        + [_wl_row(*row) for row in _expansion_rows]
+        + [html.Div("Backtest probes + settlement audits (Magellan -> Kelvin -> Falcon -> Verity); NONE "
+                    "carry real capital. LV/MIN are wired as $0 A6 watch accruing forward; the rest are "
+                    "pre-gate. Paper/forward, never realized P&L.",
+                    className="sub", style={"marginTop": "8px", "opacity": ".82"})]))
+    # WP-01: the "Airport Lock-In Channel" card was removed here -- lock-in was RETIRED 2026-06-25 (latency
+    # artifact) and should not be Multi-City furniture. Its single retrospective lives on the Risk page.
     return html.Div(blocks)
 
 
@@ -3700,20 +3722,22 @@ def render_accuracy():
     m = r.melt(id_vars="city", value_vars=["members_rmse", "s2x_rmse"], var_name="model", value_name="rmse")
     m["model"] = m["model"].map({"members_rmse": "Members-only", "s2x_rmse": "S2X (deployed)"})
     fig = px.bar(m, x="city", y="rmse", color="model", barmode="group",
-                 color_discrete_map={"Members-only": DIM, "S2X (deployed)": MINT},
-                 title="Day-Ahead RMSE by City — Members-only vs S2X")
+                 color_discrete_map={"Members-only": DIM, "S2X (deployed)": MINT})
     s = r.melt(id_vars="city", value_vars=["warm", "cold"], var_name="season", value_name="rmse")
     s["season"] = s["season"].map({"warm": "Warm season", "cold": "Cold season"})
     fig2 = px.bar(s, x="city", y="rmse", color="season", barmode="group",
-                  color_discrete_map={"Warm season": AMBER, "Cold season": CYAN},
-                  title="Seasonal RMSE — Warm vs Cold")
+                  color_discrete_map={"Warm season": AMBER, "Cold season": CYAN})
     for f in (fig, fig2):
         f.update_yaxes(title="day-ahead RMSE (°F)", ticksuffix="°F")
         f.update_xaxes(title="")
         f.update_traces(hovertemplate="<b>%{x}</b> · %{fullData.name}<br>%{y:.2f}°F<extra></extra>")
+    # WP-01: these cards had NO H3 -> the px title set above was wiped by _tpl(title=None), leaving the two
+    # lead Accuracy charts title-less. Give them real card titles (H3 owns the title, never Plotly).
     return html.Div([section("Forecast Accuracy"),
-                     html.Div([html.Div(card(graph(_tpl(fig))), style={"flex": "1", "minWidth": "380px"}),
-                               html.Div(card(graph(_tpl(fig2))), style={"flex": "1", "minWidth": "380px"})],
+                     html.Div([html.Div(card([html.H3("Day-Ahead RMSE by City — Members-only vs S2X"),
+                                              graph(_tpl(fig))]), style={"flex": "1", "minWidth": "380px"}),
+                               html.Div(card([html.H3("Seasonal RMSE — Warm vs Cold"),
+                                              graph(_tpl(fig2))]), style={"flex": "1", "minWidth": "380px"})],
                               className="grid"),
                      card([html.H3("RMSE Detail (°F)"),
                            dt(present(r, order=["city", "members_rmse", "s2x_rmse", "warm", "cold", "n"]),
@@ -3757,21 +3781,14 @@ def render_forward():
                      className="bar-track", style={"margin": "5px 0 14px"})]))
     return html.Div([section("Forward Validation"),
                      card([html.H3("Pre-registered forward gates"),
-                           html.Div(["Thresholds fixed in advance (docs/FORWARD_PROTOCOL.md, gates A2/A3/A4/"
-                                     "A4.1). Current pre-registered set: LOCK-IN (latency, deprioritized), "
-                                     "S1-high (NY deployed), multi-city S1-high (LAX/CHI), S1_LOW_NYC (A3, "
-                                     "MIN_N=150), and the A4 daily-low multi-city cold sub-gates — PHIL/AUS/MIA "
-                                     "(cold n≥110 + non-degradation + fresh forward CI-excludes-0 + fills "
-                                     "clause) with DEN/LAX WATCH (no tradable path), plus PHX-low (A4.2 — the "
-                                     "STRONGEST cold candidate, +17.65c, at the stricter 99.44% k=9 bar). A4.1 "
-                                     "(2026-06-20) adds a WARM-season TRACKING gate for the user-activated "
-                                     "LAX/DEN/MIA warm streams (break-even floor, n_warm≥90, WATCH-only — "
-                                     "promotion needs a Verity k=9 re-rule + Aegis). New-city S1-HIGH expansion: "
-                                     "SEA-high is a WATCH candidate (fails the k=6 Bonferroni bar); SFO/DAL/BOS "
-                                     "and PHX-HIGH ruled out for S1-high (PHX-LOW above is a separate, strong "
-                                     "cold edge — not ruled out). "
-                                     "Same gate table as the $1,000 Run board, so the two pages agree. All "
-                                     "ACCUMULATING — not yet a proven live edge."],
+                           # WP-01: the long enumerated gate list drifted (missing A6 LV/MIN, A8/FDR). The
+                           # board below IS the live gate state (same run_gates table as the $1k page), so it
+                           # speaks for itself; keep the prose to the pointer + the honest framing.
+                           html.Div(["Thresholds are fixed in advance in docs/FORWARD_PROTOCOL.md. The board "
+                                     "below is the live gate state — the SAME run_gates table as the $1,000 "
+                                     "Run board, so the two pages agree by construction. Every row is still "
+                                     "ACCUMULATING settled signals; none is a proven live edge yet, and REAL "
+                                     "capital moves only on a gate PASS. Paper/forward, never realized P&L."],
                                     className="sub"),
                            html.Div(bars, style={"marginTop": "12px"})])])
 
@@ -3876,7 +3893,7 @@ def render_sandbox():
                    cf("sb-lowedge-cold", "Edge ¢/ct", LOW_COLD_EDGE_DEFAULT, 0.1, 0, 20),
                    cf("sb-lowcities-cold", "Cities", 2, 1, 0, 7),
                    cf("sb-lowtrades-cold", "Trades/mo·city", 20, 1, 0, 400)),
-            bucket("Lock-in (latency)", DIM, "NYC + airports · 0 locks = not in deployed book",
+            bucket("Lock-in (RETIRED 2026-06-25)", DIM, "latency artifact · 0 locks = not in deployed book",
                    cf("sb-lock", "Edge ¢/ct", 12, 0.5, 0, 30),
                    cf("sb-lockpm", "Locks/mo·city", 0, 1, 0, 120))],
             style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(192px, 1fr))",
@@ -4106,14 +4123,29 @@ def topbar():
         html.Span(id="tb-clock", className="mono", style={"color": DIM, "fontSize": "13px"})])
 
 
+def _system_status():
+    """Footer verdict DERIVED from the integrity sentinel's alerts (WP-01: was a hardcoded 'ALL SYSTEMS
+    NOMINAL' that lied when the sentinel was CRITICAL). CRITICAL -> degraded/red; HIGH -> attention/amber;
+    else nominal/green. Always paper-honest."""
+    a = table("alerts")
+    sev = set(str(s).upper() for s in a["severity"]) if (not a.empty and "severity" in a) else set()
+    if "CRITICAL" in sev:
+        return html.Span("DEGRADED — see Alerts · paper / backtest / forward, never realized P&L",
+                         className="sb-item sb-bad")
+    if "HIGH" in sev:
+        return html.Span("ATTENTION — see Alerts · paper / backtest / forward, never realized P&L",
+                         className="sb-item sb-warn")
+    return html.Span("ALL SYSTEMS NOMINAL — paper / backtest / forward, never realized P&L",
+                     className="sb-item sb-ok")
+
+
 def statusbar():
     return html.Div(className="statusbar", children=[
         html.Span([html.Span(className="dot"), "DATA STREAM"], className="sb-item"),
         html.Span(id="status-updated", className="sb-item mono"),
         html.Span("MODE: PAPER", className="sb-item sb-paper"),
         html.Div(style={"flex": "1"}),
-        html.Span("ALL SYSTEMS NOMINAL — paper / backtest / forward, never realized P&L",
-                  className="sb-item sb-ok")])
+        html.Span(_system_status(), id="status-verdict")])
 
 
 def sidebar():
@@ -4248,7 +4280,8 @@ def _live(_n):
     # HONEST market-style ticker strip: per-city day-ahead forecast high + the validated paper edge as the
     # green/red "delta". Real public signals (forecast + our paper edge) -- NOT invented SPX/VIX, NOT P&L.
     if not cn.empty:
-        for _, r in cn.head(6).iterrows():
+        # WP-01: show ALL wired cities (was head(6) -> silently dropped the 7th+ city from the strip).
+        for _, r in cn.iterrows():
             fc = "—" if _isnull(r["forecast_f"]) else f"{r['forecast_f']:.0f}°F"
             e = r["edge_c"]
             if _isnull(e):
@@ -4260,7 +4293,9 @@ def _live(_n):
                                 html.Span(dv, className=dcls)], className="ticker"))
     tk.append(html.Div([html.Span("INTEGRITY ", className="k"),
                         html.Span(meta_value("integrity_verdict"), className="v")], className="ticker"))
-    return now.strftime("%H:%M:%S UTC"), tk, f"data · {meta_value('generated_at_utc')}"
+    # WP-01: topbar clock in ET (the market's clock; site-wide standard), not UTC.
+    et_clock = _to_et_naive(now).strftime("%H:%M:%S ET")
+    return et_clock, tk, f"data · {meta_value('generated_at_utc')}"
 
 
 @app.callback(Output("ov-updated", "children"), Input("tick", "n_intervals"))
@@ -4269,9 +4304,9 @@ def _ov_updated(_n):
 
 
 @app.callback(Output("status-updated", "children"), Output("tb-stale", "children"),
-              Input("tick", "n_intervals"))
+              Output("status-verdict", "children"), Input("tick", "n_intervals"))
 def _statusbar(_n):
-    return f"LAST {meta_value('generated_at_utc')}", staleness_chip()
+    return f"LAST {meta_value('generated_at_utc')}", staleness_chip(), _system_status()
 
 
 # ---- Sandbox profitability model (transparent; paper estimate only) ----
