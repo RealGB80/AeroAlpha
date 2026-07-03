@@ -3204,9 +3204,8 @@ def panel_scalability_curve():
                    f"near-certain books were excluded so no tick-floor ceiling.")
             figs.append(html.Div([
                 html.Div([html.B(_scal_stream_label(sid)),
-                          html.Div(badges, style={"display": "flex", "gap": "5px", "flexWrap": "wrap"})],
-                         style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
-                                "flexWrap": "wrap", "gap": "4px"}),
+                          html.Div(badges, className="badge-row")],
+                         className="facet-head"),
                 graph(_tpl(fig, h=250, legend=True)),
                 html.Div(sub, className="sub", style={"fontSize": "10.5px", "marginTop": "2px"})],
                 className="col-6"))
@@ -3262,9 +3261,8 @@ def panel_scalability_curve():
                    f"figure was a single near-close snapshot and understated this.")
             figs.append(html.Div([
                 html.Div([html.B(_scal_stream_label(sid)),
-                          html.Div(badges, style={"display": "flex", "gap": "5px", "flexWrap": "wrap"})],
-                         style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
-                                "flexWrap": "wrap", "gap": "4px"}),
+                          html.Div(badges, className="badge-row")],
+                         className="facet-head"),
                 graph(_tpl(fig, h=250, legend=True)),
                 html.Div(sub, className="sub", style={"fontSize": "10.5px", "marginTop": "2px"})],
                 className="col-6"))
@@ -3299,9 +3297,8 @@ def panel_scalability_curve():
                                       className="sub", style={"marginTop": "4px"}))
             figs.append(html.Div([
                 html.Div([html.B(_scal_stream_label(sid)),
-                          html.Div(badges, style={"display": "flex", "gap": "5px", "flexWrap": "wrap"})],
-                         style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
-                                "flexWrap": "wrap", "gap": "4px"}),
+                          html.Div(badges, className="badge-row")],
+                         className="facet-head"),
                 html.Div(lines, style={"padding": "14px 4px 6px"})],
                 className="col-6 card",
                 style={"borderColor": "color-mix(in srgb, var(--amber) 22%, transparent)"}))

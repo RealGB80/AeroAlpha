@@ -48,6 +48,9 @@
 .stack        { display: flex; flex-direction: column; gap: var(--sp-3); }
 .chip-row     { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; }
 .metric-tile  { flex: 1; min-width: 96px; }
+/* WP-03.5: the repeated scalability facet-header + badge-row flex patterns */
+.facet-head   { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px; }
+.badge-row    { display: flex; gap: 5px; flex-wrap: wrap; }
 
 /* panel v2 (components.panel) */
 .panel2 .p2-head { display: flex; align-items: center; justify-content: space-between;
