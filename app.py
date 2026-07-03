@@ -1323,16 +1323,19 @@ def panel_equity_curve():
                                   dict(count=6, label="6M", step="month", stepmode="backward"),
                                   dict(step="all", label="ALL")]))
     d0, d1 = str(d["date"].iloc[0]), str(d["date"].iloc[-1])
-    return card([html.H3("Backtest Equity Curve — Leak-Free Walk-Forward S1"),
-                 _cap(f"CUMULATIVE paper net from trading ONE contract of every settled S1 signal, summed in "
-                      f"order over {len(d)} settled days ({d0} to {d1}). It ends at {last:+,.0f}c "
-                      f"(about {last/100:+.2f} dollars total) — a running SUM across all those contracts, so "
-                      f"each new day's settled contracts ADD to it; it is NOT a per-contract average and NOT "
-                      f"annualised. The dashed zero line is the no-edge baseline (take every quote at the mark). "
-                      f"This is BACKTEST research in cents/contract; the DEPLOYED $1,000 paper run with real "
-                      f"Kelly sizing lives on the \"$1k Run\" page (different measure — don't conflate). "
-                      f"Cents/contract, never realized P&L."),
-                 graph(_tpl(fig, h=360))])
+    return panel("Backtest Equity Curve — Leak-Free Walk-Forward S1",
+                 [graph(_tpl(fig, h=360))],
+                 caption=(f"Cumulative paper net from trading one contract of every settled S1 signal over "
+                          f"{len(d)} days, ending {last:+,.0f}c (~{last/100:+.2f} dollars). Backtest "
+                          f"cents/contract — not the $1k run."),
+                 drawer=(f"CUMULATIVE paper net from trading ONE contract of every settled S1 signal, summed in "
+                         f"order over {len(d)} settled days ({d0} to {d1}). It ends at {last:+,.0f}c "
+                         f"(about {last/100:+.2f} dollars total) — a running SUM across all those contracts, so "
+                         f"each new day's settled contracts ADD to it; it is NOT a per-contract average and NOT "
+                         f"annualised. The dashed zero line is the no-edge baseline (take every quote at the "
+                         f"mark). This is BACKTEST research in cents/contract; the DEPLOYED $1,000 paper run "
+                         f"with real Kelly sizing lives on the \"$1k Run\" page (different measure — don't "
+                         f"conflate). Cents/contract, never realized P&L."))
 
 
 def panel_drawdown():
@@ -1353,11 +1356,12 @@ def panel_drawdown():
     fig.update_layout(title=None)
     fig.update_yaxes(title="underwater (c / contract)", ticksuffix="c", tickformat="+,.0f")
     fig.update_xaxes(title="", nticks=8)
-    return card([html.H3("Drawdown — Underwater Curve"),
-                 _cap(f"Peak-to-trough underwater of the backtest equity, in cents/contract. Max backtest "
-                      f"drawdown {maxdd:+.0f} c/contract. Drawdowns are part of any real edge — the curve "
-                      f"recovers, but losing stretches happen. Backtest, never live."),
-                 graph(_tpl(fig, h=240, legend=False))])
+    return panel("Drawdown — Underwater Curve",
+                 [graph(_tpl(fig, h=240, legend=False))],
+                 caption=f"Peak-to-trough underwater of the backtest equity; max drawdown {maxdd:+.0f} c/ct.",
+                 drawer=(f"Peak-to-trough underwater of the backtest equity, in cents/contract. Max backtest "
+                         f"drawdown {maxdd:+.0f} c/contract. Drawdowns are part of any real edge — the curve "
+                         f"recovers, but losing stretches happen. Backtest, never live."))
 
 
 def panel_monthly_returns():
@@ -1376,11 +1380,12 @@ def panel_monthly_returns():
     fig.update_yaxes(title="monthly paper net (c / contract)", ticksuffix="c", tickformat="+,.0f")
     fig.update_xaxes(title="")
     pos = int((d["net_c"] >= 0).sum()); tot = len(d)
-    return card([html.H3("Monthly Returns Distribution"),
-                 _cap(f"Paper net per contract summed by calendar month from the walk-forward backtest. "
-                      f"{pos} of {tot} months positive (green). The edge lives in the average — individual "
-                      f"months swing, including losers. Backtest, never realized P&L."),
-                 graph(_tpl(fig, h=300, legend=False))])
+    return panel("Monthly Returns Distribution",
+                 [graph(_tpl(fig, h=300, legend=False))],
+                 caption=f"Paper net summed by calendar month (backtest); {pos} of {tot} months positive.",
+                 drawer=(f"Paper net per contract summed by calendar month from the walk-forward backtest. "
+                         f"{pos} of {tot} months positive (green). The edge lives in the average — individual "
+                         f"months swing, including losers. Backtest, never realized P&L."))
 
 
 def panel_model_compare():
@@ -1394,11 +1399,13 @@ def panel_model_compare():
                         "logscore": lambda v: "—" if _isnull(v) else f"{v:.3f}",
                         "cov90": _pct01},
                    order=["model", "rmse", "crps", "logscore", "cov90"])
-    return card([html.H3("Model Comparison — EMOS Variants"),
-                 _cap("Leak-free out-of-sample scores by model variant (lower RMSE/CRPS/log-score is better; "
-                      "90% coverage should be ≈90%). The deployed EMOS-full wins — which is why it ships. "
-                      "Backtest, strictly out-of-sample."),
-                 pro_table(show, present_df=False, align_left=("Model",))], id="model-compare-card")
+    return panel("Model Comparison — EMOS Variants",
+                 [pro_table(show, present_df=False, align_left=("Model",))],
+                 caption="Leak-free out-of-sample scores by variant; the deployed EMOS-full wins.",
+                 drawer=("Leak-free out-of-sample scores by model variant (lower RMSE/CRPS/log-score is better; "
+                         "90% coverage should be ≈90%). The deployed EMOS-full wins — which is why it ships. "
+                         "Backtest, strictly out-of-sample."),
+                 id="model-compare-card")
 
 
 def panel_scenario():
@@ -1902,21 +1909,24 @@ def panel_run_equity():
         value=[], className="sb-radio",
         labelStyle={"display": "inline-block", "fontSize": "12px"},
         style={"marginBottom": "6px"})
-    return card([html.H3(f"Paper Equity — {cur_str}"),
-                 _cap(f"The $1,000 PAPER bankroll, RESET to $1,000 on {reset_date} (the algorithm changed; the "
-                      f"prior track is archived). PAPER equity = $1,000 reset baseline − invested + the current "
-                      f"value of open positions (unrealized public-quote mark-to-market) — so the curve moves "
-                      f"CONTINUOUSLY with quotes from a $1,000 start, not just at settlements. Current paper "
-                      f"equity {cur_str} ({'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs the $1,000 baseline; "
-                      f"max paper drawdown {dd}%). Pick a time window below; the readout shows the $ and % change "
-                      f"over it. Source: {src_note}. Toggle the Kelly what-if overlay to see the SAME realized "
-                      f"path re-sized at 0.25–1.0× Kelly (solid = past, linear sizing-scaled; dashed = a forward "
-                      f"projection at the run's realized growth, scaled per sizing; 0.50× = the deployed path). "
-                      f"LIVE real-deploy capital = $0 — promotion to REAL still requires a forward-gate PASS. "
-                      f"Paper / hypothetical what-if, never realized P&L."),
-                 selector, kelly_toggle,
-                 html.Div(readout, id="run-equity-readout", style={"marginBottom": "4px"}),
-                 dcc.Graph(id="run-equity-graph", figure=fig, config={"displayModeBar": False})])
+    return panel(f"Paper Equity — {cur_str}",
+                 [selector, kelly_toggle,
+                  html.Div(readout, id="run-equity-readout", style={"marginBottom": "4px"}),
+                  dcc.Graph(id="run-equity-graph", figure=fig, config={"displayModeBar": False})],
+                 caption=(f"$1,000 paper bankroll (reset {reset_date}), marked continuously to public quotes — "
+                          f"currently {cur_str} ({'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs baseline; "
+                          f"max drawdown {dd}%). Pick a window; toggle the Kelly what-if. $0 real."),
+                 drawer=(f"The $1,000 PAPER bankroll, RESET to $1,000 on {reset_date} (the algorithm changed; the "
+                         f"prior track is archived). PAPER equity = $1,000 reset baseline − invested + the current "
+                         f"value of open positions (unrealized public-quote mark-to-market) — so the curve moves "
+                         f"CONTINUOUSLY with quotes from a $1,000 start, not just at settlements. Current paper "
+                         f"equity {cur_str} ({'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs the $1,000 "
+                         f"baseline; max paper drawdown {dd}%). Pick a time window below; the readout shows the $ "
+                         f"and % change over it. Source: {src_note}. Toggle the Kelly what-if overlay to see the "
+                         f"SAME realized path re-sized at 0.25–1.0× Kelly (solid = past, linear sizing-scaled; "
+                         f"dashed = a forward projection at the run's realized growth, scaled per sizing; 0.50× = "
+                         f"the deployed path). LIVE real-deploy capital = $0 — promotion to REAL still requires a "
+                         f"forward-gate PASS. Paper / hypothetical what-if, never realized P&L."))
 
 
 def panel_equity_composition():
@@ -2361,18 +2371,22 @@ def panel_run_projection():
         stress_txt = (f" The dashed amber STRESS line compounds {100*stress_mo:+.1f}%/mo — the honest "
                       f"downside if the underpowered warm edges turn out to be ~0 — reaching only "
                       f"${end_stress:,.0f} after 12 paper months.")
-    return card([html.H3("Projected Paper-Equity Fan — 12-Month Monte-Carlo"),
-                 _cap("Paper projection (model estimate, NOT realized). Monte-Carlo of the activated 7-edge "
-                      "book at 0.50x Kelly; the P5 / median / P95 BANDS propagate MONTHLY-RETURN VARIANCE ONLY "
-                      "(they assume the edges hold, and widen with time). The dashed amber STRESS line is "
-                      "different: it propagates EDGE UNCERTAINTY by compounding the stress %/mo. The run RESET "
-                      f"to $1,000 on {_run_meta('reset_date', '2026-06-21')} (algorithm changed; prior track "
-                      "archived) — month 0 = $1,000 (YOU ARE HERE). Inputs: median "
-                      f"{100*med_mo:+.1f}%/mo, P5 {100*p5_mo:+.1f}%/mo, P95 {100*p95_mo:+.1f}%/mo -> after 12 "
-                      f"paper months the median path reaches ${end_med:,.0f} (P5 ${end_p5:,.0f} / P95 "
-                      f"${end_p95:,.0f}).{stress_txt} Activated AHEAD of the forward gate; paper $1,000 only, "
-                      "$0 REAL, never realized P&L."),
-                 graph(_tpl(fig, h=320))], id="run-projection-card")
+    return panel("Projected Paper-Equity Fan — 12-Month Monte-Carlo",
+                 [graph(_tpl(fig, h=320))],
+                 caption=(f"Paper projection (model estimate, NOT realized): MC of the activated book at 0.50x "
+                          f"Kelly. Median {100*med_mo:+.1f}%/mo -> ${end_med:,.0f} after 12 months (P5 "
+                          f"${end_p5:,.0f} / P95 ${end_p95:,.0f}). $0 real."),
+                 drawer=("Paper projection (model estimate, NOT realized). Monte-Carlo of the activated 7-edge "
+                         "book at 0.50x Kelly; the P5 / median / P95 BANDS propagate MONTHLY-RETURN VARIANCE "
+                         "ONLY (they assume the edges hold, and widen with time). The dashed amber STRESS line "
+                         "is different: it propagates EDGE UNCERTAINTY by compounding the stress %/mo. The run "
+                         f"RESET to $1,000 on {_run_meta('reset_date', '2026-06-21')} (algorithm changed; prior "
+                         "track archived) — month 0 = $1,000 (YOU ARE HERE). Inputs: median "
+                         f"{100*med_mo:+.1f}%/mo, P5 {100*p5_mo:+.1f}%/mo, P95 {100*p95_mo:+.1f}%/mo -> after 12 "
+                         f"paper months the median path reaches ${end_med:,.0f} (P5 ${end_p5:,.0f} / P95 "
+                         f"${end_p95:,.0f}).{stress_txt} Activated AHEAD of the forward gate; paper $1,000 only, "
+                         "$0 REAL, never realized P&L."),
+                 id="run-projection-card")
 
 
 def panel_gate_board():
@@ -2434,15 +2448,19 @@ def panel_gate_board():
             className="gb-card", style=({"borderLeft": f"3px solid {GREEN}"} if is_active else {})))
     n_active = sum(1 for _, r in d.iterrows()
                    if has_state and str(r.get("paper_state") or "").upper() == "ACTIVE")
-    return card([html.H3("Deploy-Gate Board — Active vs Staged, and What Unlocks REAL Capital"),
-                 _cap(f"Each paper stream shows its PAPER state ({n_active} green ACTIVE · PAPER vs the rest "
-                      "STAGED), the SPECIFIC pre-registered gate it must pass (docs/FORWARD_PROTOCOL A2/A3/A4), "
-                      "forward progress, and its stake. ACTIVE = user-activated in the $1,000 PAPER run AHEAD "
-                      "of the gate (paper money only). Activation is ORTHOGONAL to the gate — every row is "
-                      "still ACCUMULATING, shown beside its stake. REAL deployment ($0 live) still requires a "
-                      "gate PASS. WATCH · NO PATH = validated-but-not-promotable. Paper/forward only, never "
-                      "realized P&L."),
-                 html.Div(rows, className="gb-grid")], id="gate-board-card")
+    return panel("Deploy-Gate Board — Active vs Staged, and What Unlocks REAL Capital",
+                 [html.Div(rows, className="gb-grid")],
+                 caption=(f"Each stream's paper state ({n_active} ACTIVE · PAPER vs the rest STAGED), the "
+                          f"pre-registered gate it must pass, forward progress, and its stake. REAL deploy "
+                          f"($0 live) still needs a gate PASS."),
+                 drawer=(f"Each paper stream shows its PAPER state ({n_active} green ACTIVE · PAPER vs the rest "
+                         "STAGED), the SPECIFIC pre-registered gate it must pass (docs/FORWARD_PROTOCOL A2/A3/"
+                         "A4), forward progress, and its stake. ACTIVE = user-activated in the $1,000 PAPER run "
+                         "AHEAD of the gate (paper money only). Activation is ORTHOGONAL to the gate — every row "
+                         "is still ACCUMULATING, shown beside its stake. REAL deployment ($0 live) still "
+                         "requires a gate PASS. WATCH · NO PATH = validated-but-not-promotable. Paper/forward "
+                         "only, never realized P&L."),
+                 id="gate-board-card")
 
 
 def panel_staged_alloc():
@@ -2654,20 +2672,11 @@ def panel_open_positions():
                             "mark_delta", "direction", "in_1k_book"],
                    rename=rename, fmt=fmtmap, order=cols)
     n = len(d)
-    return card([html.H3(["Pending Paper Trades — Open, Unsettled Signals  ", info_dot(
+    return panel(["Pending Paper Trades — Open, Unsettled Signals  ", info_dot(
                     "Paper signals the monitors have LOGGED but that have NOT yet settled. The Entry → Current "
                     "column is a PAPER MARK, UNREALIZED — not real money, not realized P&L, not a real "
-                    "position. No orders, no account. Current = live public YES-mid for the side held.")]),
-                 _cap(f"{n} paper signals logged across the forward monitors but NOT yet settled, plotted by "
-                      f"target settle date and model edge (circle = YES side, diamond = NO). "
-                      f"Contracts = the staged $1,000-harness size and Paid ($) = the cost basis per position "
-                      f"(contracts × entry price; paper stake, no real orders). The "
-                      f"Entry → Current column marks each paper signal to the live public quote with a green "
-                      f"up / red down chip. The Net-Per-Day Swing below AGGREGATES across ALL open paper "
-                      f"contracts per calendar day (sum of entry cost vs sum of current marks) — a PAPER, "
-                      f"UNREALIZED mark, NOT real money or realized P&L. Once signals settle they feed the "
-                      f"gate-progress counters above."),
-                 graph(_tpl(fig, h=300)) if not scat.empty else html.Div(),
+                    "position. No orders, no account. Current = live public YES-mid for the side held.")],
+                 [graph(_tpl(fig, h=300)) if not scat.empty else html.Div(),
                  # NET-PER-DAY swing across all open contracts (USER ASK 2026-06-21)
                  html.Div([html.Div("Net-Per-Day Swing (paper, unrealized — all open contracts)",
                                      className="u-label", style={"margin": "6px 0 4px"}),
@@ -2683,7 +2692,19 @@ def panel_open_positions():
                             f"stake is allocated, so they're not held above. They still settle and score."],
                            className="sub", style={"fontSize": "11px", "marginTop": "8px", "opacity": .85})
                   if unfunded_n else html.Div())],
-                id="open-positions-card")
+                 caption=(f"{n} paper signals logged but not yet settled, plotted by target date and model "
+                          f"edge. The Net-Per-Day Swing aggregates entry cost vs current mark across all open "
+                          f"contracts — a paper, unrealized mark. $0 real."),
+                 drawer=(f"{n} paper signals logged across the forward monitors but NOT yet settled, plotted by "
+                         f"target settle date and model edge (circle = YES side, diamond = NO). Contracts = the "
+                         f"staged $1,000-harness size and Paid ($) = the cost basis per position (contracts × "
+                         f"entry price; paper stake, no real orders). The Entry → Current column marks each "
+                         f"paper signal to the live public quote with a green up / red down chip. The "
+                         f"Net-Per-Day Swing below AGGREGATES across ALL open paper contracts per calendar day "
+                         f"(sum of entry cost vs sum of current marks) — a PAPER, UNREALIZED mark, NOT real "
+                         f"money or realized P&L. Once signals settle they feed the gate-progress counters "
+                         f"above."),
+                 id="open-positions-card")
 
 
 def panel_research_edge_signals():
