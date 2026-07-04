@@ -1,0 +1,22 @@
+#!/bin/sh
+# MECHANICAL PRE-PUSH GATE for the PUBLIC dashboard_app repo (Fable 5 continuity build, 2026-07-04).
+# Enabled by:  git config core.hooksPath hooks   (one-time per clone; already set on the lab machine)
+#
+# 1) SECRET SCAN over tracked files (this repo is PUBLIC — a leaked DSN/PAT is world-readable)
+# 2) SMOKE GATE: every dashboard page must render + JSON-serialize (smoke.py, 8/8)
+# Bypass ONLY for a genuine emergency: git push --no-verify (and say so in the commit/handoff).
+
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+# find a python: the research venv one level up, else PATH
+PY="../.venv/Scripts/python.exe"
+[ -x "$PY" ] || PY="python"
+
+echo "[pre-push] 1/2 secret scan (public repo)"
+"$PY" hooks/secret_scan.py
+
+echo "[pre-push] 2/2 smoke gate (render + serialize every page)"
+DASH_PREWARM=0 "$PY" smoke.py
+
+echo "[pre-push] PASS -- pushing."
