@@ -1025,8 +1025,13 @@ def kpi_spark_row():
     if not strat.empty and "edge_c" in strat:
         ev = strat["edge_c"].dropna()
         best_edge = float(ev.max()) if not ev.empty else None
-    # cumulative paper backtest net (cents) -> the "total return (paper)" headline, clearly backtest
-    cum = float(eq["equity_c"].iloc[-1]) if not eq.empty else None
+    # PAPER NET headline = AVG net per contract, matching this card's own "avg net cents/contract"
+    # tooltip. equity_c is CUMULATIVE cents and `trades` is the per-day contract count, so the raw last
+    # point (+2429c over 771 contracts) was a 10-month total mislabeled "c/ct". Divide to get +3.15 c/ct.
+    paper_net_avg = None
+    if not eq.empty and "equity_c" in eq and "trades" in eq:
+        _cum = float(eq["equity_c"].iloc[-1]); _n = float(eq["trades"].sum())
+        paper_net_avg = (_cum / _n) if _n else None
     cards = [
         # WP-06: re-wired to the HONEST series WP-05 now emits (ny_rmse = rolling day-ahead RMSE;
         # best_edge_c = per-stream validated-edge distribution). WP-01 had blanked these because they were
@@ -1036,7 +1041,7 @@ def kpi_spark_row():
         kpi_spark_card("NY S1 EDGE (S2X)", ny_edge, "c/contract", "BACKTEST", "ny_edge_c"),
         kpi_spark_card("BEST STREAM EDGE", best_edge, "c/contract", "BACKTEST", "best_edge_c"),
         kpi_spark_card("CITIES BEAT MARKET", cities, "cities", "BACKTEST", None),
-        kpi_spark_card("PAPER NET (BACKTEST)", cum, "c/contract", "BACKTEST", "equity_c",
+        kpi_spark_card("PAPER NET (BACKTEST)", paper_net_avg, "c/contract", "BACKTEST", "equity_c",
                        tip=PAPER_NET_TIP),
         kpi_spark_card("LIVE CAPITAL", 0, "$", "PAPER", None),
     ]
@@ -3072,6 +3077,15 @@ def _data_age_min():
     raw = meta_value("generated_at_utc", "")
     if not raw or raw == "—":
         return None
+    # Primary path: ISO-8601 with an offset like '...+00:00' (what the producer actually writes).
+    # The strptime table below never matched an offset, so the chip always read "DATA AGE UNKNOWN".
+    try:
+        t = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - t).total_seconds() / 60.0)
+    except ValueError:
+        pass
     for f in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%fZ"):
         try:
             t = datetime.strptime(raw.strip(), f).replace(tzinfo=timezone.utc)
