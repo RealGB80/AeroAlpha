@@ -217,16 +217,24 @@ def refresh(eng) -> int:
         r["price_series"] = json.dumps(base)
         new_rows.append(r)
 
-        if r.get("in_1k_book") and contracts > 0 and entry_c is not None and cur is not None:
+        in_book = bool(r.get("in_1k_book")) and contracts > 0 and entry_c is not None
+        # Equity (headline $) stays gated on a live/forward-filled mark -- unchanged, cent-validated formula.
+        if in_book and cur is not None:
             unreal += contracts * (cur - entry_c) / 100.0
             cost_open += contracts * entry_c / 100.0
             pos_value += contracts * cur / 100.0
             n_open += 1
+        # Resolution-day COST BASIS must NOT depend on a live quote arriving this run: a thin/just-opened
+        # position with no mark was dropping out of `paid`, so the paid line jumped/broke (e.g. 7/5). Count
+        # paid for every held in-book contract; value uses the mark when we have one, else cost (delta 0, so
+        # resolution-day NET is unchanged and stays consistent with equity's unrealized).
+        if in_book:
             res = str(r.get("target_date") or r.get("resolution_date") or "")[:10]
             if res:
+                val_c = cur if cur is not None else entry_c
                 a = res_acc.setdefault(res, {"paid": 0.0, "value": 0.0, "n": 0, "ct": 0.0})
                 a["paid"] += contracts * entry_c
-                a["value"] += contracts * cur
+                a["value"] += contracts * val_c
                 a["n"] += 1
                 a["ct"] += contracts
 
