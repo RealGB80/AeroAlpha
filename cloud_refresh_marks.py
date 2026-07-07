@@ -150,12 +150,34 @@ def _num(v, default=None):
         return default
 
 
-def refresh(eng) -> int:
+SPEC_RAW_URL = "https://raw.githubusercontent.com/RealGB80/AeroAlpha/cloud-spec/cloud_marks_spec.json"
+
+
+def _load_spec(eng):
+    """Load the marks spec. PRIMARY = the `cloud-spec` branch raw file over HTTPS/443 -- the laptop publishes
+    there even when its network blocks Postgres:5432 (campus wifi froze the dashboard 2026-07-07). FALLBACK =
+    the Neon `cloud_marks_spec` table (used when they're on an unblocked network / git fetch fails). Returns
+    (spec_dict, source_str) or (None, None)."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(SPEC_RAW_URL, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            blob = json.loads(resp.read().decode("utf-8"))
+        return json.loads(blob["spec_json"]), "git"
+    except Exception as exc:                       # noqa: BLE001
+        print(f"[cloud-marks] git spec fetch failed ({type(exc).__name__}); falling back to Neon")
     spec_df = _read_table(eng, SPEC_TABLE)
     if spec_df.empty:
-        print("[cloud-marks] no cloud_marks_spec yet (laptop has not published) -> nothing to do.")
+        return None, None
+    return json.loads(spec_df.sort_values("generated_utc").iloc[-1]["spec_json"]), "neon"
+
+
+def refresh(eng) -> int:
+    spec, spec_src = _load_spec(eng)
+    if spec is None:
+        print("[cloud-marks] no cloud_marks_spec (git+Neon) -> nothing to do.")
         return 0
-    spec = json.loads(spec_df.sort_values("generated_utc").iloc[-1]["spec_json"])
+    print(f"[cloud-marks] spec source={spec_src} generated={spec.get('generated_utc', '?')}")
     bankroll_start = float(spec.get("bankroll_start") or 1000.0)
     realized = float(spec.get("realized") or 0.0)
     positions = spec.get("positions") or []

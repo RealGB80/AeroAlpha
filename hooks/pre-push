@@ -19,6 +19,8 @@ echo "[pre-push] 1/2 secret scan (public repo)"
 "$PY" hooks/secret_scan.py </dev/null
 
 echo "[pre-push] 2/2 smoke gate (render + serialize every page)"
-DASH_PREWARM=0 "$PY" smoke.py </dev/null
+# Force the LOCAL sqlite store: a render test must never dial the prod cloud DB. With a Neon URL set on a
+# network that blocks Postgres:5432 (campus wifi), smoke hung forever on the connection timeout (2026-07-07).
+DASHBOARD_DATABASE_URL= DASH_PREWARM=0 "$PY" smoke.py </dev/null
 
 echo "[pre-push] PASS -- pushing."
