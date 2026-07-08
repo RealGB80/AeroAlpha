@@ -20,6 +20,7 @@ HARD BOUNDARIES: paper only; NO auth, NO orders, NO account endpoints, NO real m
 """
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import sys
@@ -151,6 +152,41 @@ def _num(v, default=None):
 
 
 SPEC_RAW_URL = "https://raw.githubusercontent.com/RealGB80/AeroAlpha/cloud-spec/cloud_marks_spec.json"
+TABLES_RAW_URL = "https://raw.githubusercontent.com/RealGB80/AeroAlpha/cloud-spec/dashboard_tables.json.gz"
+# Tables THIS job owns (append/rebuild here) -- NEVER overwritten by the producer-tables sync below.
+_CLOUD_OWNED = {"open_positions", "bankroll_equity_timeline", "pending_price_daily",
+                "bankroll_marks", "resolution_day_curve", "cloud_marks_spec"}
+
+
+def _sync_producer_tables(eng) -> None:
+    """Load the laptop's producer tables from the cloud-spec branch (HTTPS/443) into Neon. WHY: on networks
+    that block Postgres:5432 (campus wifi, 2026-07-07) the laptop's hourly --prod write dies, freezing every
+    non-live table. The laptop now ships ALL producer tables in dashboard_tables.json.gz on the same data
+    branch; this job (which CAN reach Neon) writes them. Marker table `producer_tables_meta.generated_utc`
+    makes it a no-op ~19 of 20 cycles (blob changes ~hourly, loop runs ~3-min). Never raises; never touches
+    the cloud-owned live-mark tables."""
+    try:
+        req = urllib.request.Request(TABLES_RAW_URL, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            blob = json.loads(gzip.decompress(resp.read()).decode("utf-8"))
+        gen = str(blob.get("generated_utc") or "")
+        tables = blob.get("tables") or {}
+        if not gen or not tables:
+            return
+        meta = _read_table(eng, "producer_tables_meta")
+        if not meta.empty and str(meta.iloc[-1].get("generated_utc")) == gen:
+            return                                   # already loaded this build
+        n_w = n_skip = 0
+        for name, recs in tables.items():
+            if name in _CLOUD_OWNED or not isinstance(recs, list) or not recs:
+                n_skip += 1
+                continue
+            status = safe_write_table(eng, name, pd.DataFrame(recs))
+            n_w += 1 if status == "written" else 0
+        safe_write_table(eng, "producer_tables_meta", pd.DataFrame([{"generated_utc": gen}]))
+        print(f"[cloud-marks] producer tables synced from git: {n_w} written, {n_skip} skipped (gen={gen})")
+    except Exception as exc:                          # noqa: BLE001 -- tables sync must never break the marks
+        print(f"[cloud-marks] producer tables sync skipped ({type(exc).__name__})")
 
 
 def _load_spec(eng):
@@ -173,6 +209,7 @@ def _load_spec(eng):
 
 
 def refresh(eng) -> int:
+    _sync_producer_tables(eng)                      # 443-shipped producer tables (no-op when unchanged)
     spec, spec_src = _load_spec(eng)
     if spec is None:
         print("[cloud-marks] no cloud_marks_spec (git+Neon) -> nothing to do.")
