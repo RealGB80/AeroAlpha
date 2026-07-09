@@ -83,6 +83,53 @@ def _read_table(eng, name: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _append_rows(eng, name: str, cols: list[str], rows: list[dict], cap: int,
+                 order_col: str = "ts") -> str:
+    """EGRESS-LEAN append: INSERT the new rows + occasional prune beyond cap. Replaces the
+    read-whole-table -> rewrite-whole-table pattern that pulled the full 8k/16k-row history from Neon
+    EVERY 3-min cycle (~1.5GB/day egress) and exhausted the free-tier data-transfer quota
+    (HTTP 402, 2026-07-08). Tolerates legacy schemas (intersects columns) and creates the table on
+    first run. Never raises; returns a short status."""
+    if not rows:
+        return "no_rows"
+
+    def _insert(use_cols):
+        collist = ", ".join(f'"{c}"' for c in use_cols)
+        binds = ", ".join(f":{c}" for c in use_cols)
+        params = [{c: r.get(c) for c in use_cols} for r in rows]
+        with eng.begin() as cx:
+            cx.execute(text(f'INSERT INTO "{name}" ({collist}) VALUES ({binds})'), params)
+    try:
+        _insert(cols)
+        status = "appended"
+    except Exception:
+        try:                                   # legacy table w/ fewer columns? intersect and retry
+            have = list(pd.read_sql(f'SELECT * FROM "{name}" LIMIT 0', eng).columns)
+            use = [c for c in cols if c in have]
+            if use:
+                _insert(use)
+                status = f"appended({len(use)}/{len(cols)} cols)"
+            else:
+                return "error:no_common_cols"
+        except Exception:
+            try:                               # table does not exist yet -> create it
+                pd.DataFrame(rows)[cols].to_sql(name, eng, if_exists="append", index=False)
+                status = "created"
+            except Exception as exc:           # noqa: BLE001 -- sanitized, never the DSN
+                return f"error:{type(exc).__name__}"
+    try:                                       # prune ~1/50 cycles (keeps the cap without hot egress)
+        import random
+        if random.random() < 0.02:
+            with eng.begin() as cx:
+                cx.exec_driver_sql(
+                    f'DELETE FROM "{name}" WHERE "{order_col}" NOT IN '
+                    f'(SELECT "{order_col}" FROM "{name}" ORDER BY "{order_col}" DESC LIMIT {int(cap)})')
+            status += "+pruned"
+    except Exception:
+        pass
+    return status
+
+
 # --------------------------------------------------------------------------- quotes
 def fetch_yes_mid_cents(ticker: str):
     """Public unauth GET /markets/{ticker} -> YES mid (cents) or None. IDENTICAL mid logic to the producer."""
@@ -300,24 +347,19 @@ def refresh(eng) -> int:
     equity = round(bankroll_start + realized + unreal, 2)
     cash = round(bankroll_start + realized - cost_open, 2)
 
-    # ---- APPEND the fresh point to the equity timeline (read existing history from Neon, add one row) ----
-    et = _read_table(eng, "bankroll_equity_timeline")
+    # ---- APPEND the fresh point to the equity timeline (SQL INSERT; no full-history read) ----
     et_cols = ["ts", "equity", "realized", "unrealized", "n_open", "cash", "positions"]
     new_eq = {"ts": now, "equity": equity, "realized": round(realized, 2),
               "unrealized": round(unreal, 2), "n_open": n_open, "cash": cash,
               "positions": round(pos_value, 2)}
-    et = pd.concat([et, pd.DataFrame([new_eq])], ignore_index=True) if not et.empty else pd.DataFrame([new_eq])
-    et = et[[c for c in et_cols if c in et.columns]].tail(EQUITY_CAP_ROWS)
+    et_status = _append_rows(eng, "bankroll_equity_timeline", et_cols, [new_eq], EQUITY_CAP_ROWS)
 
-    # ---- APPEND resolution-day points (one per open resolution date) ----
-    rc = _read_table(eng, "resolution_day_curve")
+    # ---- APPEND resolution-day points (one per open resolution date; SQL INSERT, no full read) ----
     rc_cols = ["resolution_date", "ts", "cumulative_paid_c", "cumulative_value_c", "n_entered", "n_contracts"]
     add = [{"resolution_date": d, "ts": now, "cumulative_paid_c": round(a["paid"], 2),
             "cumulative_value_c": round(a["value"], 2), "n_entered": a["n"],
             "n_contracts": round(a["ct"], 2)} for d, a in sorted(res_acc.items())]
-    if add:
-        rc = pd.concat([rc, pd.DataFrame(add)], ignore_index=True) if not rc.empty else pd.DataFrame(add)
-        rc = rc[[c for c in rc_cols if c in rc.columns]].tail(RESCURVE_CAP_ROWS)
+    rc_status = _append_rows(eng, "resolution_day_curve", rc_cols, add, RESCURVE_CAP_ROWS)
 
     # PENDING-LIST = FUNDED positions only: drop the $0 rows (watch streams + in-book-but-unfunded cold
     # candidates) that rendered as "0 contracts / -- paid" and cluttered the pending view. They are tracked in
@@ -332,18 +374,16 @@ def refresh(eng) -> int:
     if et.empty != rc.empty and not (et.empty and rc.empty):
         et, rc = pd.DataFrame(), pd.DataFrame()
 
-    results = {}
-    for name, df in (("open_positions", op), ("bankroll_equity_timeline", et),
-                     ("resolution_day_curve", rc), ("pending_price_daily", pend),
-                     ("bankroll_marks", bmk)):
-        results[name] = safe_write_table(eng, name, df)
-    rowcounts = {"open_positions": len(op), "bankroll_equity_timeline": len(et),
-                 "resolution_day_curve": len(rc), "pending_price_daily": len(pend), "bankroll_marks": len(bmk)}
+    results = {"bankroll_equity_timeline": f"{et_status} (+1 row)",
+               "resolution_day_curve": f"{rc_status} (+{len(add)} rows)"}
+    rowcounts = {"open_positions": len(op), "pending_price_daily": len(pend), "bankroll_marks": len(bmk)}
+    for name, df in (("open_positions", op), ("pending_price_daily", pend), ("bankroll_marks", bmk)):
+        results[name] = f"{safe_write_table(eng, name, df)} ({rowcounts[name]} rows)"
     print(f"[cloud-marks] equity=${equity:,.2f} (realized {realized:+.2f} / unreal {unreal:+.2f}, {n_open} open) "
           f"| quotes {n_fresh}/{len(tickers)} in {pull_s:.1f}s | spec_age={spec.get('generated_utc')}")
     for k, v in results.items():
-        print(f"    {k}: {rowcounts[k]} rows [{v}]")
-    err = [k for k, v in results.items() if v.startswith("error")]
+        print(f"    {k}: [{v}]")
+    err = [k for k, v in results.items() if "error" in v]
     return 1 if err else 0
 
 
