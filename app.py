@@ -4095,7 +4095,13 @@ def _content_sandbox():
                   "number is sized at the edge CI lower bound. ",
                   html.B("Paper / backtest estimate — NOT a guarantee, never realized P&L."), " Staged math: "
                   "today LIVE capital = $0 until the pre-registered forward gates PASS; this lab shows the "
-                  "what-if if/when they do."], className="sub")],
+                  "what-if if/when they do. ",
+                  html.B("C2 recalibration (2026-07-09): "),
+                  "forward forensics proved the non-NY channels' raw model probabilities were overstated "
+                  "(selection effect); signals now clear a market-anchored calibrated edge before booking "
+                  "(shrink-to-market, lambda=0.149, provisional). Defaults here are the C2-honest, NY-carried "
+                  "values; cold-only add-ons keep their validated cold-gate floors pending a cold-season "
+                  "re-fit."], className="sub")],
         style={"borderColor": "color-mix(in srgb, var(--amber) 40%, transparent)"})
 
     # NEW (2026-06-25): TIME-TO-TARGET simulator under the edge inputs. Set a profit goal -> the median time
@@ -4590,10 +4596,16 @@ DEPTH_CAP = 250        # contracts fillable within slippage (measured median; fl
 #   LOW  cold-only   = PHIL/PHX cold ADD ~14.7c (+11.79/+17.65, 2 cities) -- $0 in warm, auto-stage at cold turn.
 # Cold buckets default ON to their validated city counts (full-book default, user-chosen) so the scenario
 # shows year-round + cold upside; zero the cold cities for the warm-season-only (deployed) view.
-S1_HIGH_EDGE_DEFAULT = 4.9          # gross raw-backtest c/ct, HIGH all-season (NY/LAX/CHI mean)
-S1_HIGH_COLD_EDGE_DEFAULT = 9.5     # gross c/ct, HIGH cold-only add (LV/MIN cold mean +9.19/+9.89)
-LOW_EDGE_DEFAULT = 7.6              # gross c/ct, LOW all-season / active (NY-low + AUS/LAX/DEN/MIA warm)
-LOW_COLD_EDGE_DEFAULT = 14.7        # gross c/ct, LOW cold-only add (PHIL/PHX cold mean +11.79/+17.65)
+# C2 RECALIBRATION (2026-07-09, calibration_layer_20260708_234627 + Verity PROMOTE-WITH-CONDITIONS):
+# loss forensics proved the non-NY channels' raw probabilities overstated (selection winner's curse);
+# a shrink-to-market layer (lambda=0.149, provisional) now gates tradability in the monitors. Honest
+# ALL-SEASON defaults are therefore NY-carried (LAX/CHI-high + warm daily-lows rarely clear the
+# calibrated threshold). COLD-only add-ons keep their validated cold-gate floors (C2 fit on warm data
+# only; re-fit due at the cold turn).
+S1_HIGH_EDGE_DEFAULT = 4.0          # gross c/ct, HIGH all-season under C2 = NY-high (calibrated control)
+S1_HIGH_COLD_EDGE_DEFAULT = 9.5     # gross c/ct, HIGH cold-only add (LV/MIN cold mean; A6 gate floors)
+LOW_EDGE_DEFAULT = 4.3              # gross c/ct, LOW all-season under C2 (NY-low honest kept-edge; warm lows dormant)
+LOW_COLD_EDGE_DEFAULT = 14.7        # gross c/ct, LOW cold-only add (PHIL/PHX cold mean; A4 gate floors)
 # Per-trade contract SIZING that anchors the linear what-if to the LIVE deployed book's Kelly-MC median (the
 # kelly_activated_book joint-MC that run_projection reads). The 8-stream activated book (incl NY-low, MC
 # regenerated 2026-06-24) medians 21.33%/m, so CT_CAL=3.52 makes the deployed-config default MATCH that
