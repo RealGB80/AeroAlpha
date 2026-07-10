@@ -199,6 +199,92 @@ def _num(v, default=None):
 
 
 SPEC_RAW_URL = "https://raw.githubusercontent.com/RealGB80/AeroAlpha/cloud-spec/cloud_marks_spec.json"
+# ---- NEON-FREE LIVE STORE (2026-07-09/10): publish the 5 live-mark tables to the `live-marks` branch
+# every cycle (amend+force, single writer = this job; laptop owns `cloud-spec` separately, no clash).
+# The app reads the raw file git-first (data.py), so the site no longer depends on Neon quotas at all.
+# Equity/rescurve history rides in a LOCAL state file across loop iterations (seeded from the branch on
+# job start, Neon fallback), so no full-table reads anywhere. Neon writes stay as best-effort fallback.
+LIVE_BRANCH = "live-marks"
+LIVE_FILE = "live_marks.json.gz"
+LIVE_RAW_URL = f"https://raw.githubusercontent.com/RealGB80/AeroAlpha/{LIVE_BRANCH}/{LIVE_FILE}"
+_STATE_PATH = "live_marks_state.json.gz"        # persists across the 180s loop iterations within a job
+_LIVE_WT = ".live_marks_wt"
+
+
+def _df_records(df) -> list:
+    if df is None or getattr(df, "empty", True):
+        return []
+    out = []
+    for r in df.to_dict("records"):
+        out.append({k: (None if (isinstance(v, float) and pd.isna(v)) else
+                        (v.item() if hasattr(v, "item") else v)) for k, v in r.items()})
+    return out
+
+
+def _load_live_state(eng) -> dict:
+    """History for the two append tables: local state file (same job) -> live-marks raw (previous job)
+    -> Neon (legacy fallback) -> empty. Never raises."""
+    try:
+        with open(_STATE_PATH, "rb") as fh:
+            return json.loads(gzip.decompress(fh.read()).decode("utf-8"))
+    except Exception:
+        pass
+    try:
+        req = urllib.request.Request(LIVE_RAW_URL, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            blob = json.loads(gzip.decompress(resp.read()).decode("utf-8"))
+        t = blob.get("tables") or {}
+        return {"bankroll_equity_timeline": t.get("bankroll_equity_timeline") or [],
+                "resolution_day_curve": t.get("resolution_day_curve") or []}
+    except Exception:
+        pass
+    state = {}
+    for name in ("bankroll_equity_timeline", "resolution_day_curve"):
+        state[name] = _df_records(_read_table(eng, name))
+    return state
+
+
+def _publish_live_marks(state: dict, op, pend, bmk, now: str) -> str:
+    """Write the full 5-table live blob to the local state file + the live-marks branch (amend+force,
+    worktree shares the checkout's auth). Returns a short status; never raises."""
+    import subprocess
+    blob = {"generated_utc": now, "tables": {
+        "bankroll_equity_timeline": state.get("bankroll_equity_timeline") or [],
+        "resolution_day_curve": state.get("resolution_day_curve") or [],
+        "open_positions": _df_records(op), "pending_price_daily": _df_records(pend),
+        "bankroll_marks": _df_records(bmk)}}
+    payload = gzip.compress(json.dumps(blob, separators=(",", ":"), default=str).encode("utf-8"))
+    try:
+        with open(_STATE_PATH, "wb") as fh:
+            fh.write(payload)
+    except Exception:
+        pass
+
+    def run(args, cwd="."):
+        return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=120)
+    try:
+        if not os.path.exists(os.path.join(_LIVE_WT, ".git")):
+            run(["git", "worktree", "prune"])
+            run(["git", "fetch", "origin", LIVE_BRANCH])
+            r = run(["git", "worktree", "add", "-B", LIVE_BRANCH, _LIVE_WT, f"origin/{LIVE_BRANCH}"])
+            if r.returncode != 0:                    # branch does not exist yet -> orphan
+                run(["git", "worktree", "add", "--detach", _LIVE_WT])
+                run(["git", "checkout", "--orphan", LIVE_BRANCH], _LIVE_WT)
+                run(["git", "rm", "-rf", "."], _LIVE_WT)
+        with open(os.path.join(_LIVE_WT, LIVE_FILE), "wb") as fh:
+            fh.write(payload)
+        run(["git", "add", "-A"], _LIVE_WT)
+        ident = ["-c", "user.email=bot@aeroalpha.local", "-c", "user.name=aeroalpha-marks"]
+        has_head = run(["git", "rev-parse", "-q", "--verify", "HEAD"], _LIVE_WT).returncode == 0
+        if has_head:
+            run(["git", *ident, "commit", "--amend", "-m", f"marks {now}"], _LIVE_WT)
+        else:
+            run(["git", *ident, "commit", "-m", f"marks {now}"], _LIVE_WT)
+        p = run(["git", "-c", "core.hooksPath=.git/x-no-hooks", "push", "--force", "origin",
+                 f"{LIVE_BRANCH}:{LIVE_BRANCH}"], _LIVE_WT)
+        return "git_ok" if p.returncode == 0 else f"git_push_fail({p.returncode})"
+    except Exception as exc:                          # noqa: BLE001
+        return f"git_err:{type(exc).__name__}"
 TABLES_RAW_URL = "https://raw.githubusercontent.com/RealGB80/AeroAlpha/cloud-spec/dashboard_tables.json.gz"
 # Tables THIS job owns (append/rebuild here) -- NEVER overwritten by the producer-tables sync below.
 _CLOUD_OWNED = {"open_positions", "bankroll_equity_timeline", "pending_price_daily",
@@ -369,13 +455,21 @@ def refresh(eng) -> int:
     op = pd.DataFrame(funded_rows)
     pend = pd.DataFrame(spec.get("pending_price_daily") or [])
     bmk = pd.DataFrame(spec.get("bankroll_marks") or [])
+    # (the old et/rc desync guard is gone: the single live-marks blob keeps all 5 tables in lockstep
+    #  by construction -- one atomic file per cycle)
 
-    # desync guard: never publish exactly one of {equity, resolution} empty (keep both prior copies in lockstep)
-    if et.empty != rc.empty and not (et.empty and rc.empty):
-        et, rc = pd.DataFrame(), pd.DataFrame()
+    # ---- NEON-FREE publish: full 5-table blob -> live-marks branch (the app reads it git-first) ----
+    state = _load_live_state(eng)
+    state["bankroll_equity_timeline"] = ((state.get("bankroll_equity_timeline") or [])
+                                         + [new_eq])[-EQUITY_CAP_ROWS:]
+    state["resolution_day_curve"] = ((state.get("resolution_day_curve") or [])
+                                     + add)[-RESCURVE_CAP_ROWS:]
+    live_status = _publish_live_marks(state, op, pend, bmk, now)
 
-    results = {"bankroll_equity_timeline": f"{et_status} (+1 row)",
-               "resolution_day_curve": f"{rc_status} (+{len(add)} rows)"}
+    results = {"live_marks_blob": f"{live_status} (et={len(state['bankroll_equity_timeline'])}, "
+                                  f"rc={len(state['resolution_day_curve'])} rows)",
+               "bankroll_equity_timeline": f"neon:{et_status} (+1 row)",
+               "resolution_day_curve": f"neon:{rc_status} (+{len(add)} rows)"}
     rowcounts = {"open_positions": len(op), "pending_price_daily": len(pend), "bankroll_marks": len(bmk)}
     for name, df in (("open_positions", op), ("pending_price_daily", pend), ("bankroll_marks", bmk)):
         results[name] = f"{safe_write_table(eng, name, df)} ({rowcounts[name]} rows)"

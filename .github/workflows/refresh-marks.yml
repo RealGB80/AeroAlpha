@@ -19,6 +19,9 @@ on:
 
 permissions:
   actions: write                  # allow the API re-dispatch
+  contents: write                 # NEON-FREE live store (2026-07-10): push live_marks.json.gz to the
+                                  # live-marks DATA branch each cycle (app reads it git-first; branch
+                                  # push cannot touch main -- the refspec is live-marks:live-marks only)
 
 concurrency:
   group: refresh-live-marks       # only ONE chain link active at a time (no pileup, no double-writer)
@@ -34,7 +37,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install --quiet "sqlalchemy>=2.0" "psycopg2-binary>=2.9" "pandas>=2.0"
+        # PINNED (Aegis 2026-07-10): exact versions shrink the supply-chain window now sitting behind
+        # the contents:write token (values = the laptop's validated versions).
+        run: pip install --quiet "sqlalchemy==2.0.51" "psycopg2-binary==2.9.12" "pandas==3.0.3"
       - name: Continuous refresh loop (~5.3h, every 3 min)
         env:
           DASHBOARD_DATABASE_URL: ${{ secrets.DASHBOARD_DATABASE_URL }}

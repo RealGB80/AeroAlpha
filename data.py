@@ -41,17 +41,66 @@ def _engine():
     return _ENGINE
 
 
+# ---- GIT-FIRST data store (2026-07-09, Neon-quota independence) -------------------------------------
+# WHY: Neon's free-tier DATA TRANSFER quota exhausted (HTTP 402, 2026-07-08) and blanked the whole site.
+# The laptop already publishes ALL producer tables to the public repo's `cloud-spec` branch over
+# git/443, and the marks job publishes its live tables to `live-marks` -- so the app can read BOTH raw
+# files directly and never depend on Neon. Hosted mode is GIT-FIRST with Neon as fallback; local sqlite
+# mode is untouched (no network in dev/smoke). raw CDN caches ~5min -> worst-case staleness ~8min,
+# comparable to the old pipeline cadence. No credentials involved: the repo is public.
+_GIT_BLOBS = (
+    "https://raw.githubusercontent.com/RealGB80/AeroAlpha/cloud-spec/dashboard_tables.json.gz",
+    "https://raw.githubusercontent.com/RealGB80/AeroAlpha/live-marks/live_marks.json.gz",
+)
+_git_store: dict = {"at": 0.0, "tables": {}}
+
+
+def _git_tables() -> dict:
+    """{table_name: DataFrame} refreshed from the two git blobs at most every TTL_S. Never raises;
+    serves the previous snapshot on any fetch/parse failure."""
+    import gzip
+    import json as _json
+    import urllib.request
+    now = time.time()
+    if now - _git_store["at"] < TTL_S and _git_store["tables"]:
+        return _git_store["tables"]
+    tables = {}
+    ok = False
+    for url in _GIT_BLOBS:
+        try:
+            req = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                blob = _json.loads(gzip.decompress(resp.read()).decode("utf-8"))
+            for name, recs in (blob.get("tables") or {}).items():
+                if isinstance(recs, list) and recs:
+                    tables[name] = pd.DataFrame(recs)
+            ok = True
+        except Exception:
+            continue                                  # missing branch / network blip -> other blob still loads
+    if ok and tables:
+        _git_store["at"] = now
+        _git_store["tables"] = tables
+    return _git_store["tables"]
+
+
 def table(name: str) -> pd.DataFrame:
     """Read a curated table with a short TTL cache. Empty DataFrame if missing (never raises). On a read
-    error, serve the last cached copy (stale) rather than blanking the panel."""
+    error, serve the last cached copy (stale) rather than blanking the panel. Hosted (postgres URL):
+    GIT-FIRST (quota-proof), Neon fallback. Local sqlite: unchanged."""
     now = time.time()
     hit = _cache.get(name)
     if hit and now - hit[0] < TTL_S:
         return hit[1]
-    try:
-        df = pd.read_sql_table(name, _engine())
-    except Exception:
-        df = hit[1] if hit else pd.DataFrame()   # serve stale on a transient Neon hiccup
+    df = pd.DataFrame()
+    if not db_url().startswith("sqlite"):
+        gt = _git_tables()
+        if name in gt:
+            df = gt[name]
+    if df.empty:
+        try:
+            df = pd.read_sql_table(name, _engine())
+        except Exception:
+            df = hit[1] if hit else pd.DataFrame()   # serve stale on a transient hiccup
     _cache[name] = (now, df)
     return df
 
