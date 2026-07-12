@@ -221,26 +221,59 @@ def _df_records(df) -> list:
     return out
 
 
-def _load_live_state(eng) -> dict:
-    """History for the two append tables: local state file (same job) -> live-marks raw (previous job)
-    -> Neon (legacy fallback) -> empty. Never raises."""
+_HIST_TABLES = ("bankroll_equity_timeline", "resolution_day_curve")
+_HIST_KEYS = {"bankroll_equity_timeline": ("ts",),
+              "resolution_day_curve": ("resolution_date", "ts")}
+SEED_PATH = "live_marks_seed.json.gz"   # committed on MAIN (fresh in every job checkout) = durable floor
+
+
+def _unwrap(blob: dict) -> dict:
+    """Normalize a state/blob dict to flat {table: rows}. THE 2026-07-12 WIPE: the state file is written
+    in blob shape ({'tables': {...}}) but was read back UN-unwrapped, so refresh() saw empty history every
+    cycle and force-pushed ~1-row blobs over the full history 3 minutes after each job start."""
+    t = blob.get("tables") if isinstance(blob.get("tables"), dict) else blob
+    return {n: (t.get(n) or []) for n in _HIST_TABLES}
+
+
+def _union_rows(base: list, extra: list, keys: tuple) -> list:
+    """Order-stable union of row dicts deduped on `keys`, sorted by ts. History can only ever GROW."""
+    seen = {}
+    for r in list(base or []) + list(extra or []):
+        if isinstance(r, dict):
+            seen.setdefault(tuple(str(r.get(k)) for k in keys), r)
+    return sorted(seen.values(), key=lambda r: str(r.get("ts") or ""))
+
+
+def _read_blob_file(path: str) -> dict | None:
     try:
-        with open(_STATE_PATH, "rb") as fh:
+        with open(path, "rb") as fh:
             return json.loads(gzip.decompress(fh.read()).decode("utf-8"))
     except Exception:
-        pass
-    try:
-        req = urllib.request.Request(LIVE_RAW_URL, headers={"Cache-Control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            blob = json.loads(gzip.decompress(resp.read()).decode("utf-8"))
-        t = blob.get("tables") or {}
-        return {"bankroll_equity_timeline": t.get("bankroll_equity_timeline") or [],
-                "resolution_day_curve": t.get("resolution_day_curve") or []}
-    except Exception:
-        pass
-    state = {}
-    for name in ("bankroll_equity_timeline", "resolution_day_curve"):
-        state[name] = _df_records(_read_table(eng, name))
+        return None
+
+
+def _load_live_state(eng) -> dict:
+    """History for the two append tables: local state file (same job) -> live-marks raw (previous job)
+    -> Neon (legacy fallback). The MAIN-committed seed file is ALWAYS unioned in as a floor, so even a
+    total state+branch loss self-heals to at least the seed. Never raises."""
+    state = None
+    b = _read_blob_file(_STATE_PATH)
+    if b is not None:
+        state = _unwrap(b)
+    if state is None:
+        try:
+            req = urllib.request.Request(LIVE_RAW_URL, headers={"Cache-Control": "no-cache"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                state = _unwrap(json.loads(gzip.decompress(resp.read()).decode("utf-8")))
+        except Exception:
+            state = None
+    if state is None:
+        state = {n: _df_records(_read_table(eng, n)) for n in _HIST_TABLES}
+    seed = _read_blob_file(SEED_PATH)
+    if seed is not None:
+        s = _unwrap(seed)
+        for n in _HIST_TABLES:
+            state[n] = _union_rows(state.get(n), s.get(n), _HIST_KEYS[n])
     return state
 
 
@@ -271,6 +304,24 @@ def _publish_live_marks(state: dict, op, pend, bmk, now: str) -> str:
                 run(["git", "worktree", "add", "--detach", _LIVE_WT])
                 run(["git", "checkout", "--orphan", LIVE_BRANCH], _LIVE_WT)
                 run(["git", "rm", "-rf", "."], _LIVE_WT)
+        # RATCHET GUARD (2026-07-12 wipe): union the branch's existing history into the outgoing blob
+        # before overwriting -- a shrunken/empty state can then never erase history, only re-grow it.
+        prev = _read_blob_file(os.path.join(_LIVE_WT, LIVE_FILE))
+        if prev is not None:
+            p = _unwrap(prev)
+            grew = False
+            for n in _HIST_TABLES:
+                merged = _union_rows(blob["tables"].get(n), p.get(n), _HIST_KEYS[n])
+                if len(merged) > len(blob["tables"].get(n) or []):
+                    blob["tables"][n] = merged
+                    grew = True
+            if grew:                                  # re-serialize + refresh the state file too
+                payload = gzip.compress(json.dumps(blob, separators=(",", ":"), default=str).encode("utf-8"))
+                try:
+                    with open(_STATE_PATH, "wb") as fh:
+                        fh.write(payload)
+                except Exception:
+                    pass
         with open(os.path.join(_LIVE_WT, LIVE_FILE), "wb") as fh:
             fh.write(payload)
         run(["git", "add", "-A"], _LIVE_WT)
