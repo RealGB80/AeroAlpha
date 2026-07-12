@@ -235,11 +235,17 @@ def _unwrap(blob: dict) -> dict:
     return {n: (t.get(n) or []) for n in _HIST_TABLES}
 
 
+HIST_FLOOR = "2026-06-26"   # $1k real cloud run began 06-26; the 06-21 sqlite bootstrap is a bulk-insert
+#                             artifact (thousands of flat rows 1s apart) that renders as a wall+jump.
+#                             Permanently drop anything before the floor so the artifact can never re-seed.
+
+
 def _union_rows(base: list, extra: list, keys: tuple) -> list:
-    """Order-stable union of row dicts deduped on `keys`, sorted by ts. History can only ever GROW."""
+    """Order-stable union of row dicts deduped on `keys`, sorted by ts. History can only ever GROW --
+    except rows before HIST_FLOOR (pre-run bootstrap artifact) are permanently excluded."""
     seen = {}
     for r in list(base or []) + list(extra or []):
-        if isinstance(r, dict):
+        if isinstance(r, dict) and str(r.get("ts") or "")[:10] >= HIST_FLOOR:
             seen.setdefault(tuple(str(r.get(k)) for k in keys), r)
     return sorted(seen.values(), key=lambda r: str(r.get("ts") or ""))
 
