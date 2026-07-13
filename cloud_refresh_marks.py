@@ -235,9 +235,10 @@ def _unwrap(blob: dict) -> dict:
     return {n: (t.get(n) or []) for n in _HIST_TABLES}
 
 
-HIST_FLOOR = "2026-06-26"   # $1k real cloud run began 06-26; the 06-21 sqlite bootstrap is a bulk-insert
-#                             artifact (thousands of flat rows 1s apart) that renders as a wall+jump.
-#                             Permanently drop anything before the floor so the artifact can never re-seed.
+HIST_FLOOR = "2026-07-13"   # $1k run RESET 2026-07-13 to $1,000 under the exec-gate changepoint; the
+#                             pre-reset equity/curve track is discarded (old book). Floor drops every
+#                             pre-reset row so the chart is a clean forward track from $1,000. (Prior
+#                             floor 2026-06-26 covered the 06-21 bootstrap artifact; superseded.)
 
 
 def _union_rows(base: list, extra: list, keys: tuple) -> list:
