@@ -3894,7 +3894,17 @@ def _content_scalability():
                   "books + MIA-high watch + the lock-in stream) are NOT in that archive; their full slippage "
                   "curve is ", html.B("accruing forward"), ", so we show '≥25ct confirmed' and NO fabricated "
                   "ceiling. Degenerate cent-floor longshot 'ceilings' (e.g. the old 174k/27k figures) stay "
-                  "removed as tick-floor artifacts. ", html.B("Paper / public-data orderbook reads — no "
+                  "removed as tick-floor artifacts. ",
+                  html.Br(), html.Br(),
+                  html.B("Beyond 250ct the book turns convex. "), "Re-walked at our actual EVENING entry "
+                  "window (the deepest time of day — near-money 250ct fills 97–99% at ~0c across all three), "
+                  "near-money slippage climbs fast past 250ct/market: measured NY ~6c at 500ct, ~9–11c at "
+                  "1000ct, ~24–26c at 2000ct, and only ~50% fillable by 5000ct. So the honest per-market "
+                  "ceiling is a few hundred contracts, and bigger single tickets stop paying — ", html.B("LAX "
+                  "has the deepest book of the three, CHI the thinnest"), ". Net effect: monthly capacity "
+                  "~$1.0–1.3k across the three high cities is ", html.B("NY-dominated"), ", and the lever is "
+                  "more cities + maker-mode, not more capital. ",
+                  html.B("Paper / public-data orderbook reads — no "
                   "auth, no orders, never realized P&L.")]))
     return [html.Div([html.Div(intro, className="col-12")], className="grid12"),
             html.Div([html.Div(panel_scalability_curve(), className="col-12")], className="grid12"),
