@@ -235,10 +235,13 @@ def _unwrap(blob: dict) -> dict:
     return {n: (t.get(n) or []) for n in _HIST_TABLES}
 
 
-HIST_FLOOR = "2026-07-13"   # $1k run RESET 2026-07-13 to $1,000 under the exec-gate changepoint; the
-#                             pre-reset equity/curve track is discarded (old book). Floor drops every
-#                             pre-reset row so the chart is a clean forward track from $1,000. (Prior
-#                             floor 2026-06-26 covered the 06-21 bootstrap artifact; superseded.)
+HIST_FLOOR = "2026-07-15"   # $1k run RESET 2026-07-13 to $1,000 under the exec-gate changepoint. The
+#                             07-13/07-14 equity rows were CONTAMINATED: pre-reset positions carried into the
+#                             fresh book were marked underwater, dropping equity to a FALSE ~$844 (-15% cliff
+#                             in the All view). The producer now excludes pre-reset signals (build_open_positions
+#                             RESET HYGIENE); this floor drops the already-stored contaminated 07-13/07-14 rows
+#                             so the chart is a clean forward track from the reset baseline. (Prior floors:
+#                             06-26 bootstrap artifact, then 07-13 reset; both superseded.)
 
 
 def _union_rows(base: list, extra: list, keys: tuple) -> list:
