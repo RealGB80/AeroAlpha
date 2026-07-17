@@ -235,7 +235,9 @@ def _unwrap(blob: dict) -> dict:
     return {n: (t.get(n) or []) for n in _HIST_TABLES}
 
 
-HIST_FLOOR = "2026-07-15"   # $1k run RESET 2026-07-13 to $1,000 under the exec-gate changepoint. The
+HIST_FLOOR = "2026-07-16"   # $1k run RESET 2026-07-13 to $1,000 under the exec-gate changepoint. Bumped
+# 07-15->07-16 (2026-07-16): the 07-15 marks were a bimodal +9/+25 unrealized SAWTOOTH (missed-quote
+# revert-to-entry bug, fixed above via prev_mark carry-forward) -- buggy display data, dropped from view. The
 #                             07-13/07-14 equity rows were CONTAMINATED: pre-reset positions carried into the
 #                             fresh book were marked underwater, dropping equity to a FALSE ~$844 (-15% cliff
 #                             in the All view). The producer now excludes pre-reset signals (build_open_positions
@@ -431,9 +433,14 @@ def refresh(eng) -> int:
 
     prev_op = _read_table(eng, "open_positions")
     prev_series = {}
-    if not prev_op.empty and "ticker" in prev_op.columns and "price_series" in prev_op.columns:
+    prev_mark = {}                                    # ticker -> LAST CLOUD MARK (current_price)
+    if not prev_op.empty and "ticker" in prev_op.columns:
         for _, _r in prev_op.iterrows():
-            prev_series[_r.get("ticker")] = _parse_series(_r.get("price_series"))
+            if "price_series" in prev_op.columns:
+                prev_series[_r.get("ticker")] = _parse_series(_r.get("price_series"))
+            _pm = _num(_r.get("current_price"))       # so a missed quote holds the real last mark,
+            if _pm is not None:                       # not the stale spec entry (which caused the
+                prev_mark[_r.get("ticker")] = _pm     # bimodal +9/+25 unrealized SAWTOOTH, 2026-07-16)
 
     # ---- re-mark each position (fresh quote on the side held; forward-fill last mark if the quote missed) ----
     unreal = 0.0
@@ -453,7 +460,9 @@ def refresh(eng) -> int:
             cur = (100.0 - ymid) if side == "NO" else ymid
             n_fresh += 1
         else:
-            cur = _num(r.get("current_price"))      # forward-fill last known mark
+            cur = prev_mark.get(r.get("ticker"))    # forward-fill the LAST CLOUD MARK first (stable),
+            if cur is None:                          # only then the spec's current_price as a last resort
+                cur = _num(r.get("current_price"))   # (prevents the missed-quote revert-to-entry sawtooth)
         r["current_price"] = None if cur is None else round(cur, 2)
         if entry_c is not None and cur is not None:
             r["mark_delta"] = round(cur - entry_c, 2)
