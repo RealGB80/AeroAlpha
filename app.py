@@ -4339,8 +4339,11 @@ RENDER = {"overview": render_overview, "bankroll": render_bankroll, "markets": r
           "lab": render_lab, "methodology": render_methodology}
 
 # ============================== APP ==============================
+# PERF (2026-07-17 speed audit): compress=True (flask-compress) gzips every response — page-callback JSON
+# runs 80-376 KB raw and compresses 8-19x (/run 376KB -> 34KB); the first-load JS bundles ~1.1MB -> ~265KB.
+# Server-side was already fast (page cache + prewarm, ~30ms warm); the WIRE was the bottleneck.
 app = Dash(__name__, title="AeroAlpha — Investor View", update_title=None,
-           suppress_callback_exceptions=True)
+           suppress_callback_exceptions=True, compress=True)
 server = app.server
 
 _users = {}
