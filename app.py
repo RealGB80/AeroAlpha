@@ -4615,7 +4615,10 @@ DEPTH_CAP = 250        # contracts fillable within slippage (measured median; fl
 # ALL-SEASON defaults are therefore NY-carried (LAX/CHI-high + warm daily-lows rarely clear the
 # calibrated threshold). COLD-only add-ons keep their validated cold-gate floors (C2 fit on warm data
 # only; re-fit due at the cold turn).
-S1_HIGH_EDGE_DEFAULT = 4.0          # gross c/ct, HIGH all-season under C2 = NY-high (calibrated control)
+# 2026-07-20: NY-high all-season edge CORRECTED to the realized +8.4c/ct (capacity_recheck_v2 20260713 vs the
+# REAL depth log; the old 4.0 was a STALE threshold, not the realized edge). Under the exec-gate + C2 the
+# non-NY high cities rarely clear tradability, so this all-season bucket is honestly NY-CARRIED = NY realized.
+S1_HIGH_EDGE_DEFAULT = 8.4          # gross c/ct, HIGH all-season = NY-high realized (exec-gate NY-carried)
 S1_HIGH_COLD_EDGE_DEFAULT = 9.5     # gross c/ct, HIGH cold-only add (LV/MIN cold mean; A6 gate floors)
 LOW_EDGE_DEFAULT = 4.3              # gross c/ct, LOW all-season under C2 (NY-low honest kept-edge; warm lows dormant)
 LOW_COLD_EDGE_DEFAULT = 14.7        # gross c/ct, LOW cold-only add (PHIL/PHX cold mean; A4 gate floors)
@@ -4627,7 +4630,12 @@ LOW_COLD_EDGE_DEFAULT = 14.7        # gross c/ct, LOW cold-only add (PHIL/PHX co
 # bug a user caught 2026-06-24 was the OPPOSITE: I lowered it to keep the default at the STALE 7-stream 14.63%
 # WHILE adding NY-low, which HID NY-low's real +6.7%/m lift. Re-solve ONLY when the deployed book itself
 # changes AND the MC is regenerated (here: 7->8 streams, median 14.63->21.33), so the default tracks reality.
-SANDBOX_CT_CAL = 3.5233
+# 2026-07-20: re-anchored INVERSELY to the NY-high edge correction (4.0->8.4c) so the corrected edge input
+# does NOT inflate the deployed-config headline -- it holds the prior conservative ~21%/m reference rather
+# than doubling it. This is a STOPGAP: the honest current headline (NY-dominated post exec-gate) is <= that
+# reference; a precise anchor needs the deployed-book Kelly-MC REGENERATED with the corrected edge + the
+# exec-gate stream set (most non-NY streams now tradable=False). 3.5233 * (4.0/8.4) = 1.678.
+SANDBOX_CT_CAL = 1.678
 
 # ---- NON-LINEAR per-stream slippage(size) curves (AUDIT-CORRECTED 2026-06-21) ----
 # The ONLY stream with a real logged per-size fill curve is NY-high (median across n logged lock-moment
