@@ -3964,7 +3964,7 @@ def _content_sandbox():
                   f"number. Zero the cold cities for the warm-only book; every field moves the result."],
                  className="sub", style={"margin": "0 0 10px", "fontSize": "11px"}),
         html.Div([
-            bucket("HIGH · year-round", MINT, "NY/LAX/CHI all-season (~4.9c gross; ~2.9c net)",
+            bucket("HIGH · year-round", MINT, "NY/LAX/CHI all-season — NY carries the edge (LAX/CHI soft)",
                    cf("sb-s1edge", "Edge ¢/ct", S1_HIGH_EDGE_DEFAULT, 0.1, 0, 20),
                    cf("sb-cities", "Cities", 3, 1, 0, 7),
                    cf("sb-s1trades", "Trades/mo·city", 84, 1, 0, 400)),
@@ -3972,9 +3972,9 @@ def _content_sandbox():
                    cf("sb-s1edge-cold", "Edge ¢/ct", S1_HIGH_COLD_EDGE_DEFAULT, 0.1, 0, 20),
                    cf("sb-cities-cold", "Cities", 2, 1, 0, 7),
                    cf("sb-s1trades-cold", "Trades/mo·city", 84, 1, 0, 400)),
-            bucket("LOW · all-season / active", MINT, "NY-low + warm AUS/LAX/DEN/MIA (~7.6c) — trading now",
+            bucket("LOW · all-season / active", MINT, "NY-low deployed but ~0 realized edge now; warm lows dormant",
                    cf("sb-lowedge", "Edge ¢/ct", LOW_EDGE_DEFAULT, 0.1, 0, 20),
-                   cf("sb-lowcities", "Cities", 5, 1, 0, 7),
+                   cf("sb-lowcities", "Cities", 1, 1, 0, 7),
                    cf("sb-lowtrades", "Trades/mo·city", 82, 1, 0, 400)),
             bucket("LOW · cold-only", CYAN, "PHIL +11.79c / PHX +17.65c · ~20/mo · Nov–Apr ($0 warm)",
                    cf("sb-lowedge-cold", "Edge ¢/ct", LOW_COLD_EDGE_DEFAULT, 0.1, 0, 20),
@@ -4615,12 +4615,15 @@ DEPTH_CAP = 250        # contracts fillable within slippage (measured median; fl
 # ALL-SEASON defaults are therefore NY-carried (LAX/CHI-high + warm daily-lows rarely clear the
 # calibrated threshold). COLD-only add-ons keep their validated cold-gate floors (C2 fit on warm data
 # only; re-fit due at the cold turn).
-# 2026-07-20: NY-high all-season edge CORRECTED to the realized +8.4c/ct (capacity_recheck_v2 20260713 vs the
-# REAL depth log; the old 4.0 was a STALE threshold, not the realized edge). Under the exec-gate + C2 the
-# non-NY high cities rarely clear tradability, so this all-season bucket is honestly NY-CARRIED = NY realized.
-S1_HIGH_EDGE_DEFAULT = 8.4          # gross c/ct, HIGH all-season = NY-high realized (exec-gate NY-carried)
+# 2026-07-20: HIGH all-season is a 3-CITY per-city bucket (NY/LAX/CHI), so it uses the per-city all-season
+# edge, NOT NY's own realized +8.4c (which would triple-count NY onto the edge-soft LAX/CHI). NY carries the
+# real edge; LAX/CHI are depth/edge-soft under the exec-gate -> a modest ~3-4c per-city all-season blend.
+S1_HIGH_EDGE_DEFAULT = 4.0          # gross c/ct per-city, HIGH all-season 3-city blend (NY-carried)
 S1_HIGH_COLD_EDGE_DEFAULT = 9.5     # gross c/ct, HIGH cold-only add (LV/MIN cold mean; A6 gate floors)
-LOW_EDGE_DEFAULT = 4.3              # gross c/ct, LOW all-season under C2 (NY-low honest kept-edge; warm lows dormant)
+# 2026-07-20: LOW all-season default -> ~0. The daily-low streams are NOT producing realized edge right now
+# (NY-low realized negative/underpowered; the warm AUS/LAX/DEN/MIA lows are dormant/marginal). So the honest
+# default reflects near-zero low contribution until the forward low data turns positive.
+LOW_EDGE_DEFAULT = 0.0              # gross c/ct, LOW all-season = near zero (no realized edge currently)
 LOW_COLD_EDGE_DEFAULT = 14.7        # gross c/ct, LOW cold-only add (PHIL/PHX cold mean; A4 gate floors)
 # Per-trade contract SIZING that anchors the linear what-if to the LIVE deployed book's Kelly-MC median (the
 # kelly_activated_book joint-MC that run_projection reads). The 8-stream activated book (incl NY-low, MC
@@ -4634,8 +4637,8 @@ LOW_COLD_EDGE_DEFAULT = 14.7        # gross c/ct, LOW cold-only add (PHIL/PHX co
 # does NOT inflate the deployed-config headline -- it holds the prior conservative ~21%/m reference rather
 # than doubling it. This is a STOPGAP: the honest current headline (NY-dominated post exec-gate) is <= that
 # reference; a precise anchor needs the deployed-book Kelly-MC REGENERATED with the corrected edge + the
-# exec-gate stream set (most non-NY streams now tradable=False). 3.5233 * (4.0/8.4) = 1.678.
-SANDBOX_CT_CAL = 1.678
+# exec-gate stream set (most non-NY streams now tradable=False).
+SANDBOX_CT_CAL = 3.5233
 
 # ---- NON-LINEAR per-stream slippage(size) curves (AUDIT-CORRECTED 2026-06-21) ----
 # The ONLY stream with a real logged per-size fill curve is NY-high (median across n logged lock-moment
