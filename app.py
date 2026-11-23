@@ -1022,8 +1022,10 @@ def kpi_spark_row():
     ny_edge = kget("ny_s1_edge_c")
     # best validated stream edge (high or low)
     best_edge = None
-    if not strat.empty and "edge_c" in strat:
-        ev = strat["edge_c"].dropna()
+    # backtest_c since 2026-11-22 (strategy_perf.edge_c is now the FORWARD edge; this card says BACKTEST)
+    _bcol = "backtest_c" if "backtest_c" in strat else "edge_c"
+    if not strat.empty and _bcol in strat:
+        ev = strat[_bcol].dropna()
         best_edge = float(ev.max()) if not ev.empty else None
     # PAPER NET headline = AVG net per contract, matching this card's own "avg net cents/contract"
     # tooltip. equity_c is CUMULATIVE cents and `trades` is the per-day contract count, so the raw last
@@ -1292,18 +1294,25 @@ def panel_strategy_perf():
     d = table("strategy_perf")
     if d.empty:
         return card([html.H3("Strategy Performance"), empty_state("Fills as streams validate.")])
-    show = present(d, rename={"edge_c": "Paper Edge", "pf": "PF", "win_rate": "Win Rate"},
-                   fmt={"edge_c": _cents, "win_rate": _pct01,
+    if "backtest_c" not in d.columns:      # pre-2026-11-22 producer: edge_c was the BACKTEST edge
+        d = d.rename(columns={"edge_c": "backtest_c"}).assign(edge_c=None)
+    show = present(d, rename={"edge_c": "Forward Edge", "pf": "PF", "win_rate": "Win Rate",
+                              "n": "Fwd N", "backtest_c": "Backtest"},
+                   fmt={"edge_c": _cents, "backtest_c": _cents, "win_rate": _pct01,
                         "pf": lambda v: "—" if _isnull(v) else f"{v:.2f}", "n": _intf,
                         "status": lambda v: str(v).upper()},
-                   order=["strategy", "edge_c", "win_rate", "pf", "n", "status", "note"])
+                   order=["strategy", "edge_c", "win_rate", "pf", "n", "backtest_c", "status", "note"])
     return panel(["Strategy Performance — Paper Streams  ", info_dot()],
                  [pro_table(show, present_df=False, align_left=("Strategy", "Status", "Note"))],
-                 caption="Every paper stream: validated edge, win-rate, profit factor, deploy status, and an "
-                         "honest one-line note.",
-                 drawer=("Every paper stream: validated edge (c/contract), win-rate, profit factor, deploy "
-                         "status, and the honest one-line note. TRADABLE = live paper signal; WATCH = logged "
-                         "not trusted; DEPRIORITIZED = real but not bankable. Paper/backtest, never live P&L."),
+                 caption="Every paper stream's FORWARD record since the 2026-07-13 reset, next to its original "
+                         "backtest. Blank = under 30 settled trades (too few to rate).",
+                 drawer=("Forward Edge = average net c/contract over the stream's own settled, gate-passing "
+                         "paper signals since the 2026-07-13 changepoint (C2 + execution gate + $1k reset); "
+                         "blank until 30 have settled, so a handful of lucky trades can't headline. Backtest = "
+                         "the original leak-free backtest that justified the stream, kept for comparison. "
+                         "TRADABLE = signals are passing the live gate; GATED = deployed but nothing passed "
+                         "in 30 days; WATCH = logged, not traded; RETIRED = closed. Paper only, never live "
+                         "P&L."),
                  id="strategy-perf-card")
 
 
