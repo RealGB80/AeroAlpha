@@ -195,6 +195,10 @@ body {
 
 /* ---- live market-feed card ------------------------------------------- */
 .feed-card .pt-wrap { max-height: 460px; }
+/* 2026-11-22: the feed's TIME ("11-22 20:01 ET") and TICKER cells are left-aligned labels, which wrap by
+   default -> a 4-line time cell. Keep every feed cell on one line; the wrapper already scrolls sideways. */
+.feed-card .pro-table .pt-td, .feed-card .pro-table .pt-td.pt-l { white-space: nowrap; padding: 7px 10px; }
+.feed-card .pro-table .pt-th { padding: 7px 10px 9px; }
 
 /* ---- shell: sidebar + main -------------------------------------------- */
 .shell { display: flex; min-height: calc(100vh - 50px); position: relative; z-index: 1; }

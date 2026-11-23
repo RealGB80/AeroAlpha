@@ -13,6 +13,7 @@ Deploy:        gunicorn dashboard_app.app:server   (see README_DEPLOY.md)
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
@@ -54,7 +55,9 @@ ACCENT = GREEN
 PALETTE = [GREEN, NEUTRAL, VIOLET, GREEN_DK, "#8a949b", RED]
 GRIDCOL = "rgba(138,150,158,0.13)"        # gridlines: neutral slate
 AXISCOL = "rgba(138,150,158,0.28)"        # axis lines / ticks: neutral slate
-STALE_AFTER_MIN = 90                       # global staleness threshold
+STALE_AFTER_MIN = 150                      # global staleness threshold: the pipeline runs hourly 07-21 ET but
+                                           # only every 2h overnight (23/01/03/05), and a run takes ~15-30 min,
+                                           # so 90 flagged 'stale' every night by design (2026-11-22)
 
 # WP-02: 8-page IA with real URL routes. ROUTES = [(path, render-key, icon-glyph, nav-label)]; SVG icons
 # arrive in WP-03 (glyphs kept meanwhile). LEGACY_ROUTES redirect old deep links to their new parent.
@@ -278,12 +281,16 @@ def panel_fills_waterfall():
         return card([html.H3("Fills-Realism Waterfall"), empty_state("Fills when settled paper signals log.")])
     figs = []
     for _, r in d.iterrows():
+        # 2026-11-22: the 'total' bar is the SUM of the bars before it, so without this step the chart drew
+        # 'Realized net' at quoted-fee-slip (~+10c for S1) while labelling it +1.75c. The reconciling bar is the
+        # MODEL MISS: how far settled outcomes fell short of the model's own edge estimate -- where the edge went.
+        miss = float(r["realized_net_c"]) - (float(r["quoted_edge_c"]) - float(r["fee_c"]) - float(r["slippage_c"]))
         fig = go.Figure(go.Waterfall(
-            orientation="v", measure=["absolute", "relative", "relative", "total"],
-            x=["Quoted edge", "− fee", "− slippage", "Realized net"],
-            y=[r["quoted_edge_c"], -r["fee_c"], -r["slippage_c"], None],
+            orientation="v", measure=["absolute", "relative", "relative", "relative", "total"],
+            x=["Quoted edge", "− fee", "− slippage", "model miss", "Realized net"],
+            y=[r["quoted_edge_c"], -r["fee_c"], -r["slippage_c"], miss, None],
             text=[fmt_s(r["quoted_edge_c"], "c/ct"), f"−{r['fee_c']:.2f}", f"−{r['slippage_c']:.2f}",
-                  fmt_s(r["realized_net_c"], "c/ct")],
+                  f"{miss:+.2f}", fmt_s(r["realized_net_c"], "c/ct")],
             textposition="outside", cliponaxis=False,
             connector=dict(line=dict(color=GRIDCOL, width=1)),
             increasing=dict(marker=dict(color=MINT)), decreasing=dict(marker=dict(color=RED)),
@@ -297,12 +304,16 @@ def panel_fills_waterfall():
                              className="col-4"))
     return panel("Fills-Realism Waterfall — Quoted Edge to Realized Net",
                  [html.Div(figs, className="grid12")],
-                 caption="Per stream: gross model edge minus modeled fee and VWAP slippage lands at the "
-                         "settled realized net (thin sample, never realized P&L).",
-                 drawer=("Per paper stream: the gross model edge at top-of-book, minus modeled fee and minus "
-                         "VWAP slippage, lands at the settled realized net. Net is paper/backtest c/contract "
-                         "on a thin settled sample (n shown) — never realized P&L. Negative streams "
-                         "(S3/S3early) show the fills reality: a quoted edge does not survive frictions."))
+                 caption="Per stream: the model's quoted edge, minus fee and VWAP slippage, minus the MODEL MISS "
+                         "(how far settled outcomes fell short of the model's own estimate), equals the realized "
+                         "net. Frictions are small; the model miss is the big bar. Paper, never realized P&L.",
+                 drawer=("Per paper stream, over all its settled forward signals: quoted edge = the model's gross "
+                         "edge at top-of-book; fee and slippage = the modeled trading frictions; MODEL MISS = "
+                         "realized net − (quoted − fee − slippage), i.e. the part of the claimed edge the outcomes "
+                         "did not deliver (an over-confident model, or a market that already knew). The bars sum "
+                         "exactly to the realized net. For S1 the frictions cost ~1.5c of a ~12c quoted edge, "
+                         "but outcomes delivered ~1.7c: the shortfall is forecast/selection, not fills. Paper "
+                         "c/contract, never realized P&L."))
 
 
 def panel_divergence():
@@ -453,6 +464,10 @@ def _conf_chip(direction, s_star):
     amber=underconfident/too-wide. s* shown to 2dp. Returns an html.Span styled inline."""
     d = (direction or "").lower()
     s = ("" if _isnull(s_star) else f"s*={float(s_star):.2f} — ")
+    # 2026-11-22: s* within ±10% of 1 is calibrated for practical purposes; the raw direction flag called
+    # s*=1.03 'overconfident' right under a caption saying sigma is well calibrated everywhere.
+    if not _isnull(s_star) and 0.90 <= float(s_star) <= 1.10:
+        d = "calibrated"
     if "over" in d or "narrow" in d:
         col, bg, txt = RED, "rgba(255,77,94,.10)", f"{s}overconfident (too narrow)"
     elif "under" in d or "wide" in d:
@@ -562,9 +577,10 @@ def panel_calibration_streams():
         _cap("Leak-free WALK-FORWARD calibration of the DEPLOYED forecast per stream (Bayes 2026-06-21): "
              "HIGH books = members + S2X, LOW books = the Kelvin ridge-EMOS pool. PIT = predicted CDF at "
              "the realized temperature; a calibrated model is flat at the dashed uniform line and its "
-             "intervals cover at the nominal rate. Sigma is well calibrated across all streams — NO "
-             "rescale is deployed (the variance lever was tested per stream and is dead, s*≈1). "
-             "Paper/backtest research only."),
+             "intervals cover at the nominal rate. s* = the factor the forecast spread would need (1 = "
+             "ideal); within ±10% counts as calibrated, and streams outside it are flagged. No rescale is "
+             "deployed — the June per-stream test found it did not improve the edge. Diagnostic window ends "
+             "2026-06-20 (not re-run since). Paper/backtest research only."),
         html.Div([
             html.Span("Stream", style={"color": DIM, "fontSize": "12px", "marginRight": "8px"}),
             dcc.Dropdown(id="calib-stream", options=[{"label": _stream_label(s), "value": s} for s in streams],
@@ -630,14 +646,20 @@ def panel_brier_decomp():
     mk = d[d["who"] == "Market"]
     n = int(d["n"].iloc[0])
     verdict = ""
+    beats = None
     if not md.empty and not mk.empty:
         beats = float(md["brier"].iloc[0]) < float(mk["brier"].iloc[0])
         verdict = (f"The model's Brier {float(md['brier'].iloc[0]):.4f} "
-                   f"{'beats' if beats else 'trails'} the market's {float(mk['brier'].iloc[0]):.4f}. "
+                   f"{'beats' if beats else 'trails'} the market's {float(mk['brier'].iloc[0]):.4f} on the "
+                   f"contracts it signalled. "
                    f"Its reliability term ({float(md['reliability'].iloc[0]):.4f}) is the calibration penalty "
                    f"(lower = better); its resolution ({float(md['resolution'].iloc[0]):.4f}) is the "
                    f"discrimination credit (higher = better). ")
-    return panel("Brier Decomposition (Murphy) — Why the Model Scores Well",
+    # 2026-11-22: the title was hard-coded 'Why the Model Scores Well' above a verdict that said it TRAILS.
+    title = ("Brier Decomposition (Murphy) — "
+             + ("Why the Model Beats the Market Here" if beats else
+                "Why the Model Trails the Market on the Signals It Fires" if beats is False else "Model vs Market"))
+    return panel(title,
                  [graph(_tpl(fig, h=340))],
                  caption=(f"{verdict}Brier = reliability − resolution + uncertainty over n={n} settled "
                           f"paper signals."),
@@ -791,15 +813,16 @@ def panel_blotter():
     if d.empty:
         return card([html.H3("Trade Blotter"), empty_state("Fills when settled paper signals log.")])
     show = present(d, drop=["scan_utc"],
-                   rename={"model_edge_c": "Model Edge", "net_c": "Net", "entry": "Entry"},
+                   rename={"model_edge_c": "Model Edge", "net_c": "Net", "entry": "Entry", "booked": "Book?"},
                    fmt={"model_edge_c": _cents, "net_c": _cents,
                         "entry": lambda v: "—" if _isnull(v) else f"{v:.2f}",
                         "win": lambda v: "WIN" if v == 1 else ("LOSS" if v == 0 else "—")},
-                   order=["city", "stream", "ticker", "side", "model_edge_c", "entry", "net_c", "win"])
+                   order=["city", "stream", "ticker", "side", "booked", "model_edge_c", "entry", "net_c", "win"])
     return panel(["Trade Blotter — Recent Settled Paper Signals  ", info_dot()],
-                 [pro_table(show, present_df=False, align_left=("Win",))],
-                 caption="The last settled paper signals: model edge at entry, entry price, realized net, "
-                         "win/loss. The edge lives in the average, not any one row.",
+                 [pro_table(show, present_df=False, align_left=("Win", "Book?"))],
+                 caption="The last settled paper signals: BOOK = passed the live gate (the paper book trades "
+                         "these); logged = a watch-city or gate-rejected signal, tracked but never traded. Model "
+                         "edge at entry, entry price, realized net, win/loss.",
                  drawer=("The last settled paper signals across streams/cities: model edge at entry, effective "
                          "entry price, realized paper net, and win/loss. Individual outcomes are noisy (small "
                          "stakes, thin sample); the edge lives in the average, not any one row. Paper/forward."))
@@ -1193,7 +1216,7 @@ def panel_city_network():
 # WP-01 interim: CHI-high is deployed COLD-ONLY (see CLAUDE.md / monitor_multicity_s1). Until WP-05 adds a
 # `season_scope` store column, surface the restriction display-side so a tradable chip never implies
 # all-season. Keyed on the city code; safe on any label ("TRADABLE"/"TRADABLE" variants).
-_COLD_ONLY_CITIES = {"CHI"}
+_COLD_ONLY_CITIES = set()   # CHI's cold-only restriction was lifted 2026-07-08 (warm leg user-ruled validated)
 
 
 def _season_scoped_label(city, base_label):
@@ -1224,9 +1247,10 @@ def panel_city_rank():
             html.Div(edge, className=f"cn-edge mono {ecls}"),
             badge(_season_scoped_label(r["city"], str(r["status"]).upper().replace("-", " ")),
                   stat_kind.get(r["status"], "neut"))], className="cn-row"))
-    return card([html.H3("City Rankings — by Paper Edge"),
-                 _cap("Ranked by validated paper S1 edge. Forecast = ensemble day-ahead high. Status is the "
-                      "deployed paper path, not a tall-bar artifact. Paper/forward."),
+    return card([html.H3("City Rankings — by Backtest Edge"),
+                 _cap("Ranked by each city's June leak-free BACKTEST S1 edge — not its forward record, which is "
+                      "on Edges & Validation (the forward results are far smaller). Forecast = tomorrow's "
+                      "ensemble high. Status is the deployed paper path. Paper/backtest."),
                  html.Div(rows, className="cn-list")], id="city-rank-card")
 
 
@@ -1243,9 +1267,13 @@ def panel_alerts():
             html.Div([html.Div(r["name"].replace("_", " ").title(), className="al-name"),
                       html.Div(r["detail"], className="al-detail")], className="al-body")],
             className="al-row"))
+    rep = (str(d["report_utc"].dropna().iloc[0]) if "report_utc" in d.columns and d["report_utc"].notna().any()
+           else "")
+    when = f" Sentinel last ran {_utc_to_et_str(rep, '%Y-%m-%d %H:%M ET')}." if rep else ""
     return card([html.H3("Alerts — Integrity Sentinel"),
-                 _cap("Live operational alerts from the daily integrity sentinel: settlement alignment, "
-                      "calibration drift, source liveness, latency, false-lock guard. Paper-monitor scope."),
+                 _cap("Operational alerts from the integrity sentinel: settlement alignment, calibration drift, "
+                      "same-day model fallback, schedule sanity (source liveness is in Source Health; the "
+                      f"retired lock-in's checks are no longer alerts).{when} Paper-monitor scope."),
                  html.Div(rows, className="al-list")], id="alerts-card")
 
 
@@ -1256,17 +1284,22 @@ def panel_source_health():
         return card([html.H3("Source Health"), empty_state("Fills from the integrity sentinel.")])
     rows = []
     for _, r in d.iterrows():
-        live = str(r["status"]).upper() == "LIVE"
+        st = str(r["status"]).upper()
+        live = st == "LIVE"
         age = "—" if _isnull(r["age_min"]) else f"{r['age_min']:.0f}m"
         rows.append(html.Div([
             html.Span(className=f"sh-dot {'live' if live else 'deg'}"),
             html.Div(r["source"], className="sh-src"),
-            html.Span("LIVE" if live else "DEGRADED", className=f"sh-st {'live' if live else 'deg'}"),
+            html.Span(st if st in ("LIVE", "STALE") else "DEGRADED", className=f"sh-st {'live' if live else 'deg'}"),
             html.Div(age, className="sh-age mono"),
             html.Div(str(r["detail"]), className="sh-detail")], className="sh-row"))
+    rep = (str(d["report_utc"].dropna().iloc[0]) if "report_utc" in d.columns and d["report_utc"].notna().any()
+           else "")
+    when = f" Checked {_utc_to_et_str(rep, '%Y-%m-%d %H:%M ET')} by the integrity sentinel." if rep else ""
     return card([html.H3("Source Health"),
-                 _cap("Each public data source the bot reads, its liveness and freshness. All unauthenticated "
-                      "public feeds. Paper-monitor telemetry."),
+                 _cap("Each public data source the bot reads, its liveness and freshness (AGE = how old that "
+                      f"source's latest reading was when checked).{when} STALE = the check itself is old. All "
+                      "unauthenticated public feeds. Paper-monitor telemetry."),
                  html.Div([html.Div([html.Span("SOURCE", className="sh-h"), html.Span("STATUS", className="sh-h"),
                                      html.Span("AGE", className="sh-h"), html.Span("DETAIL", className="sh-h")],
                                     className="sh-row sh-head")] + rows, className="sh-list")],
@@ -1278,7 +1311,7 @@ def panel_model_drift():
     d = table("model_drift")
     if d.empty:
         return card([html.H3("Model Drift"), empty_state("Fills from the multi-city forecast run.")])
-    show = present(d, rename={"drift_score": "Drift", "rmse": "RMSE"},
+    show = present(d, rename={"drift_score": "Drift", "rmse": "RMSE", "n": "Days (n)"},
                    fmt={"drift_score": lambda v: "—" if _isnull(v) else f"{v:.2f}×",
                         "rmse": _degf, "n": _intf},
                    order=["city", "model", "rmse", "drift_score", "status", "n"])
@@ -1488,14 +1521,15 @@ def panel_dailylow_edge():
     fig.update_layout(title=None)
     fig.update_yaxes(title="daily-low S1 net (c / contract)", ticksuffix="c", tickformat="+,.0f")
     fig.update_xaxes(title="")
-    return panel("Daily-Low S1 Edge — the Orthogonal Overnight Book",
+    return panel("Daily-Low S1 Edge — June Backtest by City",
                  [graph(_tpl(fig, h=320, legend=False))],
-                 caption="Validated daily-LOW S1 net per city with 95% CIs (green tradable / amber watch) — "
-                         "a diversifier roughly orthogonal to the daily high.",
-                 drawer=("Validated daily-LOW S1 net per city with 95% bootstrap CIs (green = TRADABLE, amber "
-                         "= WATCH). The overnight-low market is roughly orthogonal to the daily high — a real "
-                         "diversifier. The edge concentrates in the cold season; recent-quarter is the forward "
-                         "decay watch. Paper/backtest, never realized P&L."))
+                 caption="June leak-free BACKTEST daily-LOW S1 net per city with 95% CIs (green tradable / amber "
+                         "watch). The FORWARD record since then is on the gate board below and is far weaker "
+                         "(most cities' logged signals have averaged below zero).",
+                 drawer=("June leak-free BACKTEST of the daily-LOW S1 net per city with 95% bootstrap CIs (green "
+                         "= TRADABLE, amber = WATCH). These are the numbers that justified wiring the streams; "
+                         "they are NOT the forward record. The forward results (the gate board on this page and "
+                         "the $1,000 Run page) are far weaker. Paper/backtest, never realized P&L."))
 
 
 # ============================================================================================
@@ -1580,15 +1614,51 @@ _GATE_STATUS_STYLE = {
 }
 
 
+def _run_segments_meta():
+    """The run's history as segments split at each $1,000 rebaseline (run_meta 'run_segments', 2026-11-22):
+    [{seg, start, end, end_equity, return_pct, max_dd_pct, n_settled, reset_after, reset_reason}]. [] if the
+    producer predates it."""
+    raw = _run_meta("run_segments", "")
+    try:
+        segs = json.loads(raw) if raw and raw not in ("—",) else []
+    except (TypeError, ValueError):
+        segs = []
+    return [s for s in segs if isinstance(s, dict)]
+
+
+def _since_inception(eq_now):
+    """(pct, n_runs, inception_date) chaining every prior run's end equity with the CURRENT mark-to-market
+    equity. None pct when the history is unavailable."""
+    segs = _run_segments_meta()
+    prior = [s for s in segs if s.get("reset_after")]
+    if not segs:
+        return None, 1, None
+    chained = 1.0
+    for s in prior:
+        chained *= float(s.get("end_equity") or 1000.0) / 1000.0
+    chained *= float(eq_now) / 1000.0
+    return 100.0 * (chained - 1.0), len(prior) + 1, segs[0].get("start")
+
+
 def panel_run_header():
     """$1k Run header KPI strip. THREE distinct allocation pools shown side-by-side: ACTIVE-PAPER (deployed
     in the paper run NOW, user-activated ahead of the gate), STAGED (the $0-live Kelly stakes the gate still
     governs), and LIVE REAL-DEPLOY ($0 — no real money). Plus equity (flat $1,000) + gates passing + the
     honest pre-gate-activation callout. HONEST: activation is PAPER, ahead of the forward gate; gates UNCHANGED."""
-    # RESET 2026-06-21: the run restarted fresh at $1,000 ("the algorithm changed"; prior track archived).
-    reset_date = _run_meta("reset_date", "2026-06-21")
+    # The run was rebaselined to $1,000 on 2026-06-21 AND 2026-07-13; reset_date = the CURRENT run's start
+    # (run_meta, from the ledger). The old hard-coded '2026-06-21' default is why the page named the wrong date.
+    reset_date = _run_meta("reset_date", "—")
     active_p = _run_meta("active_paper_allocation_dollars", "0.00")
-    staged_z = _run_meta("staged_zero_allocation_dollars", _run_meta("staged_total_dollars", "—"))
+    # STAGED = the $0-live stakes of the STAGED streams only -- the same total the allocation chart and the gate
+    # board show (the ledger's staged_zero figure also counted ACTIVE streams' gate stakes -> $170.98 vs $100).
+    staged_z = _run_meta("staged_total_dollars", _run_meta("staged_zero_allocation_dollars", "—"))
+    _rg = table("run_gates")
+    if not _rg.empty and "paper_state" in _rg.columns and "staged_stake" in _rg.columns:
+        _st = _rg[_rg["paper_state"].astype(str).str.upper() != "ACTIVE"]
+        nstaged = int(len(_st))
+        staged_z = f"{float(pd.to_numeric(_st['staged_stake'], errors='coerce').fillna(0).sum()):,.2f}"
+    else:
+        nstaged = _run_meta("n_staged_streams", "—")
     live_real = _run_meta("live_real_deploy_allocation_dollars", _run_meta("live_allocation_dollars", "0"))
     npass = _run_meta("n_gates_pass", "0"); ngate = _run_meta("n_gates", "0")
     nactive = _run_meta("n_active_paper_streams", "0")
@@ -1615,14 +1685,18 @@ def panel_run_header():
     cash_f, pos_f, _rz, _ur = _latest_cash_positions()
     cash_pct = (cash_f / eq_f * 100.0) if eq_f else 0.0
     pos_pct = (pos_f / eq_f * 100.0) if eq_f else 0.0
+    si_pct, n_runs, inception = _since_inception(eq_f)
     tiles = [
-        tile("PAPER BANKROLL", "$1,000", f"reset baseline {reset_date}", "var(--ink)"),
+        tile("PAPER BANKROLL", "$1,000", f"current run since {reset_date}", "var(--ink)"),
         tile("CURRENT EQUITY", f"${eq}", delta_sub,
              GREEN if eq_f >= 1000 else RED),
+        tile("SINCE INCEPTION", "—" if si_pct is None else f"{si_pct:+.1f}%",
+             (f"{n_runs} runs chained since {inception}" if si_pct is not None else "history unavailable"),
+             "var(--ink)" if si_pct is None else (GREEN if si_pct >= 0 else RED)),
         tile("CASH", f"${cash_f:,.2f}", f"{cash_pct:.0f}% · uninvested bankroll", "var(--ink)"),
         tile("IN POSITIONS", f"${pos_f:,.2f}", f"{pos_pct:.0f}% · market value of open holds", NEUTRAL),
         tile("ACTIVE · PAPER", f"${active_p}", f"{nactive} streams · paper, pre-gate", GREEN),
-        tile("STAGED · $0 LIVE", f"${staged_z}", f"Kelly {kf}x · awaits gate", NEUTRAL),
+        tile("STAGED · $0 LIVE", f"${staged_z}", f"{nstaged} streams · Kelly {kf}x · awaits gate", NEUTRAL),
         tile("LIVE REAL-DEPLOY", f"${live_real}", "no real money, no orders", AMBER),
         tile("GATES PASSED", f"{npass}/{ngate}", "real deploy needs a PASS", AMBER),
     ]
@@ -1637,23 +1711,42 @@ def panel_run_header():
             stress_mo = float(rp["mc_stress_mo"].dropna().iloc[0])
     med_str = f"{100*med_mo:+.2f}%/mo" if med_mo is not None else "—"
     stress_str = f"{100*stress_mo:+.2f}%/mo" if stress_mo is not None else "—"
-    note = card([html.Div([html.Span("●", style={"color": GREEN, "marginRight": "7px"}),
-                           html.B(f"Fresh start: the $1,000 paper run RESET on {reset_date} (the algorithm "
-                                  f"changed; the prior track is archived).")],
+    # HONEST RUN HISTORY (2026-11-22): every earlier $1,000 run is named with its result -- the page used to say
+    # 'Fresh start ... the prior track is archived' and show only the current run.
+    segs = _run_segments_meta()
+    hist_lines = []
+    for s in segs:
+        if s.get("reset_after"):
+            hist_lines.append(html.Li(
+                f"Run {s.get('seg')}: {s.get('start')} → {s.get('end')} — ended at ${float(s.get('end_equity')):,.2f} "
+                f"({float(s.get('return_pct')):+.1f}%, max drawdown {float(s.get('max_dd_pct')):.1f}%, "
+                f"{int(s.get('n_settled') or 0)} settled trades); then {s.get('reset_reason')} on "
+                f"{s.get('reset_after')}."))
+    cur_dd = _run_meta("current_max_dd_pct", "—")
+    pace = _run_meta("realized_pace_pct_mo", "—")
+    try:
+        pace_f = float(pace)
+    except (TypeError, ValueError):
+        pace_f = None
+    hist_lines.append(html.Li(
+        f"Run {len(segs) or 1} (current): {reset_date} → now — ${eq} ({delta/10.0:+.1f}%), max drawdown "
+        f"{cur_dd}% (settled paper). Settled-paper pace "
+        + ("—" if pace_f is None else f"{pace_f:+.2f}%/mo")
+        + f" vs the backtest projection's median {med_str} and stress {stress_str}."
+        + (" The settled-paper pace is BELOW even the stress case." if (pace_f is not None and stress_mo is not None
+                                                                     and pace_f < 100 * stress_mo) else "")))
+    headline = (f"Run history: started {inception} and rebaselined to $1,000 {len(segs) - 1} time(s) — "
+                f"{si_pct:+.1f}% since inception with every run chained." if (si_pct is not None and len(segs) > 1)
+                else f"The $1,000 paper run since {reset_date}.")
+    note = card([html.Div([html.Span("●", style={"color": AMBER, "marginRight": "7px"}), html.B(headline)],
                           className="sub", style={"fontSize": "12.5px", "color": "var(--ink)"}),
-                 html.Div([f"The run rebaselined to $1,000 on {reset_date}; only settlements resolving on or "
-                           f"after that date count. {nactive} warm-season-applicable edges ({activated}) are "
-                           f"ACTIVE in the PAPER run ({act_note}) — paper allocation ${active_p}. Current paper "
-                           f"equity ${eq} = $1,000 baseline − invested + the current value of open positions "
-                           f"(unrealized public-quote mark-to-market), {dd_clause}. Paper projection (BACKTEST, "
-                           f"not realized): MEDIAN ", html.B(med_str), " vs STRESS ", html.B(stress_str),
-                           " (~breakeven — the honest planning number if the underpowered warm edges are ~0). ",
+                 html.Ul(hist_lines, className="sub", style={"margin": "6px 0 4px 18px", "padding": 0}),
+                 html.Div([f"{nactive} streams are ACTIVE in the paper run (paper allocation ${active_p}), "
+                           "activated by user decision AHEAD of their forward gates — activation does NOT mean a "
+                           "gate passed (0 have). The All view of the equity chart shows the earlier runs "
+                           "greyed, with each reset marked. ",
                            html.B("Paper $1,000 only — no real money, no orders, $0 live real-deploy. "),
-                           "The forward-validation gates (reconcile_forward_edges.py / FORWARD_PROTOCOL) are "
-                           "UNCHANGED and still govern any REAL deployment. Activation does NOT mean these "
-                           "edges PASSED their gates — each is still ACCUMULATING settled signals below. "
-                           f"Equity rebased to $1,000 on {reset_date} (no backfill) and moves with open-book "
-                           "mark-to-market plus post-reset settlements. Never realized P&L."],
+                           "Never realized P&L."],
                           className="sub", style={"marginTop": "4px"})],
                 cls="run-note")
     # plain-language legend defining ACTIVE PAPER vs STAGED (deliverable #2)
@@ -1793,6 +1886,54 @@ _EQ_KELLY_COLORS = {0.25: "#5AC8FA", 0.30: "#2DD4BF", 0.40: "#9CCC65",
                     0.50: GREEN, 0.75: "#FFB020", 1.00: "#FF5C5C"}
 
 
+def _add_prior_runs(fig, lo, hi):
+    """'All' window only (2026-11-22): draw every EARLIER $1,000 run greyed + a dashed marker at each reset, so
+    the chart no longer looks like the run began mid-July. Source: run_history (end-of-day REALIZED equity of
+    each archived run). Returns the widened (lo, hi) y-range and whether anything was drawn."""
+    h = table("run_history")
+    if h.empty or "seg" not in h.columns or "is_current" not in h.columns:
+        return lo, hi, False
+    prior = h[~h["is_current"].astype(bool)]
+    drawn = False
+    for k, (seg, g) in enumerate(prior.groupby("seg")):
+        g = g.sort_values("date")
+        xs = [pd.Timestamp(d) + pd.Timedelta(hours=23, minutes=59) for d in g["date"]]
+        ys = [float(v) for v in g["equity"]]
+        if not xs:
+            continue
+        ret = 100.0 * (ys[-1] / 1000.0 - 1.0)
+        fig.add_scatter(x=xs, y=ys, mode="lines", name=f"earlier run {int(seg)} ({ret:+.1f}%)",
+                        line=dict(color=NEUTRAL, width=1.6, dash="dot"),
+                        hovertemplate=("%{x|%b %d} · $%{y:,.2f}<br>earlier run " + str(int(seg)) +
+                                       " (realized, end of day)<extra></extra>"))
+        reset = g["reset_after"].dropna().iloc[0] if g["reset_after"].notna().any() else None
+        if reset:
+            rx = pd.Timestamp(reset)
+            fig.add_shape(type="line", x0=rx, x1=rx, yref="paper", y0=0, y1=1,
+                          line=dict(color=AMBER, width=1, dash="dash"))
+            # SHORT left-anchored label (a long centred label made Plotly widen the x-axis back to April and
+            # the two labels overlapped); the detail lives in the hover text. Staggered so they never collide.
+            fig.add_annotation(x=rx, y=0.98 - 0.11 * k, yref="paper", xanchor="left", showarrow=False,
+                               text=f"reset {k + 1}", hovertext=f"rebaselined to $1,000 on {reset}: run "
+                                                               f"{int(seg)} ended at ${ys[-1]:,.2f} ({ret:+.1f}%)",
+                               font=dict(size=9, color=AMBER))
+        lo, hi = min(lo, min(ys)), max(hi, max(ys))
+        drawn = True
+    return lo, hi, drawn
+
+
+def _max_drawdown_pct(values):
+    """Peak-to-trough drawdown (%) of a sequence of equity values; 0.0 for <2 points."""
+    peak, mdd = None, 0.0
+    for v in values:
+        if v is None:
+            continue
+        peak = v if peak is None else max(peak, v)
+        if peak and peak > 0:
+            mdd = max(mdd, (peak - v) / peak)
+    return 100.0 * mdd
+
+
 def _equity_figure(window_label, kelly_overlay=False):
     """Build the windowed $1k paper-equity figure + the (raw $ change, % change) readout for `window_label`.
     kelly_overlay=True swaps the single line for a family of counterfactual curves at 0.25-1.0x Kelly (solid =
@@ -1891,10 +2032,16 @@ def _equity_figure(window_label, kelly_overlay=False):
                       annotation_font=dict(color=NEUTRAL, size=9))
         ov_lo, ov_hi = min(all_y), max(all_y)
     else:
-        fig.add_scatter(x=xs, y=ys, mode=mode, name="paper equity",
+        fig.add_scatter(x=xs, y=ys, mode=mode, name="current run (mark-to-market)",
                         line=line_kw, marker=dict(size=6, color=col), customdata=cd,
                         hovertemplate=hovertmpl)
         ov_lo, ov_hi = min(ys), max(ys)
+        if hours is None:                                   # All: show the earlier runs too, never hide them
+            ov_lo, ov_hi, prior_drawn = _add_prior_runs(fig, ov_lo, ov_hi)
+            overlay_on = overlay_on or prior_drawn          # (legend on so the runs are labelled)
+            if prior_drawn:
+                x_min = min([xs[0]] + [min(t.x) for t in fig.data if t.x is not None and len(t.x)])
+                fig.update_xaxes(range=[x_min - pd.Timedelta(days=2), xs[-1] + pd.Timedelta(days=2)])
     fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
                   annotation_text="$1,000 baseline", annotation_position="bottom right",
                   annotation_font=dict(color=NEUTRAL, size=10))
@@ -1922,14 +2069,19 @@ def panel_run_equity():
     """The $1,000 PAPER equity chart with a time-window selector (12hr / 1D / 3D / 1W / 1M / All). Prefers the
     timestamped bankroll_marks series; falls back to the daily equity_curve for long windows / sparse marks.
     Shows the raw $ + % change over the selected window. PAPER only, never realized P&L."""
-    reset_date = _run_meta("reset_date", "2026-06-21")
+    reset_date = _run_meta("reset_date", "—")
     pts, source = _equity_points()
     cur_val = pts[-1]["equity"] if pts else _latest_equity()
     cur_str = f"${cur_val:,.2f}"
     delta = (cur_val - 1000.0) if cur_val is not None else 0.0
-    dd = f"{min(delta, 0.0) / 1000.0 * 100.0:.1f}"
-    # post-reset the meaningful default window is intraday (the timeline starts at the reset, ~today)
-    default_win = "1D"
+    # REAL peak-to-trough drawdown of the current run (was min(equity-1000, 0) -> '0.0%' whenever equity sat
+    # above $1,000, even right after a 16% fall).
+    dd = f"{_max_drawdown_pct([p['equity'] for p in pts]):.1f}"
+    si_pct, n_runs, inception = _since_inception(cur_val)
+    si_txt = (f"; {si_pct:+.1f}% since inception ({inception}, {n_runs} runs chained — the All view shows them)"
+              if si_pct is not None and n_runs > 1 else "")
+    # Default to the whole history: the run is months old now and the earlier runs belong in view.
+    default_win = "All"
     fig, readout, _col = _equity_figure(default_win)
     src_note = ("LIVE realized + unrealized mark-to-market timeline (moves with public quotes ~10x/day)"
                 if source == "timeline"
@@ -1952,11 +2104,12 @@ def panel_run_equity():
                  [selector, kelly_toggle,
                   html.Div(readout, id="run-equity-readout", style={"marginBottom": "4px"}),
                   dcc.Graph(id="run-equity-graph", figure=fig, config={"displayModeBar": False})],
-                 caption=(f"$1,000 paper bankroll (reset {reset_date}), marked continuously to public quotes — "
-                          f"currently {cur_str} ({'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs baseline; "
-                          f"max drawdown {dd}%). Pick a window; toggle the Kelly what-if. $0 real."),
-                 drawer=(f"The $1,000 PAPER bankroll, RESET to $1,000 on {reset_date} (the algorithm changed; the "
-                         f"prior track is archived). PAPER equity = $1,000 reset baseline − invested + the current "
+                 caption=(f"Current $1,000 paper run (since {reset_date}), marked continuously to public quotes — "
+                          f"currently {cur_str} ({'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs its baseline; "
+                          f"max drawdown {dd}%){si_txt}. Pick a window; toggle the Kelly what-if. $0 real."),
+                 drawer=(f"The current $1,000 PAPER run started {reset_date}; earlier runs were rebaselined to "
+                         f"$1,000 and are drawn greyed (with each reset marked) on the All view. PAPER equity = "
+                         f"$1,000 baseline − invested + the current "
                          f"value of open positions (unrealized public-quote mark-to-market) — so the curve moves "
                          f"CONTINUOUSLY with quotes from a $1,000 start, not just at settlements. Current paper "
                          f"equity {cur_str} ({'+' if delta >= 0 else '−'}${abs(delta):,.2f} vs the $1,000 "
@@ -2349,6 +2502,50 @@ def panel_daily_pnl():
                  graph(_tpl(fig, h=240, legend=False))])
 
 
+def _panel_run_projection_realized(d):
+    """12-month fan bootstrapped from the CURRENT run's ACTUAL weekly realized results (2026-11-22), with the
+    June backtest model's median as a labelled dashed reference. Replaces a fan that was purely the backtest
+    model (median ~$10k after a year) while the run itself realized ~+1%/mo."""
+    months = list(d["month"])
+    rp5, rmed, rp95 = list(d["real_p5"]), list(d["real_median"]), list(d["real_p95"])
+    bmed = list(d["median"])
+    since = str(d["real_since"].iloc[0]); nwk = int(d["real_n_weeks"].iloc[0] or 0)
+    bt_mo = float(d["mc_median_mo"].iloc[0])
+    start = float(d["real_start"].iloc[0])
+    fig = go.Figure()
+    fig.add_scatter(x=months + months[::-1], y=rp95 + rp5[::-1], fill="toself", fillcolor="rgba(24,201,138,.12)",
+                    line=dict(width=0), mode="lines", hoverinfo="skip", showlegend=False)
+    fig.add_scatter(x=months, y=rp95, mode="lines", name="P95 (settled-paper pace)",
+                    line=dict(color=GREEN_DK, width=1.4, dash="dot"),
+                    hovertemplate="month %{x}<br>P95 $%{y:,.0f}<extra></extra>")
+    fig.add_scatter(x=months, y=rmed, mode="lines", name="Median (settled-paper pace)",
+                    line=dict(color=GREEN, width=2.6),
+                    hovertemplate="month %{x}<br>median $%{y:,.0f}<extra></extra>")
+    fig.add_scatter(x=months, y=rp5, mode="lines", name="P5 (settled-paper pace)",
+                    line=dict(color=RED, width=1.4, dash="dot"),
+                    hovertemplate="month %{x}<br>P5 $%{y:,.0f}<extra></extra>")
+    fig.add_scatter(x=months, y=bmed, mode="lines", name="June backtest model median (NOT realized)",
+                    line=dict(color=AMBER, width=1.6, dash="dash"),
+                    hovertemplate="month %{x}<br>backtest-model median $%{y:,.0f}<extra></extra>")
+    top = max(rp95) * 1.35
+    fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1, dash="dash"))
+    fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.0f", range=[min(rp5) * 0.9, top])
+    fig.update_xaxes(title="forward month", nticks=13)
+    cap = (f"If the next 12 months look like the current run (bootstrapped from its {nwk} actual weeks since "
+           f"{since}): median ${rmed[-1]:,.0f} (P5 ${rp5[-1]:,.0f} / P95 ${rp95[-1]:,.0f}) from ${start:,.0f}. "
+           f"The amber dashed line is the June backtest model ({100 * bt_mo:+.1f}%/mo median, ${bmed[-1]:,.0f} "
+           f"after a year) — it leaves the chart because the run has not realized it. Paper model, $0 real.")
+    return panel("Projected Paper Equity — Settled-Paper Pace vs the Backtest Model",
+                 [graph(_tpl(fig, h=320))], caption=cap,
+                 drawer=("Green fan = 20,000 seeded paths built by resampling WHOLE WEEKS of the current run's "
+                         "actual settled-paper daily results (weeks keep the lumpiness — a few big winners carry "
+                         "most months), compounded for 12 months. It assumes the future resembles the run so "
+                         "far; it is not a forecast. Amber dashed = the June Kelly backtest model the page used "
+                         "to show as THE projection; it is kept for comparison only. Paper $1,000, never "
+                         "realized P&L, $0 real."),
+                 id="run-projection-card")
+
+
 def panel_run_projection():
     """MONTE-CARLO equity FAN for the $1,000 paper run under the ACTIVATED 4-edge book: P95 (top, green-ish) /
     MEDIAN (green) / P5 (bottom, red-ish) simulated 12-month paper-equity paths, with a 'YOU ARE HERE' marker
@@ -2358,6 +2555,8 @@ def panel_run_projection():
         return card([html.H3("Projected Paper-Equity Fan — 12-Month Monte-Carlo"),
                      empty_state("Fills from the activated-book Kelly projection.")])
     d = d.sort_values("month")
+    if "real_median" in d.columns and d["real_median"].notna().all():
+        return _panel_run_projection_realized(d)
     months = list(d["month"]); p5 = list(d["p5"]); med = list(d["median"]); p95 = list(d["p95"])
     start = float(d["start_equity"].iloc[0])
     med_mo = float(d["mc_median_mo"].iloc[0]); p5_mo = float(d["mc_p5_mo"].iloc[0])
@@ -2420,14 +2619,54 @@ def panel_run_projection():
                  drawer=("Paper projection (model estimate, NOT realized). Monte-Carlo of the activated 7-edge "
                          "book at 0.50x Kelly; the P5 / median / P95 BANDS propagate MONTHLY-RETURN VARIANCE "
                          "ONLY (they assume the edges hold, and widen with time). The dashed amber STRESS line "
-                         "is different: it propagates EDGE UNCERTAINTY by compounding the stress %/mo. The run "
-                         f"RESET to $1,000 on {_run_meta('reset_date', '2026-06-21')} (algorithm changed; prior "
-                         "track archived) — month 0 = $1,000 (YOU ARE HERE). Inputs: median "
+                         "is different: it propagates EDGE UNCERTAINTY by compounding the stress %/mo. The "
+                         f"current run started at $1,000 on {_run_meta('reset_date', '—')} (earlier runs are on "
+                         "the equity chart's All view) — month 0 = $1,000 (YOU ARE HERE). Inputs: median "
                          f"{100*med_mo:+.1f}%/mo, P5 {100*p5_mo:+.1f}%/mo, P95 {100*p95_mo:+.1f}%/mo -> after 12 "
                          f"paper months the median path reaches ${end_med:,.0f} (P5 ${end_p5:,.0f} / P95 "
                          f"${end_p95:,.0f}).{stress_txt} Activated AHEAD of the forward gate; paper $1,000 only, "
                          "$0 REAL, never realized P&L."),
                  id="run-projection-card")
+
+
+def _gate_fwd_bits(r):
+    """FORWARD record (the gate's OWN sample) + the logged-but-not-traded context + the gate engine's verdict
+    for one run_gates row (2026-11-22). Before this the boards showed only the June BACKTEST edge beside a
+    count of every settled log row -- e.g. AUS-low '+8.05c' next to '355/110 settled' while those 355 logged
+    signals averaged negative and the gate itself had counted 0. Falls back to nothing on an old table."""
+    def g(k):
+        v = r.get(k) if hasattr(r, "get") else None
+        return None if _isnull(v) else v
+    if g("fwd_basis") is None and g("gate_verdict") is None:
+        return []
+    n = int(g("n_settled") or 0)
+    m, lo, hi = g("fwd_mean_c"), g("fwd_ci_lo"), g("fwd_ci_hi")
+    if m is not None and n:
+        ci = f" CI [{lo:+.1f}, {hi:+.1f}]c" if (lo is not None and hi is not None) else ""
+        few = " (too few to rate)" if n < 30 else ""
+        fcol = (DIM if few else GREEN if (lo is not None and lo > 0) else
+                RED if (hi is not None and hi < 0) else (AMBER if m >= 0 else RED))
+        fwd = html.Div([html.Span("FORWARD ", className="u-label"),
+                        html.Span(f"{m:+.2f}c", className="mono", style={"fontWeight": "700", "color": fcol}),
+                        html.Span(f"{ci} · n={n}{few} · {g('fwd_basis') or ''}", className="sub",
+                                  style={"fontSize": "10.5px"})])
+    else:
+        fwd = html.Div([html.Span("FORWARD ", className="u-label"),
+                        html.Span("no gate-eligible trade has settled yet", className="sub",
+                                  style={"fontSize": "10.5px"})])
+    out = [fwd]
+    wn, wm = g("watch_n"), g("watch_mean_c")
+    if wn and wm is not None:
+        basis = str(g("watch_basis") or "").replace("logged (not traded) ", "")
+        out.append(html.Div(f"Logged but not traded: n={int(wn)}, {wm:+.1f}c/contract ({basis}) "
+                            "— context only, not gate evidence.", className="sub", style={"fontSize": "10.5px"}))
+    v = g("gate_verdict")
+    if v:
+        acc = r.get("can_accrue")
+        blocked = acc is False or str(acc).lower() == "false"
+        out.append(html.Div(f"Gate verdict: {v}", className="sub",
+                            style={"fontSize": "10.5px", "color": RED if blocked else DIM}))
+    return out
 
 
 def panel_gate_board():
@@ -2442,7 +2681,8 @@ def panel_gate_board():
         kind, col, lbl = _GATE_STATUS_STYLE.get(r["status"], ("neut", NEUTRAL, str(r["status"]).upper()))
         nset = int(r["n_settled"] or 0); nreq = int(r["n_required"] or 1)
         pct = min(100, int(100 * nset / max(nreq, 1)))
-        edge = "—" if _isnull(r["edge_c"]) else f"{r['edge_c']:+.2f}c"
+        no_path = str(r["status"]) == "WATCH-no-path"
+        edge = "—" if (_isnull(r["edge_c"]) or no_path) else f"{r['edge_c']:+.2f}c"
         cil = "—" if _isnull(r["ci_lo"]) else f"{r['ci_lo']:+.1f}"
         cih = "—" if _isnull(r["ci_hi"]) else f"{r['ci_hi']:+.1f}"
         stake = float(r["staged_stake"] or 0.0)
@@ -2472,15 +2712,17 @@ def panel_gate_board():
             html.Div([html.Div(r["edge_label"], className="gb-name"),
                       html.Div([state_chip, badge(lbl, kind)],
                                style={"display": "flex", "gap": "5px"})], className="gb-head"),
-            html.Div([html.Span("EDGE ", className="u-label"),
-                      html.Span(edge, className="mono", style={"color": col, "fontWeight": "700"}),
-                      html.Span(f"  CI [{cil}, {cih}]c", className="sub", style={"fontSize": "10.5px"}),
+            html.Div([html.Span("BACKTEST ", className="u-label"),
+                      html.Span(edge, className="mono", style={"color": DIM, "fontWeight": "700"}),
+                      html.Span(f"  CI [{cil}, {cih}]c" if not no_path else "  (no tradable path)",
+                                className="sub", style={"fontSize": "10.5px"}),
                       html.Span(f"  ·  {r['season']}", className="sub", style={"fontSize": "10.5px"})],
                      className="gb-edge"),
+            html.Div(_gate_fwd_bits(r), className="gb-edge"),
             html.Div(r["gate_desc"], className="gb-gate sub"),
             html.Div([
                 html.Div([html.Span("FORWARD GATE PROGRESS", className="u-label"),
-                          html.Span(f"{nset} / {nreq} settled  ·  {str(r['status']).split('-')[-1].upper()}",
+                          html.Span(f"{nset} / {nreq} gate-eligible settled  ·  {lbl}",
                                     className="mono", style={"fontSize": "11px", "color": DIM})],
                          className="gb-prog-lbl"),
                 html.Div(html.Div(className="bar-fill", style={"width": f"{pct}%", "background": bar_col}),
@@ -2491,16 +2733,22 @@ def panel_gate_board():
                    if has_state and str(r.get("paper_state") or "").upper() == "ACTIVE")
     return panel("Deploy-Gate Board — Active vs Staged, and What Unlocks REAL Capital",
                  [html.Div(rows, className="gb-grid")],
-                 caption=(f"Each stream's paper state ({n_active} ACTIVE · PAPER vs the rest STAGED), the "
-                          f"pre-registered gate it must pass, forward progress, and its stake. REAL deploy "
-                          f"($0 live) still needs a gate PASS."),
+                 caption=(f"Each stream's paper state ({n_active} ACTIVE · PAPER vs the rest STAGED), its original "
+                          f"BACKTEST edge, its FORWARD record on the sample its gate actually counts, and the gate "
+                          f"engine's current verdict. REAL deploy ($0 live) still needs a gate PASS."),
                  drawer=(f"Each paper stream shows its PAPER state ({n_active} green ACTIVE · PAPER vs the rest "
                          "STAGED), the SPECIFIC pre-registered gate it must pass (docs/FORWARD_PROTOCOL A2/A3/"
                          "A4), forward progress, and its stake. ACTIVE = user-activated in the $1,000 PAPER run "
                          "AHEAD of the gate (paper money only). Activation is ORTHOGONAL to the gate — every row "
                          "is still ACCUMULATING, shown beside its stake. REAL deployment ($0 live) still "
-                         "requires a gate PASS. WATCH · NO PATH = validated-but-not-promotable. Paper/forward "
-                         "only, never realized P&L."),
+                         "requires a gate PASS. WATCH · NO PATH = validated-but-not-promotable. BACKTEST = the "
+                         "leak-free backtest that justified the stream (June 2026). FORWARD = the settled forward "
+                         "signals THIS gate counts (its own season/tradability/changepoint rules), with a "
+                         "day-clustered 95% CI, recomputed by the pre-registered gate engine on every pipeline "
+                         "run. 'Logged but not traded' shows what the signals a watch stream logs WOULD have "
+                         "returned — context, never gate evidence. A gate marked CANNOT ACCRUE counts only "
+                         "tradable signals while its stream is watch-only, so it can never reach its n without a "
+                         "protocol amendment. Paper/forward only, never realized P&L."),
                  id="gate-board-card")
 
 
@@ -2667,7 +2915,7 @@ def panel_open_positions():
             arrow = "▲" if up else ("▼" if down else "▬")
             pct_s = "" if pct is None else f" ({pct:+.1f}%)"
             dl_s = f"{arrow}${abs(net):,.2f}{pct_s}"
-            nc_s = "" if nct is None else f" · {int(nct)} ct"
+            nc_s = "" if nct is None else f" · {nct:,.0f} ct"   # round, like the book-total tile (was int() -> 159 vs 160)
             items.append(html.Div([
                 html.Span(f"{_mmdd(dt)}: ", className="sub", style={"opacity": .75}),
                 html.Span("paid ", className="sub", style={"fontSize": "10.5px"}),
@@ -2807,11 +3055,13 @@ def panel_research_edge_signals():
 
 
 def render_bankroll():
-    reset_date = _run_meta("reset_date", "2026-06-21")
+    reset_date = _run_meta("reset_date", "—")
+    inception = _run_meta("inception_date", "—")
     return html.Div([section("$1,000 Paper Run — Honest Gate Tracker"),
-                     html.Div([f"The $1,000 paper bankroll, RESET fresh to $1,000 on {reset_date} (the algorithm "
-                               "changed; the prior track is archived), and the pre-registered gates that govern "
-                               "it. ", html.B("LIVE capital today = $0"), " — every edge is STAGED until its "
+                     html.Div([f"The $1,000 paper bankroll — running since {inception}, rebaselined to $1,000 "
+                               f"(most recently on {reset_date}); every earlier run and its result is shown, not "
+                               "archived away — and the pre-registered gates that govern it. ",
+                               html.B("LIVE capital today = $0"), " — every edge is STAGED until its "
                                "forward gate passes. No orders, no account, no real money anywhere. Every figure "
                                "is paper/backtest/forward, never realized P&L."], className="sub",
                               style={"marginBottom": "12px"}),
@@ -3276,10 +3526,13 @@ def panel_scalability_curve():
                       badge("LOCK-MOMENT", "good")]
             net250 = float(d[d["size_ct"] == 250]["net_edge_after_fills_c_per_ct"].iloc[0]) if (
                 250 in set(d["size_ct"])) else None
-            sub = (f"REAL median curve across {n_sig} logged lock-moment signals. 250ct/market fills at ~2c "
-                   f"slippage on a ~{edge0:.0f}c edge — net stays "
-                   f"{('+%.0fc' % net250) if net250 is not None else 'positive'} at 250ct, so true capacity "
-                   f"is HIGH (hundreds of ct/market). Median book ~{(med_book or 0):,.0f}ct "
+            # 2026-11-22: the ~13c 'model edge' this curve subtracts slippage from is the RETIRED lock-in's edge
+            # (a latency artifact). The depth is real; the edge is not the one NY-high S1 earns forward.
+            sub = (f"REAL order-book DEPTH across {n_sig} logged lock-moment books: 250ct/market fills at ~2c "
+                   f"slippage. The ~{edge0:.0f}c 'model edge' line is the RETIRED lock-in's (a latency artifact) "
+                   f"— so the '+{(net250 or 0):.0f}c at 250ct' net here is NOT achievable. NY-high S1's FORWARD "
+                   f"edge is ~+1c or less (gate board), so depth is not what limits it — the edge is. "
+                   f"Median book ~{(med_book or 0):,.0f}ct "
                    f"(range {int(crow['min_book_ct'].iloc[0]):,}–{int(max_book):,}ct). The old '100ct' "
                    f"figure was a single near-close snapshot and understated this.")
             figs.append(html.Div([
@@ -3462,10 +3715,14 @@ def render_overview():
         fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.2f",
                          range=[min(min(y), 1000) - span * 0.6, max(max(y), 1000) + span * 0.6])
         fig.update_xaxes(title="settlement step", showticklabels=False)
+        _si, _nr, _inc = _since_inception(_latest_equity())
+        _hist = (f" This is the current run (since {_run_meta('reset_date', '—')}); with the {_nr - 1} earlier "
+                 f"runs chained the result since {_inc} is {_si:+.1f}% — see the $1,000 Run page."
+                 if (_si is not None and _nr > 1) else "")
         bank = card([html.H3(f"$1,000 Paper Run — ${cur_val:,.2f}"),
                      _cap("LIVE allocation $0 — every edge is STAGED until its forward gate PASSES. The paper "
-                          "equity moves only as activated PAPER signals settle (no real money). See the "
-                          "$1,000 Run page for the full per-edge gate board. Paper only, never realized P&L."),
+                          "equity moves only as activated PAPER signals settle (no real money)." + _hist +
+                          " Paper only, never realized P&L."),
                      graph(_tpl(fig, h=240, legend=False)),
                      _cap("X-axis = settlement step — each point is one paper signal SETTLING and booking its "
                           "P&L; the curve advances one step per settled contract, NOT by calendar time. Smooth "
@@ -3479,13 +3736,28 @@ def render_overview():
         trad = _cs[_cs["status"] == "tradable"]
     else:
         trad = cs1.iloc[0:0]
-    chips = [badge(f"{r['city']}  +{r['s1_net_c']:.1f}c", "good")
-             for _, r in trad.iterrows()] or [badge("NY", "good")]
+    # 2026-11-22: these chips said "Confirmed multi-city S1 edges: NY +4.0c CHI +5.4c LAX +5.2c" -- June BACKTEST
+    # numbers, while 0 of 10 forward gates have passed. Now: each deployed stream's FORWARD record since the
+    # 07-13 reset (strategy_perf), with its n; blank edge = too few settled to rate.
+    sp = table("strategy_perf")
+    chips = []
+    if not sp.empty and "n" in sp.columns:
+        for _, r in sp.iterrows():
+            if str(r.get("status", "")).lower() == "retired":
+                continue
+            name = str(r["strategy"]).replace("S1 day-ahead ", "").replace("Daily-low S1 ", "").strip("()")
+            n = 0 if _isnull(r.get("n")) else int(r["n"])
+            if _isnull(r.get("edge_c")):
+                chips.append(badge(f"{name}  n={n} (too few)", "neut"))
+            else:
+                chips.append(badge(f"{name}  {r['edge_c']:+.2f}c · n={n}", "good" if r["edge_c"] > 0 else "bad"))
+    if not chips:
+        chips = [badge(f"{r['city']}  +{r['s1_net_c']:.1f}c backtest", "neut") for _, r in trad.iterrows()]
     status_card = card([html.H3("System status"),
                         html.Div([html.Span(html.Span(className="dot")), "Pipeline LIVE · paper-only · ",
                                   html.Span(id="ov-updated", className="mono")], className="sub"),
-                        html.Div([html.Div("Confirmed multi-city S1 edges:", className="sub",
-                                           style={"margin": "10px 0 6px"}),
+                        html.Div([html.Div(f"Deployed streams — FORWARD record since the 07-13 reset ({_run_meta('n_gates_pass', '0')} of "
+                                           f"{_run_meta('n_gates', '—')} gates passed):", className="sub", style={"margin": "10px 0 6px"}),
                                   html.Div(chips, style={"display": "flex", "gap": "8px", "flexWrap": "wrap"})])])
     return html.Div([section("Command Center"),
                      kpi_strip,
@@ -3603,7 +3875,10 @@ def _content_forecasts():
                         marker=dict(symbol="diamond", size=15, color=AMBER,
                                     line=dict(width=1.5, color="#fff")))
     fig.update_yaxes(title="forecast high (°F)", ticksuffix="°F")
-    fig.update_xaxes(title="")
+    # every city labelled (Plotly auto-thinned the category ticks to every OTHER city, 2026-11-22)
+    _cities = sorted(set(members["city"].astype(str)) | set(ens["city"].astype(str) if not ens.empty else []))
+    fig.update_xaxes(title="", type="category", categoryorder="array", categoryarray=_cities,
+                     tickmode="array", tickvals=_cities, ticktext=_cities)
     fig.update_traces(hovertemplate="<b>%{x}</b><br>%{y:.1f}°F<extra></extra>")
     # pivot table city x source
     piv = members.pivot_table(index="city", columns="source", values="forecast_f", aggfunc="first")
@@ -3674,11 +3949,17 @@ def _content_edges_core():
                "Amber = positive net but does NOT beat market (ambiguous, not a clean edge). "
                "Cyan = beats market but net is not positive. Red = negative net and no Brier edge. "
                "Net is paper/backtest c/contract after modeled fills; never realized P&L.")
-    return [card([html.H3("S1 Edge by City"),
-                  html.Div(caption, className="sub", style={"marginBottom": "6px"}),
+    # 2026-11-22: these two panels are the BASE-5 pool backtest (every city on NY's 5 models). They disagree with
+    # the "Per-City Validation Detail" further down (LAX/CHI on their deployed ~15-model pools) -- e.g. CHI -0.47c
+    # here vs +5.42c there -- with nothing saying why. Named explicitly now.
+    pool_note = ("BACKTEST on the BASE-5 model pool (NY's 5 models applied to every city) — NOT the pools LAX/CHI "
+                 "actually deploy; their deployed-pool results are in 'Per-City Validation Detail' below. ")
+    return [card([html.H3("S1 Edge by City — Base-5 Pool Backtest"),
+                  html.Div(pool_note + caption, className="sub", style={"marginBottom": "6px"}),
                   graph(_tpl(fig, h=340))] if fig is not None else
                  [html.H3("S1 Edge by City"), html.Div("S1 net pending more cities.", className="sub")]),
-            card([html.H3("Per-City Edge Detail"),
+            card([html.H3("Per-City Edge Detail — Base-5 Pool Backtest"),
+                  html.Div(pool_note, className="sub", style={"marginBottom": "6px"}),
                   dt(present(e, order=["city", "stream", "n", "avg_net_c", "win_rate",
                                        "brier_model", "brier_market", "beats_market", "status"]),
                      present_df=False)]),
@@ -3750,7 +4031,7 @@ def _content_multicity():
                 status_chips.append(html.Div([badge(lbl, kind),
                                               html.Span("  " + city_str, className="sub")],
                                              style={"marginRight": "18px"}))
-        blocks.append(card([html.H3("Day-Ahead S1 by City — Expanded Per-City Pool"),
+        blocks.append(card([html.H3("Day-Ahead S1 by City — Deployed Pools, June Backtest"),
                             html.Div(status_chips, style={"display": "flex", "flexWrap": "wrap",
                                                           "gap": "6px 0", "margin": "2px 0 8px"}),
                             html.Div(["Bar color = DEPLOYED status (paper path; source: ", html.B(col_src),
@@ -3758,12 +4039,14 @@ def _content_multicity():
                                      "WATCH = logged but not trusted (CI touches zero — e.g. MIA). "
                                      "NOT-DEPLOYED = validated-capable but not in the live deployment "
                                      "(AUS/DEN). A tall bar alone does NOT mean tradable — only the status "
-                                     "badge does. All figures paper/forward, never realized P&L."],
+                                     "badge does. Bars are the June leak-free BACKTEST on each city's deployed "
+                                     "pool; the forward record is on the gate board below. Paper, never "
+                                     "realized P&L."],
                                      className="sub"),
                             graph(_tpl(fig))]))
         tbl = d.copy()
         tbl["status"] = tbl["status"].map(lambda s: _STATUS_STYLE[s][2])
-        blocks.append(card([html.H3("Per-City Validation Detail"),
+        blocks.append(card([html.H3("Per-City Validation Detail — June Backtest, Deployed Pools"),
                             dt(present(tbl, drop=["revived"],
                                        order=["city", "status", "s1_net_c", "ci_lo", "ci_hi", "p_gt0",
                                               "rmse_base", "rmse_exp", "trades_per_month"]),
@@ -3823,7 +4106,7 @@ def _content_accuracy():
                                      graph(_tpl(fig2))]), style={"flex": "1", "minWidth": "380px"})],
                      className="grid"),
             card([html.H3("RMSE Detail (°F)"),
-                  dt(present(r, order=["city", "members_rmse", "s2x_rmse", "warm", "cold", "n"]),
+                  dt(present(r, rename={"n": "Days (n)"}, order=["city", "members_rmse", "s2x_rmse", "warm", "cold", "n"]),
                      present_df=False)]),
             html.Div([html.Div(panel_calibration_streams(), className="col-7"),
                       html.Div(panel_emos_skill(), className="col-5")], className="grid12"),
@@ -3853,17 +4136,19 @@ def _content_forward():
         kind, col, lbl = _GATE_STATUS_STYLE.get(r["status"], ("neut", NEUTRAL, str(r["status"]).upper()))
         bar_col = "var(--accent)" if kind == "good" else ("var(--amber)" if kind == "warn" else "var(--neutral)")
         cp = f" · changepoint {r['changepoint']}" if r.get("changepoint") else ""
-        edge = "—" if _isnull(r["edge_c"]) else f"{r['edge_c']:+.2f}c"
+        no_path = str(r["status"]) == "WATCH-no-path"
+        edge = "—" if (_isnull(r["edge_c"]) or no_path) else f"{r['edge_c']:+.2f}c"
         cil = "—" if _isnull(r["ci_lo"]) else f"{r['ci_lo']:+.1f}"
         cih = "—" if _isnull(r["ci_hi"]) else f"{r['ci_hi']:+.1f}"
         bars.append(html.Div([
             html.Div([html.B(r["edge_label"]), badge(lbl, kind)],
                      style={"display": "flex", "justifyContent": "space-between", "alignItems": "center"}),
             html.Div(r["gate_desc"], className="sub", style={"fontSize": "11.5px", "margin": "3px 0 2px"}),
-            html.Div([html.Span(f"edge {edge}  CI [{cil}, {cih}]c", className="sub",
-                                style={"fontSize": "11px"}),
-                      html.Span(f"   {nset}/{nreq} settled{cp}", className="sub",
+            html.Div([html.Span(f"backtest {edge}" + ("" if no_path else f"  CI [{cil}, {cih}]c"),
+                                className="sub", style={"fontSize": "11px"}),
+                      html.Span(f"   {nset}/{nreq} gate-eligible settled{cp}", className="sub",
                                 style={"fontSize": "11px", "color": DIM})]),
+            html.Div(_gate_fwd_bits(r)),
             html.Div(html.Div(className="bar-fill", style={"width": f"{pct}%", "background": bar_col}),
                      className="bar-track", style={"margin": "5px 0 14px"})]))
     return [card([html.H3("Pre-registered forward gates"),
@@ -3966,9 +4251,10 @@ def _content_sandbox():
                else None)
     _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the live Kelly-MC median"
     edge_inputs = card([html.H3("Edges & Flow"),
-        html.Div([f"Streams split by SEASON CLASS for both high & low. YEAR-ROUND defaults reproduce the live "
-                  f"deployed book ({_sb_nact} streams, ${_sb_stake} @ 0.50x Kelly, anchored to the Kelly-MC "
-                  f"median ", html.B(_sb_med_str), f"); COLD-ONLY adds the validated cold streams (LV/MIN high; "
+        html.Div([f"Streams split by SEASON CLASS for both high & low. YEAR-ROUND defaults reproduce the June "
+                  f"BACKTEST model of the deployed book ({_sb_nact} streams, ${_sb_stake} @ 0.50x Kelly, anchored "
+                  f"to that model's median ", html.B(_sb_med_str), f" — NOT what the paper run has settled at); COLD-ONLY "
+                  f"adds the backtest-validated cold streams (LV/MIN high; "
                   f"PHIL/PHX low — $0 in warm today), so the full-book default sits above the warm-season "
                   f"number. Zero the cold cities for the warm-only book; every field moves the result."],
                  className="sub", style={"margin": "0 0 10px", "fontSize": "11px"}),
@@ -4144,7 +4430,21 @@ def _content_sandbox():
                    "flexWrap": "wrap"}),
         dcc.Graph(id="sb-ttt-chart", config={"displayModeBar": False})])
 
+    # REALITY CHECK (2026-11-22): every default in this sandbox is the JUNE BACKTEST model; the run itself has not
+    # realized it. Show the realized numbers first so no one reads a +16-21%/mo default as the plan.
+    _pace = _run_meta("realized_pace_pct_mo", "—")
+    _si, _nr, _inc = _since_inception(_latest_equity())
+    reality = html.Div([
+        html.B("Reality check: "),
+        f"the defaults below are the JUNE BACKTEST model. The actual $1,000 paper run has settled at "
+        f"{_pace}%/mo since {_run_meta('reset_date', '—')}"
+        + (f" and {_si:+.1f}% since inception ({_inc}, {_nr} runs chained)" if _si is not None else "")
+        + f", and {_run_meta('n_gates_pass', '0')} of {_run_meta('n_gates', '—')} forward gates have passed. To see the forward case, set the edges to the FORWARD "
+          "numbers on the Edges & Validation gate board (most are ~0 or negative)."],
+        className="sub", style={"marginBottom": "10px", "padding": "8px 12px", "borderLeft": f"3px solid {AMBER}",
+                                "background": "rgba(217,162,58,.08)", "color": "var(--ink)"})
     return [
+        reality,
         html.Div("Tune the edges, capital, and risk profile. Every output is a transparent paper model "
                  "(see the note at the bottom) — research only, never realized P&L.", className="sub",
                  style={"marginBottom": "10px"}),
@@ -4166,13 +4466,22 @@ def _content_sandbox():
 
 def _content_risk():
     """Risk & honesty content (WP-02: absorbed into Capacity & Risk). Returns a list."""
+    # live numbers, not hard-coded (2026-11-23, Aegis follow-up): NY-high forward edge + the gate tally
+    _sp = table("strategy_perf")
+    _ny = _sp[_sp["strategy"].astype(str).str.contains("NY high")] if (not _sp.empty and "strategy" in _sp) else _sp
+    _ny_txt = ("NY-high {:+.2f}c/contract over {} settled trades since 07-13".format(
+        float(_ny["edge_c"].iloc[0]), int(_ny["n"].iloc[0]))
+        if (not _ny.empty and "edge_c" in _ny and not _isnull(_ny["edge_c"].iloc[0])) else "NY-high: too few settled trades to rate")
+    _gates = f"{_run_meta('n_gates_pass', '0')} of {_run_meta('n_gates', '—')}"
     items = [("Capacity ceiling", "Each edge is depth-capacity-bounded; absolute $ per city has a ceiling that "
               "does NOT grow with bankroll. Scale comes from MORE validated cities, not more capital per city.",
               "warn"),
              ("Fills are the gating unknown", "Edges modeled at ≤~1c slippage; worse real fills shrink them. "
               "Forward fill validation is in progress.", "warn"),
-             ("Edges are thin", "Validated multi-city S1 nets are ~3–5c/contract with bootstrap CIs whose "
-              "lower bound is small — real but fragile. Sized conservatively.", "warn"),
+             ("Edges are unconfirmed forward", "The June backtests showed ~3–5c/contract S1 nets; the FORWARD "
+              f"record since is far weaker — {_ny_txt}, LAX/CHI barely trading, most watch cities' logged "
+              f"signals below zero. {_gates} gates have passed. The capacity curves on this page assume the "
+              "backtest edge and are an upper bound.", "bad"),
              ("Paper only", "No authentication, no orders, no account, no real money — anywhere. Every figure "
               "is a paper/backtest/forward estimate, never realized P&L.", "bad"),
              ("Lock-in reality", "NYC lock-in was RETIRED (2026-06-25) as a latency artifact at the ~128s METAR "
@@ -4572,30 +4881,29 @@ def _live(_n):
         # WP-01: show ALL wired cities (was head(6) -> silently dropped the 7th+ city from the strip).
         for _, r in cn.iterrows():
             fc = "—" if _isnull(r["forecast_f"]) else f"{r['forecast_f']:.0f}°F"
-            e = r["edge_c"]
-            if _isnull(e):
-                dv, dcls = "", "v"
-            else:
-                dv, dcls = f"{e:+.1f}c", ("v up" if e >= 0 else "v down")
+            # 2026-11-22: the green '+4.0c'-style delta next to each city was the June BACKTEST edge styled like
+            # a live price change; the strip now shows only the day-ahead forecast high, labelled as such.
             tk.append(html.Div([html.Span(f"{r['city']} ", className="k"),
                                 html.Span(fc, className="v"),
-                                html.Span(dv, className=dcls)], className="ticker"))
+                                html.Span(" fcst", className="v", style={"opacity": ".55", "fontSize": "10px"})],
+                               className="ticker", title="day-ahead forecast high (deployed model)"))
     tk.append(html.Div([html.Span("INTEGRITY ", className="k"),
                         html.Span(meta_value("integrity_verdict"), className="v")], className="ticker"))
     # WP-01: topbar clock in ET (the market's clock; site-wide standard), not UTC.
     et_clock = _to_et_naive(now).strftime("%H:%M:%S ET")
-    return et_clock, tk, f"data · {meta_value('generated_at_utc')}"
+    return et_clock, tk, f"data · {_utc_to_et_str(meta_value('generated_at_utc'), '%m-%d %H:%M ET')}"
 
 
 @app.callback(Output("ov-updated", "children"), Input("tick", "n_intervals"))
 def _ov_updated(_n):
-    return f"updated {meta_value('generated_at_utc')}"
+    return f"updated {_utc_to_et_str(meta_value('generated_at_utc'), '%m-%d %H:%M ET')}"
 
 
 @app.callback(Output("status-updated", "children"), Output("tb-stale", "children"),
               Output("status-verdict", "children"), Input("tick", "n_intervals"))
 def _statusbar(_n):
-    return f"LAST {meta_value('generated_at_utc')}", staleness_chip(), _system_status()
+    return (f"LAST {_utc_to_et_str(meta_value('generated_at_utc'), '%Y-%m-%d %H:%M ET')}", staleness_chip(),
+            _system_status())
 
 
 # ---- Sandbox profitability model (transparent; paper estimate only) ----
@@ -5181,7 +5489,8 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     metrics = html.Div([
         _risk_metric("Median return (scenario)", f"{roi:+.1f}%/m", "good" if roi > 0 else "bad",
                      "YOUR inputs: net edge x trades x cities x Kelly stake, capacity-capped. Moves with "
-                     "every field (the validated deployed-book default is ~+14.6%/m)."),
+                     "every field (the June-backtest deployed-book default is ~+14.6%/m; the paper run has settled at "
+                     f"{_run_meta('realized_pace_pct_mo', '—')}%/m)."),
         _risk_metric("Downside p5 (scenario)", f"{sc_p5:+.1f}%/m", _sev_dd(abs(sc_p5)),
                      "1-in-20 bad month — the validated risk shape scaled to your scenario median."),
         _risk_metric("p95 max drawdown (ref)", f"{k['dd']:.1f}%", _sev_dd(k["dd"]),
@@ -5354,7 +5663,8 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
             f"cold-only), driven by every input: for each active stream, (net c/contract at this size ÷ 100) "
             f"× trades/mo × active markets × contracts/trade. Contracts/trade ({s1_ct:.1f} here) is anchored "
             f"to the deployed book's per-trade unit so the ALL-SEASON default (cold cities = 0) at 0.50x on "
-            f"$1,000 reproduces the live Kelly-MC projection (~21.3%/m, the Projection panel); it scales "
+            f"$1,000 reproduces the June backtest Kelly-MC model (~21.3%/m — not realized; the run has done "
+            f"{_run_meta('realized_pace_pct_mo', '—')}%/m); it scales "
             f"linearly with Kelly ({kelly:.2f}x) and bankroll (${bankroll:,.0f}). The cold-only books default "
             f"ON (full validated book), so the default sits above the warm-season deployed number; zero their "
             f"cities for the warm-season-only (deployed) view. "

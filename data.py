@@ -72,7 +72,9 @@ def _git_tables() -> dict:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 blob = _json.loads(gzip.decompress(resp.read()).decode("utf-8"))
             for name, recs in (blob.get("tables") or {}).items():
-                if isinstance(recs, list) and recs:
+                if isinstance(recs, list):
+                    # keep EMPTY tables too (2026-11-23): a published [] is a real state (e.g. open_positions when
+                    # the book is flat) and must not be mistaken for "missing" -> stale cached copy.
                     tables[name] = pd.DataFrame(recs)
             ok = True
         except Exception:
@@ -96,6 +98,18 @@ def table(name: str) -> pd.DataFrame:
         gt = _git_tables()
         if name in gt:
             df = gt[name]
+            _cache[name] = (now, df)   # the published table is authoritative, even when legitimately empty
+            return df
+        elif gt:
+            # PERF (2026-11-22): the git store loaded fine but this table is ABSENT from it (a newly added producer
+            # table before its first publish, or its blob failed to load this cycle). Don't dial Neon for it: Neon
+            # has been over quota since July, so that fallback could only fail -- and a slow refusal stalled whole
+            # page renders (Run / Model pages, ~2 min in a dead-host test).
+            # Keep the old serve-stale behaviour: if only ONE blob loaded this cycle (e.g. a live-marks fetch
+            # blip), its tables are missing here, so return the last cached copy rather than blanking the panel.
+            df = hit[1] if hit else pd.DataFrame()
+            _cache[name] = (now, df)
+            return df
     if df.empty:
         try:
             df = pd.read_sql_table(name, _engine())
