@@ -4261,29 +4261,33 @@ def _content_sandbox():
                else None)
     _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the live Kelly-MC median"
     edge_inputs = card([html.H3("Edges & Flow"),
-        html.Div([f"Streams split by SEASON CLASS for both high & low. YEAR-ROUND defaults reproduce the June "
-                  f"BACKTEST model of the deployed book ({_sb_nact} streams, ${_sb_stake} @ 0.50x Kelly, anchored "
-                  f"to that model's median ", html.B(_sb_med_str), f" — NOT what the paper run has settled at); COLD-ONLY "
-                  f"adds the backtest-validated cold streams (LV/MIN high; "
-                  f"PHIL/PHX low — $0 in warm today), so the full-book default sits above the warm-season "
-                  f"number. Zero the cold cities for the warm-only book; every field moves the result."],
+        html.Div(["Defaults = what is PROVEN today. Only ", html.B("Edge #1"), " (uncertainty mispricing in the "
+                  "15 newer high-temperature cities) is validated out of sample: +2.73c/contract NET after costs, "
+                  "~187 trades/month, booked in the $1,000 paper run at $10/trade. Every other bucket defaults to $0 "
+                  "because it has no proven forward edge: NY/LAX/CHI-high are in the book but their forward record "
+                  "is ~0; the daily lows were DROPPED and PHIL/PHX UN-STAGED on 2026-11-23. Type an edge or city "
+                  "count into any bucket to test a what-if — every field moves the result."],
                  className="sub", style={"margin": "0 0 10px", "fontSize": "11px"}),
         html.Div([
-            bucket("HIGH · year-round", MINT, "NY/LAX/CHI all-season — NY carries the edge (LAX/CHI soft)",
+            bucket("EDGE #1 · uncertainty (newer cities)", GREEN,
+                   "PROVEN out of sample: net +2.73c/ct (CI +0.11..+5.41, p=0.021) · gross 4.7c − 2c fill cost · "
+                   "15 cities × ~12.5 trades/mo · booked $10/trade",
+                   cf("sb-s1edge-cold", "Edge ¢/ct", S1_HIGH_COLD_EDGE_DEFAULT, 0.1, 0, 20),
+                   cf("sb-cities-cold", "Cities", UNC_CITIES_DEFAULT, 1, 0, 15),
+                   cf("sb-s1trades-cold", "Trades/mo·city", UNC_TRADES_PER_CITY_DEFAULT, 0.5, 0, 400)),
+            bucket("HIGH · NY/LAX/CHI (unproven)", MINT,
+                   "In the $1k book, but no proven forward edge (NY forward ≈ 0) → $0 by default",
                    cf("sb-s1edge", "Edge ¢/ct", S1_HIGH_EDGE_DEFAULT, 0.1, 0, 20),
                    cf("sb-cities", "Cities", 3, 1, 0, 7),
                    cf("sb-s1trades", "Trades/mo·city", 84, 1, 0, 400)),
-            bucket("HIGH · cold-only", CYAN, "LV +9.19c / MIN +9.89c · Nov–Apr · A6 watch ($0 warm)",
-                   cf("sb-s1edge-cold", "Edge ¢/ct", S1_HIGH_COLD_EDGE_DEFAULT, 0.1, 0, 20),
-                   cf("sb-cities-cold", "Cities", 2, 1, 0, 7),
-                   cf("sb-s1trades-cold", "Trades/mo·city", 84, 1, 0, 400)),
-            bucket("LOW · all-season / active", MINT, "NY-low deployed but ~0 realized edge now; warm lows dormant",
+            bucket("LOW · year-round (DROPPED)", DIM, "Dropped from the book 2026-11-23 after forward losses",
                    cf("sb-lowedge", "Edge ¢/ct", LOW_EDGE_DEFAULT, 0.1, 0, 20),
-                   cf("sb-lowcities", "Cities", 1, 1, 0, 7),
+                   cf("sb-lowcities", "Cities", 0, 1, 0, 7),
                    cf("sb-lowtrades", "Trades/mo·city", 82, 1, 0, 400)),
-            bucket("LOW · cold-only", CYAN, "PHIL +11.79c / PHX +17.65c · ~20/mo · Nov–Apr ($0 warm)",
+            bucket("LOW · cold-only (UN-STAGED)", DIM, "PHIL/PHX backtest-only (+11.8c/+17.7c), never proven; "
+                   "un-staged 2026-11-23",
                    cf("sb-lowedge-cold", "Edge ¢/ct", LOW_COLD_EDGE_DEFAULT, 0.1, 0, 20),
-                   cf("sb-lowcities-cold", "Cities", 2, 1, 0, 7),
+                   cf("sb-lowcities-cold", "Cities", 0, 1, 0, 7),
                    cf("sb-lowtrades-cold", "Trades/mo·city", 20, 1, 0, 400)),
             bucket("Lock-in (RETIRED 2026-06-25)", DIM, "latency artifact · 0 locks = not in deployed book",
                    cf("sb-lock", "Edge ¢/ct", 12, 0.5, 0, 30),
@@ -4300,9 +4304,9 @@ def _content_sandbox():
                    marks={0.25: "0.25", 0.50: "0.50x dep", 0.75: "0.75", 1.00: "1.0x full"},
                    tooltip={"placement": "bottom", "always_visible": False},
                    updatemode="mouseup"),
-        html.Div("Full Kelly (1.0x) reaches the highest validated return (+29.7%/m) but the worst "
-                 "stress drawdown (~41%). 0.50x is the recommended ceiling — beyond it, ruin risk "
-                 "climbs steeply. No ROI cap; the warnings escalate honestly.", className="sub",
+        html.Div("Higher Kelly fractions scale both the projected return and the drawdown. 0.50x is the ceiling "
+                 "we use; beyond it, ruin risk climbs steeply. (The old June sweep's '+29.7%/m at full Kelly' "
+                 "was a backtest of streams that later failed forward — not a validated number.)", className="sub",
                  style={"margin": "8px 0 2px", "fontSize": "11px"}),
         html.Div(style={"height": "10px"}),
         field("sb-slip", "Base fill cost — slippage + fee (c/contract)", 2.0, 0.5, 0, 4),
@@ -4335,8 +4339,12 @@ def _content_sandbox():
                style={"flex": "1.1", "minWidth": "300px"})
 
     risk_panel = card([html.H3("Risk Profile — Kelly Stake Sweep"),
-        html.Div(["At the selected Kelly fraction, the real numbers from the $1,000 correlation-aware "
-                  "Monte-Carlo stake sweep (interpolated between rows). Severity is color-coded: ",
+        html.Div([html.B("Edge #1 at its booked $10/trade (backtest replay, 15 newer cities): "),
+                  "max loss per trade $10.94 (stake + 1c/ct slippage + fee), worst day −$55.80, max drawdown "
+                  "11% of $1,000. "], className="sub",
+                 style={"marginBottom": "8px", "padding": "6px 10px", "borderLeft": f"3px solid {GREEN}"}),
+        html.Div(["The sweep below is the OLD June book's correlation-aware Monte-Carlo (streams that later "
+                  "failed forward) — kept as a risk-shape reference, not a proven number. Severity is color-coded: ",
                   html.Span("green = ok", style={"color": MINT, "fontWeight": "700"}), ", ",
                   html.Span("amber = elevated", style={"color": AMBER, "fontWeight": "700"}), ", ",
                   html.Span("red = ruin-risk", style={"color": RED, "fontWeight": "700"}),
@@ -4446,11 +4454,13 @@ def _content_sandbox():
     _si, _nr, _inc = _since_inception(_latest_equity())
     reality = html.Div([
         html.B("Reality check: "),
-        f"the defaults below are the JUNE BACKTEST model. The actual $1,000 paper run has settled at "
+        "the defaults below are the only edge PROVEN out of sample today (Edge #1, newer-city uncertainty "
+        "mispricing, booked 2026-11-23 — its live paper record starts now). The actual $1,000 paper run has settled at "
         f"{_pace}%/mo since {_run_meta('reset_date', '—')}"
         + (f" and {_si:+.1f}% since inception ({_inc}, {_nr} runs chained)" if _si is not None else "")
-        + f", and {_run_meta('n_gates_pass', '0')} of {_run_meta('n_gates', '—')} forward gates have passed. To see the forward case, set the edges to the FORWARD "
-          "numbers on the Edges & Validation gate board (most are ~0 or negative)."],
+        + f", and {_run_meta('n_gates_pass', '0')} of {_run_meta('n_gates', '—')} older forward gates have passed. "
+          "A projection is a what-if, not a forecast: expect less than the default once the winner's-curse "
+          "discount (+1.5..2.5c instead of +2.73c) and partial fills (~77% at 20 contracts) are applied."],
         className="sub", style={"marginBottom": "10px", "padding": "8px 12px", "borderLeft": f"3px solid {AMBER}",
                                 "background": "rgba(217,162,58,.08)", "color": "var(--ink)"})
     return [
@@ -4629,7 +4639,7 @@ def panel_stream_forward():
     if not scopes:
         return card([html.H3("Per-Stream Forward Net"),
                      empty_state("Fills from the per-stream forward-signal logs (equity_curve_stream).")])
-    return card([html.H3("Per-Stream Forward Net — Deployed Streams"),
+    return card([html.H3("Per-Stream Forward Net — Book Streams (incl. lows dropped 2026-11-23)"),
                  _cap("Cumulative FORWARD paper net per deployed stream from settled forward signals "
                       "(distinct from the NY walk-forward backtest below). Pick ALL for the overlay + a "
                       "summary, or a single stream for its equity line and monthly bars. Paper/forward, "
@@ -4647,7 +4657,9 @@ def render_lab():
                        html.Div([html.Div(panel_stream_forward(), className="col-12")], className="grid12"),
                        html.H3("Backtest Research", style={"margin": "16px 0 4px"}),
                        html.Div("Leak-free walk-forward backtest diagnostics in cents/contract or °F — "
-                                "NOT dollars, NOT live, never realized P&L.", className="sub",
+                                "NOT dollars, NOT live, never realized P&L. These are the June NY-high backtest; "
+                                "NY-high's FORWARD record since has been ~0, so read them as history, not "
+                                "as a proven edge (the proven edge is Edge #1 above).", className="sub",
                                 style={"marginBottom": "10px"}),
                        html.Div([html.Div(panel_equity_curve(), className="col-8"),
                                  html.Div(panel_drawdown(), className="col-4")], className="grid12"),
@@ -4945,8 +4957,14 @@ DEPTH_CAP = 250        # contracts fillable within slippage (measured median; fl
 # 2026-07-20: HIGH all-season is a 3-CITY per-city bucket (NY/LAX/CHI), so it uses the per-city all-season
 # edge, NOT NY's own realized +8.4c (which would triple-count NY onto the edge-soft LAX/CHI). NY carries the
 # real edge; LAX/CHI are depth/edge-soft under the exec-gate -> a modest ~3-4c per-city all-season blend.
-S1_HIGH_EDGE_DEFAULT = 4.0          # gross c/ct per-city, HIGH all-season 3-city blend (NY-carried)
-S1_HIGH_COLD_EDGE_DEFAULT = 9.5     # gross c/ct, HIGH cold-only add (LV/MIN cold mean; A6 gate floors)
+# 2026-11-23 LAB AUDIT (user: "set defaults to real current proven edges and numbers"): the only edge PROVEN out of
+# sample today is EDGE #1 (uncertainty mispricing, 15 newer KXHIGHT* cities: +2.73c/ct NET after ask + 1c slip + fee,
+# CI [+0.11,+5.41], p=0.021, 187 trades/mo, booked in the $1k run at $10/trade). The old 'HIGH cold-only' bucket
+# (LV/MIN, never validated forward) is now the EDGE #1 bucket (same per-stream math, no season factor). NY/LAX/CHI-high
+# stay in the book but have NO proven forward edge (NY fwd -0.65c n299) -> default 0; lows DROPPED 11-23 -> 0 cities.
+S1_HIGH_EDGE_DEFAULT = 0.0          # gross c/ct per-city, NY/LAX/CHI-high: unproven forward -> 0 (type a value to test)
+S1_HIGH_COLD_EDGE_DEFAULT = 4.7     # EDGE #1 GROSS c/ct = validated NET +2.73c + the 2.0c base fill cost below
+UNC_CITIES_DEFAULT, UNC_TRADES_PER_CITY_DEFAULT = 15, 12.5   # EDGE #1: 15 cities x 12.5 = ~187 trades/mo
 # 2026-07-20: LOW all-season default -> ~0. The daily-low streams are NOT producing realized edge right now
 # (NY-low realized negative/underpowered; the warm AUS/LAX/DEN/MIA lows are dormant/marginal). So the honest
 # default reflects near-zero low contribution until the forward low data turns positive.
@@ -4965,7 +4983,10 @@ LOW_COLD_EDGE_DEFAULT = 14.7        # gross c/ct, LOW cold-only add (PHIL/PHX co
 # than doubling it. This is a STOPGAP: the honest current headline (NY-dominated post exec-gate) is <= that
 # reference; a precise anchor needs the deployed-book Kelly-MC REGENERATED with the corrected edge + the
 # exec-gate stream set (most non-NY streams now tradable=False).
-SANDBOX_CT_CAL = 3.5233
+# 2026-11-23 RE-ANCHOR: the old 3.5233 reproduced the June backtest Kelly-MC (~21%/m) that the paper run never
+# realized. Now anchored to what is BOOKED: Edge #1 at $10/trade ~= 20 contracts at its ~49c average price, at the
+# default 0.50x Kelly on $1,000 (20 / (0.50/0.25) = 10). Single per-trade unit for every bucket (simplification).
+SANDBOX_CT_CAL = 10.0
 
 # ---- NON-LINEAR per-stream slippage(size) curves (AUDIT-CORRECTED 2026-06-21) ----
 # The ONLY stream with a real logged per-size fill curve is NY-high (median across n logged lock-moment
@@ -5492,7 +5513,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
         html.Span(f"Kelly {kelly:.2f}x", className=kelly_badge_cls),
         ceil_flag,
         html.Div(["Scenario median (your inputs): ", html.B(f"{roi:+.1f}%/m"),
-                  "  ·  validated-sweep reference (deployed 4-stream book, CI-lower-bound) at this fraction: ",
+                  "  ·  old June backtest sweep (4-stream book, NOT proven forward) at this fraction: ",
                   html.B(f"{k['med']:+.1f}%/m"), f" median · {k['p5']:+.1f}%/m p5 · {k['stress']:+.1f}%/m stress"],
                  className="sub", style={"marginTop": "6px", "fontSize": "11.5px"})])
 
@@ -5563,7 +5584,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
         shapes=[_hline(base, AXISCOL, 1, "dash")])
 
     # ---- profit breakdown by stream ----
-    labels = ["High year-round", "High cold-only", "Low year-round", "Low cold-only", "Lock-in", "TOTAL"]
+    labels = ["NY/LAX/CHI high", "Edge #1 (new cities)", "Low year-round", "Low cold-only", "Lock-in", "TOTAL"]
     vals = [s1_monthly, s1cold_monthly, low_monthly, lowcold_monthly, lock_monthly, total]
     _vmax = max(list(vals) + [1.0]); _vmin = min(list(vals) + [0.0])
     fig = _dfig(
@@ -5669,20 +5690,17 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
         cap_flag = html.Div("Set non-zero edges to see the capacity ceiling.", className="sub")
 
     _nonlin = " (depth model: live Mosaic slippage curves)" if _curves else " (depth model: flat 250ct fallback)"
-    note = (f"Profit is a TRANSPARENT per-stream sum over FOUR season-classed books (high/low × year-round/"
-            f"cold-only), driven by every input: for each active stream, (net c/contract at this size ÷ 100) "
-            f"× trades/mo × active markets × contracts/trade. Contracts/trade ({s1_ct:.1f} here) is anchored "
-            f"to the deployed book's per-trade unit so the ALL-SEASON default (cold cities = 0) at 0.50x on "
-            f"$1,000 reproduces the June backtest Kelly-MC model (~21.3%/m — not realized; the run has done "
-            f"{_run_meta('realized_pace_pct_mo', '—')}%/m); it scales "
-            f"linearly with Kelly ({kelly:.2f}x) and bankroll (${bankroll:,.0f}). The cold-only books default "
-            f"ON (full validated book), so the default sits above the warm-season deployed number; zero their "
-            f"cities for the warm-season-only (deployed) view. "
+    note = (f"Profit is a TRANSPARENT per-stream sum, driven by every input: for each active stream, (net "
+            f"c/contract at this size ÷ 100) × trades/mo × active markets × contracts/trade. Contracts/trade "
+            f"({s1_ct:.1f} here) is anchored to what is BOOKED: Edge #1 at $10/trade ≈ 20 contracts at 0.50x on "
+            f"$1,000 (the run itself has done {_run_meta('realized_pace_pct_mo', '—')}%/m so far, before Edge #1); "
+            f"it scales linearly with Kelly ({kelly:.2f}x) and bankroll (${bankroll:,.0f}). Only Edge #1 is "
+            f"proven; the other buckets default to $0 and are what-ifs. "
             f"NON-LINEAR DEPTH{_nonlin}: the net c/contract DEGRADES as per-market size grows along each book's "
             f"measured VWAP-slippage curve and crosses zero at its real capacity ceiling (deep high books fill "
             f"to ~250ct; the shallower daily-low books cap sooner — the capacity chart is a staircase). "
-            f"High year-round net {s1_net_at:.1f}c (model {s1_edge_c:.1f}c) × {s1tr:.0f}/mo × {cities} = "
-            f"${s1_monthly:,.0f}/mo; high cold-only {s1cold_net_at:.1f}c × {s1tr_cold:.0f}/mo × {cities_cold} = "
+            f"NY/LAX/CHI-high net {s1_net_at:.1f}c (model {s1_edge_c:.1f}c) × {s1tr:.0f}/mo × {cities} = "
+            f"${s1_monthly:,.0f}/mo; Edge #1 {s1cold_net_at:.1f}c × {s1tr_cold:.1f}/mo × {cities_cold} cities = "
             f"${s1cold_monthly:,.0f}/mo; low year-round {low_net_at:.1f}c × {low_trades:.0f}/mo × {low_cities} = "
             f"${low_monthly:,.0f}/mo; low cold-only {lowcold_net_at:.1f}c × {lowtr_cold:.0f}/mo × "
             f"{lowcities_cold} = ${lowcold_monthly:,.0f}/mo; lock-in {lock_net_at:.1f}c × {lockpm:.0f}/mo × "
