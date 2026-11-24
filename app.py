@@ -1654,7 +1654,8 @@ def panel_run_header():
     staged_z = _run_meta("staged_total_dollars", _run_meta("staged_zero_allocation_dollars", "—"))
     _rg = table("run_gates")
     if not _rg.empty and "paper_state" in _rg.columns and "staged_stake" in _rg.columns:
-        _st = _rg[_rg["paper_state"].astype(str).str.upper() != "ACTIVE"]
+        # DROPPED rows (user 2026-11-23) are neither active nor staged -> excluded from the staged total
+        _st = _rg[~_rg["paper_state"].astype(str).str.upper().isin(["ACTIVE", "DROPPED"])]
         nstaged = int(len(_st))
         staged_z = f"{float(pd.to_numeric(_st['staged_stake'], errors='coerce').fillna(0).sum()):,.2f}"
     else:
@@ -2700,6 +2701,15 @@ def panel_gate_board():
                           style={"fontWeight": "700", "color": GREEN}),
                 html.Span("  · active in the $1k paper run · $0 REAL until gate PASS", className="sub",
                           style={"fontSize": "10px", "color": AMBER})], className="gb-stake")
+        elif has_state and str(r.get("paper_state") or "").upper() == "DROPPED":
+            # USER 2026-11-23: losing stream dropped from the paper book -- no new positions, no staged trigger;
+            # its monitor keeps logging so it can earn its way back through its gate.
+            state_chip = badge("DROPPED", "bad")
+            stake_block = html.Div([
+                html.Span("DROPPED ", className="u-label"),
+                html.Span("$0", className="mono", style={"fontWeight": "700", "color": DIM}),
+                html.Span("  · no new paper positions (dropped 2026-11-23 after forward losses) · monitor still "
+                          "logging", className="sub", style={"fontSize": "10px", "color": DIM})], className="gb-stake")
         else:
             state_chip = badge("STAGED", "neut")
             stake_block = html.Div([
