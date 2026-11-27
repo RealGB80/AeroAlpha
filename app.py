@@ -4862,92 +4862,109 @@ def panel_stream_forward():
                 id="stream-forward-card")
 
 
-# ================================ LAB: what-if calculator (2026-11-26 rebuild) ================================
-# One row per edge that is booked in the $1k paper run or being tested. Plain per-stream economics:
-#   contracts per trade = min(depth cap, stake at $1k x bankroll/1000 x (bet size / 0.5) / price) x fill rate
-#   $ a month           = edge after costs (c/ct) x realism x competition decay / 100 x trades x contracts - fixed costs
-#   spread of a month   = sqrt(sum over trades of (contracts x sqrt(p(1-p)))^2)   (trades treated as independent)
-#   money tied up       = trades/30 x days held x contracts x price, capped at 90% of bankroll (cash limit)
-# Edges are AFTER fees and spread. Booked streams read their backtest edge/range live from run_gates when present.
-LAB_STREAMS = [
-    dict(id="UNC_NEWCITY_high", name="Edge #1, 5 pm entry", status="Booked",
-         what="Prices tomorrow's high in the 15 newer cities from our own forecast spread and trades where the "
-              "market's price ladder is too narrow or too wide.",
-         pace="Live so far: about 3 trades a day (the backtest averaged about 6).",
-         edge=2.20, lo=-0.38, hi=4.72, trades=85, stake=10, price=0.60, depth=55, hold=1, fixed=0),
-    dict(id="UNC_NEWCITY_3PM_high", name="Edge #1, 3 pm entry", status="Booked",
-         what="The same idea two hours earlier, when the books are thinner but a little more mispriced.",
-         pace="Live since Nov 25: about 2 trades a day.",
-         edge=3.09, lo=0.64, hi=5.65, trades=60, stake=10, price=0.45, depth=55, hold=1, fixed=0),
-    dict(id="UNC_LAUNCH_high", name="Edge #1 in newly launched cities", status="Booked",
-         what="New Kalshi cities are traded from their first day, while their markets are still finding their feet.",
-         pace="Only trades when Kalshi launches a city; none since Nov 25.",
-         edge=7.98, lo=-1.40, hi=17.10, trades=8, stake=10, price=0.50, depth=40, hold=1, fixed=0),
-    dict(id="NEWCITY_LOWS_low", name="Newer-city lows", status="Booked",
-         what="The width idea on overnight lows in the 14 newer cities, sized by the spread of the 31-member GEFS "
-              "ensemble.",
-         pace="Live since Nov 26: about 3.5 trades a day.",
-         edge=3.68, lo=0.55, hi=6.64, trades=105, stake=5, price=0.50, depth=15, hold=1, fixed=0),
-    dict(id="LOWS_LAUNCH_low", name="Lows in newly launched cities", status="Booked",
-         what="Low-temperature markets in brand-new cities, from their first day.",
-         pace="Only trades when a new low market launches.",
-         edge=8.42, lo=-2.77, hi=19.34, trades=8, stake=5, price=0.50, depth=15, hold=1, fixed=0),
-    dict(id="RAIN_MONTHEND_NO", name="Month-end rain", status="Booked",
-         what="With a few days left, sells 'yes' on monthly rain brackets that would need unusually heavy rain, "
-              "when the price still carries hope. At most two trades per city a month.",
-         pace="First trade booked for Nov 30.",
-         edge=9.41, lo=7.80, hi=11.30, trades=10, stake=40, price=0.75, depth=100, hold=4, fixed=0),
-    dict(id="GLOBAL_TEMP_INFO", name="Global temperature", status="Booked",
-         what="Prices NOAA's and NASA's monthly and yearly global temperature from ERA5 reanalysis, which is out "
-              "weeks before they publish.",
-         pace="Two positions open (Nov 2026 NOAA, 2026 NASA year). A miss costs most of the stake.",
-         edge=6.10, lo=2.00, hi=8.00, trades=2, stake=200, price=0.90, depth=1500, hold=35, fixed=0),
-    dict(id="REV_NEWCITY_high", name="Summer forecast revisions", status="Scheduled",
-         what="Trades the 12Z forecast revision in the newer cities. Books only May to August, from May 2027; "
-              "counted here as if it were summer.",
-         pace="Logging all year; booking starts May 1, 2027.",
-         edge=3.16, lo=0.70, hi=5.60, trades=135, stake=5, price=0.45, depth=40, hold=1, fixed=0),
-    dict(id="SNOW_MONTHSTART", name="Snow at month start", status="Testing",
-         what="Monthly snow brackets right after the month opens, priced from the snow climatology. Weak so far.",
-         pace="Forward test starts Dec 1; read after March 2027.",
-         edge=9.70, lo=-9.00, hi=30.00, trades=8, stake=10, price=0.50, depth=30, hold=20, fixed=0),
-    dict(id="HOURLY_PHONE", name="Hourly head start by phone", status="Testing",
-         what="Calls airport weather lines, whose voice reads the temperature about 25 to 95 seconds before "
-              "Kalshi's feed shows it, and trades the hourly market in that gap. Calls cost about $90 a month.",
-         pace="First automated test run: Nov 27, 7 am ET.",
-         edge=5.40, lo=0.00, hi=10.00, trades=185, stake=15, price=0.50, depth=30, hold=0.04, fixed=90),
-    dict(id="HOURLY_RADIO", name="Hourly head start by radio (Miami)", status="Idea",
-         what="The same head start from an always-on aviation weather radio, so every change is heard. Needs a "
-              "receiver (about $150) and a legal check first.",
-         pace="Not started.",
-         edge=5.40, lo=0.00, hi=10.00, trades=1070, stake=15, price=0.50, depth=30, hold=0.04, fixed=0),
+# ================================ LAB: what-if calculator (2026-11-26, v2) ================================
+# Old bucket-tile formatting: one compact tile per edge, each TYPE with its own inputs. All arithmetic runs in the
+# browser (clientside callback _LAB_JS), so every change is instant and nothing queues on the server.
+# Shared economics (per counted edge, per month):
+#   contracts a trade = min(depth cap, stake x bankroll/1000 x (bet size/0.5) / price) x fill share
+#   $ a month         = (edge c/ct x edge kept x competition decay - extra cost) / 100 x trades x contracts - fixed $
+#   spread of a month = sqrt(sum of (contracts x sqrt(p(1-p)))^2 over trades)   (trades treated as independent)
+#   money tied up     = trades/30 x days held x contracts x price, capped at 90% of bankroll (cash limit)
+# Kinds and their own inputs:
+#   daily    edge, cities, trades a month per city, $ a trade
+#   seasonal daily + months a year it trades (averaged over the year)
+#   launch   edge, new cities a month, trades a month each, $ a trade
+#   gt       price paid (c), our chance (%), positions a month, % of equity a position (edge = chance - price - fee)
+#   phone    calls a day, % of calls that give a trade, edge, contracts, cost a call (c)  (fixed size, call costs)
+#   radio    trades a day, edge, contracts                                                 (fixed size)
+LAB_BUCKETS = [
+    dict(id="e1pm", sid="UNC_NEWCITY_high", name="Edge #1, 5 pm", status="Booked", kind="daily", on=True,
+         cap="Newer-city highs priced from our own forecast spread.",
+         fields=[("edge", "Edge ¢/ct", 2.20), ("cities", "Cities", 15), ("tpc", "Trades/mo per city", 5.7),
+                 ("stake", "$ a trade", 10)],
+         k=dict(price=0.60, depth=55, hold=1, lo=-0.38, hi=4.72)),
+    dict(id="e3pm", sid="UNC_NEWCITY_3PM_high", name="Edge #1, 3 pm", status="Booked", kind="daily", on=True,
+         cap="The same trade two hours earlier, in thinner books.",
+         fields=[("edge", "Edge ¢/ct", 3.09), ("cities", "Cities", 15), ("tpc", "Trades/mo per city", 4),
+                 ("stake", "$ a trade", 10)],
+         k=dict(price=0.45, depth=55, hold=1, lo=0.64, hi=5.65)),
+    dict(id="e1new", sid="UNC_LAUNCH_high", name="Edge #1, launch cities", status="Booked", kind="launch", on=True,
+         cap="New Kalshi high-temperature cities, from their first day.",
+         fields=[("edge", "Edge ¢/ct", 7.98), ("launches", "New cities/mo", 1), ("each", "Trades/mo each", 8),
+                 ("stake", "$ a trade", 10)],
+         k=dict(price=0.50, depth=40, hold=1, lo=-1.40, hi=17.10)),
+    dict(id="lows", sid="NEWCITY_LOWS_low", name="Newer-city lows", status="Booked", kind="daily", on=True,
+         cap="Overnight lows, sized by the GEFS ensemble spread.",
+         fields=[("edge", "Edge ¢/ct", 3.68), ("cities", "Cities", 14), ("tpc", "Trades/mo per city", 7.5),
+                 ("stake", "$ a trade", 5)],
+         k=dict(price=0.50, depth=15, hold=1, lo=0.55, hi=6.64)),
+    dict(id="lownew", sid="LOWS_LAUNCH_low", name="Lows, launch cities", status="Booked", kind="launch", on=True,
+         cap="New low-temperature markets, from their first day.",
+         fields=[("edge", "Edge ¢/ct", 8.42), ("launches", "New cities/mo", 1), ("each", "Trades/mo each", 8),
+                 ("stake", "$ a trade", 5)],
+         k=dict(price=0.50, depth=15, hold=1, lo=-2.77, hi=19.34)),
+    dict(id="rain", sid="RAIN_MONTHEND_NO", name="Month-end rain", status="Booked", kind="daily", on=True,
+         cap="Sells hopeful 'yes' prices on monthly rain in the last days.",
+         fields=[("edge", "Edge ¢/ct", 9.41), ("cities", "Cities", 5), ("tpc", "Trades per city-month (max 2)", 2),
+                 ("stake", "$ a trade", 40)],
+         k=dict(price=0.75, depth=100, hold=4, lo=7.80, hi=11.30)),
+    dict(id="gt", sid="GLOBAL_TEMP_INFO", name="Global temperature", status="Booked", kind="gt", on=True,
+         cap="NOAA and NASA monthly and yearly figures, priced from ERA5 before they publish. A miss loses the price paid.",
+         fields=[("price", "Price paid ¢", 90), ("chance", "Our chance %", 96.7), ("positions", "Positions/mo", 2),
+                 ("pct", "% of equity a position", 20)],
+         k=dict(price=0.90, depth=1500, hold=35, fee=0.6)),
+    dict(id="rev", sid="REV_NEWCITY_high", name="Summer forecast revisions", status="Scheduled", kind="seasonal",
+         on=False, cap="Trades the 12Z forecast update, May to August only, from 2027.",
+         fields=[("edge", "Edge ¢/ct", 3.16), ("cities", "Cities", 15), ("tpc", "Trades/mo per city", 9),
+                 ("stake", "$ a trade", 5), ("months", "Months a year", 4)],
+         k=dict(price=0.45, depth=40, hold=1, lo=0.70, hi=5.60)),
+    dict(id="snow", sid=None, name="Snow at month start", status="Testing", kind="seasonal", on=False,
+         cap="Monthly snow brackets as the month opens. Forward test from Dec 1; weak so far.",
+         fields=[("edge", "Edge ¢/ct", 9.7), ("cities", "Cities", 8), ("tpc", "Trades per city-month", 1),
+                 ("stake", "$ a trade", 10), ("months", "Winter months", 5)],
+         k=dict(price=0.50, depth=30, hold=20, lo=-9.0, hi=30.0)),
+    dict(id="phone", sid=None, name="Hourly head start, phone", status="Testing", kind="phone", on=False,
+         cap="Airport weather lines read the temperature 25 to 95 s before Kalshi shows it. First test Nov 27.",
+         fields=[("calls", "Calls a day", 150), ("rate", "% of calls that trade", 4), ("edge", "Edge ¢/ct", 5.4),
+                 ("contracts", "Contracts", 30), ("cost", "Cost a call ¢", 2)],
+         k=dict(price=0.50, depth=30, hold=0.04)),
+    dict(id="radio", sid=None, name="Hourly head start, radio", status="Idea", kind="radio", on=False,
+         cap="An always-on aviation weather radio in Miami hears every change. Needs a receiver and a legal check.",
+         fields=[("tpd", "Trades a day", 36), ("edge", "Edge ¢/ct", 5.4), ("contracts", "Contracts", 30)],
+         k=dict(price=0.50, depth=30, hold=0.04)),
 ]
 _LAB_CHIP = {"Booked": "good", "Testing": "warn", "Scheduled": "neut", "Idea": "neut"}
+_LAB_GLOBALS = ["lab-bankroll", "lab-kelly", "lab-real", "lab-fill", "lab-extra", "lab-comp", "lab-target"]
+_LAB_RESULTS = ["lab-r-profit", "lab-r-roi", "lab-r-range", "lab-r-cap", "lab-r-max", "lab-r-loss", "lab-r-ttt",
+                "lab-r-tied"]
+try:                                       # Dash 4 sliders show a number box unless told not to; older Dash lacks it
+    import inspect as _inspect
+    _SLIDER_KW = ({"allow_direct_input": False}
+                  if "allow_direct_input" in _inspect.signature(dcc.Slider.__init__).parameters else {})
+except Exception:
+    _SLIDER_KW = {}
 
 # Every test we are running, in one place (booked streams read their live record from run_gates).
 LAB_TESTS = [
     ("Edge #1, 5 pm", "UNC_NEWCITY_high", "Booked", "Paper trades at real prices since Nov 23.",
      "50 closing-line readings averaging zero or better; then size goes from $10 to $27 a trade."),
-    ("Edge #1, 3 pm", "UNC_NEWCITY_3PM_high", "Booked", "Paper trades since Nov 25.",
-     "The same closing-line rule."),
+    ("Edge #1, 3 pm", "UNC_NEWCITY_3PM_high", "Booked", "Paper trades since Nov 25.", "The same closing-line rule."),
     ("Edge #1, launch cities", "UNC_LAUNCH_high", "Booked", "Every new city from its first day.",
      "Its own 50 trades at zero or better within 60 days, or size drops to $0."),
-    ("Newer-city lows", "NEWCITY_LOWS_low", "Booked", "Paper trades since Nov 25 at $5.",
-     "The closing-line rule."),
+    ("Newer-city lows", "NEWCITY_LOWS_low", "Booked", "Paper trades since Nov 25 at $5.", "The closing-line rule."),
     ("Lows, launch cities", "LOWS_LAUNCH_low", "Booked", "Every new low market from day one.",
      "Its own 50 trades at zero or better."),
     ("Month-end rain", "RAIN_MONTHEND_NO", "Booked", "One or two trades per city each month-end.",
      "A positive record over the winter's month-ends."),
     ("Global temperature", "GLOBAL_TEMP_INFO", "Booked", "Nov 2026 NOAA settles about Dec 8; NASA's 2026 year in January.",
-     "Outcomes landing inside the predicted range (95.5% did in the walk-forward test)."),
+     "Outcomes inside the predicted range (95.5% were in the walk-forward test)."),
     ("Summer forecast revisions", "REV_NEWCITY_high", "Scheduled", "Logged all year, booked May to August 2027.",
      "A positive summer 2027 record."),
     ("Edge #1 v2 (combined model)", None, "Testing", "Logs beside Edge #1 without trading.",
      "300 settled signals, clearly positive, with better closing-line value than Edge #1; then it replaces it."),
     ("GEFS-width challenger", None, "Testing", "Logs an Edge #1 variant that sizes width from GEFS.",
      "Beats Edge #1 on the same days."),
-    ("Snow at month start", None, "Testing", "Forward from Dec 1, logging only.",
-     "A readable record after March 2027."),
+    ("Snow at month start", None, "Testing", "Forward from Dec 1, logging only.", "A readable record after March 2027."),
     ("Hourly head start, phone", None, "Testing", "Automated calls to the Islip and Long Beach weather lines.",
      "Voice ahead of Kalshi by 60 seconds or more (median) and 90% of readings correct."),
     ("Hourly head start, radio", None, "Idea", "Needs a receiver and a legal check.",
@@ -4959,12 +4976,6 @@ LAB_TESTS = [
 ]
 
 
-def _lab_money(v):
-    """'$1,234' / '−$64' (a real minus sign before the dollar sign)."""
-    v = 0.0 if abs(v) < 0.5 else v
-    return f"−${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
-
-
 def _lab_num(v, default=None):
     try:
         f = float(v)
@@ -4973,175 +4984,130 @@ def _lab_num(v, default=None):
         return default
 
 
-def _lab_streams():
-    """LAB_STREAMS with the booked streams' backtest edge/range and live record read from run_gates."""
+def _lab_live():
+    """stream id -> (edge, lo, hi, n settled, live mean c) from the published gate table."""
     g = table("run_gates")
-    live = {}
-    if not g.empty and "stream" in g.columns:
-        live = {str(r["stream"]): r for _, r in g.iterrows()}
-    out = []
-    for d0 in LAB_STREAMS:
-        d = dict(d0)
-        r = live.get(d["id"])
-        d["live_n"], d["live_mean"] = 0, None
-        if r is not None:
-            e, lo, hi = _lab_num(r.get("edge_c")), _lab_num(r.get("ci_lo")), _lab_num(r.get("ci_hi"))
-            if e is not None:
-                d["edge"] = round(e, 2)
-            if lo is not None and hi is not None:
-                d["lo"], d["hi"] = round(lo, 2), round(hi, 2)
-            d["live_n"] = int(_lab_num(r.get("n_settled"), 0) or 0)
-            d["live_mean"] = _lab_num(r.get("fwd_mean_c"))
-        out.append(d)
+    out = {}
+    if g.empty or "stream" not in g.columns:
+        return out
+    for _, r in g.iterrows():
+        out[str(r["stream"])] = (_lab_num(r.get("edge_c")), _lab_num(r.get("ci_lo")), _lab_num(r.get("ci_hi")),
+                                 int(_lab_num(r.get("n_settled"), 0) or 0), _lab_num(r.get("fwd_mean_c")))
     return out
 
 
-def _lab_model(rows, bankroll, kelly, real, fill, extra, decay=1.0):
-    """Monthly expected $, spread and per-row detail for the included rows at this bankroll (see header note)."""
-    import math
-    want = []
-    tied = 0.0
-    for r in rows:
-        ct = min(r["depth"], r["stake"] * (bankroll / 1000.0) * (kelly / 0.5) / max(r["price"], 0.01)) * fill
-        want.append(ct)
-        tied += r["trades"] / 30.0 * r["hold"] * ct * r["price"]
-    scale = min(1.0, 0.9 * bankroll / tied) if tied > 0 else 1.0
-    mu = var = 0.0
-    detail = []
-    for r, ct in zip(rows, want):
-        ct *= scale
-        k = real * decay
-        m = (r["edge"] * k - extra) / 100.0 * r["trades"] * ct - r["fixed"]
-        lo = (r["lo"] * k - extra) / 100.0 * r["trades"] * ct - r["fixed"]
-        hi = (r["hi"] * k - extra) / 100.0 * r["trades"] * ct - r["fixed"]
-        v = r["trades"] * (ct * math.sqrt(max(r["price"] * (1.0 - r["price"]), 0.01))) ** 2
-        detail.append({"ct": ct, "mu": m, "lo": lo, "hi": hi, "sd": math.sqrt(v)})
-        mu += m
-        var += v
-    return {"mu": mu, "sd": math.sqrt(var), "rows": detail, "tied": min(tied, 0.9 * bankroll),
-            "cash_limited": scale < 0.999}
+def _lab_buckets():
+    """LAB_BUCKETS with the booked streams' edge default + backtest range read live from run_gates."""
+    live = _lab_live()
+    out = []
+    for b0 in LAB_BUCKETS:
+        b = {**b0, "k": dict(b0["k"]), "fields": list(b0["fields"])}
+        lv = live.get(b["sid"]) if b["sid"] else None
+        b["rec"] = ""
+        if lv:
+            e, lo, hi, n, m = lv
+            if e is not None and b["kind"] != "gt":
+                b["fields"] = [(f, l, round(e, 2)) if f == "edge" else (f, l, v) for f, l, v in b["fields"]]
+            if lo is not None and hi is not None and b["kind"] != "gt":
+                b["k"]["lo"], b["k"]["hi"] = round(lo, 2), round(hi, 2)
+            if n and m is not None:
+                b["rec"] = f"Live: {n} settled, {m:+.1f}c average" + (" (too few to judge)." if n < 30 else ".")
+        b["k"]["edge0"] = next((v for f, l, v in b["fields"] if f == "edge"), None)
+        out.append(b)
+    return out
+
+
+def _lab_bucket(b):
+    bid = b["id"]
+    lo, hi = b["k"].get("lo"), b["k"].get("hi")
+    rng = f" Backtest range {lo:+.1f} to {hi:+.1f}¢." if (lo is not None and hi is not None) else ""
+    fields = [html.Div([html.Label(lbl, htmlFor=f"lab-{bid}-{key}"),
+                        dcc.Input(id=f"lab-{bid}-{key}", type="number", value=val, step="any", min=0
+                                  if key != "edge" else None)], className="lab-f")
+              for key, lbl, val in b["fields"]]
+    return html.Div([
+        html.Div([dcc.Checklist(id=f"lab-{bid}-on", options=[{"label": "", "value": "on"}],
+                                value=["on"] if b["on"] else [], className="lab-check"),
+                  html.Span(b["name"], className="lab-bname"),
+                  html.Span(b["status"], className=f"badge {_LAB_CHIP.get(b['status'], 'neut')}")],
+                 className="lab-bhead"),
+        html.Div(b["cap"] + rng + (" " + b["rec"] if b["rec"] else ""), className="lab-bcap"),
+        html.Div(fields, className="lab-fields"),
+        html.Div(id=f"lab-{bid}-out", className="lab-bout")], className=f"lab-bucket st-{b['status'].lower()}")
 
 
 def _content_lab_calc():
-    streams = _lab_streams()
+    buckets = _lab_buckets()
 
-    def lever(label, control, hint):
-        return html.Div([html.Div(label, className="lab-lbl"), control, html.Div(hint, className="lab-hint")],
-                        className="lab-lever")
+    def lever(label, control, hint=None):
+        return html.Div([html.Div(label, className="lab-lbl"), control]
+                        + ([html.Div(hint, className="lab-hint")] if hint else []), className="lab-lever")
 
-    levers = html.Div([
-        lever("Bankroll", dcc.Input(id="lab-bankroll", type="number", value=1000, min=0, max=10_000_000, step="any"),
-              "Paper money in the run. Stakes grow with it until each market's order book runs out."),
-        lever("How hard to bet", dcc.Slider(id="lab-kelly", min=0.25, max=1.0, step=0.05, value=0.5,
-                                            marks={0.25: "cautious", 0.5: "current", 1.0: "full Kelly"},
-                                            updatemode="mouseup"),
-              "Half the Kelly stake is what the run uses. Doubling it doubles profit and swings."),
+    def line(label, oid):
+        return html.Div([html.Span(label, className="k"), html.Span(id=oid, className="v")], className="lab-line")
+
+    edges = card([html.H3("Edges"),
+                  html.Div("Tick an edge to count it. Booked edges trade in the $1,000 paper run; the others are "
+                           "being tested. Every edge has its own numbers, so change any of them.", className="sub"),
+                  html.Div([_lab_bucket(b) for b in buckets], className="lab-grid")])
+    out = card([html.H3("Projected monthly result"),
+                html.Div("Expected paper profit a month", className="sub"),
+                html.Div(id="lab-r-profit", className="lab-big"),
+                html.Div(id="lab-r-roi", className="lab-roi"),
+                html.Div([line("Likely range", "lab-r-range"), line("More money stops helping at", "lab-r-cap"),
+                          line("Most it can make", "lab-r-max"), line("Chance of a losing month", "lab-r-loss"),
+                          line("Time to reach the target", "lab-r-ttt"), line("Money tied up on a typical day", "lab-r-tied")],
+                         className="lab-lines")])
+    capital = card([html.H3("Capital & risk"),
+        lever("Bankroll ($)", dcc.Input(id="lab-bankroll", type="number", value=1000, min=0, step="any")),
+        lever("Bet size", dcc.Slider(id="lab-kelly", min=0.25, max=1.0, step=0.05, value=0.5,
+                                     marks={0.25: "¼", 0.5: "½ (now)", 0.75: "¾", 1.0: "full"}, **_SLIDER_KW),
+              "Half the Kelly stake is what the run uses. Bigger bets scale profit and swings together."),
         lever("Edge you expect to keep", dcc.Slider(id="lab-real", min=0.25, max=1.5, step=0.05, value=0.75,
-                                                    marks={0.25: "25%", 0.75: "75%", 1.0: "100%", 1.5: "150%"},
-                                                    updatemode="mouseup"),
-              "Backtests usually look a bit better than real life. 75% keeps three quarters of each edge."),
+                                                    marks={0.25: "25%", 0.75: "75%", 1.0: "100%", 1.5: "150%"}, **_SLIDER_KW),
+              "Backtests usually look a bit better than real life."),
         lever("Share of each order that fills", dcc.Slider(id="lab-fill", min=0.4, max=1.0, step=0.05, value=0.8,
-                                                           marks={0.4: "40%", 0.8: "80%", 1.0: "all"},
-                                                           updatemode="mouseup"),
-              "Thin books often fill only part of an order. Measured at about 77% for 20 contracts."),
+                                                           marks={0.4: "40%", 0.8: "80%", 1.0: "all"}, **_SLIDER_KW)),
         lever("Extra cost per contract", dcc.Slider(id="lab-extra", min=0, max=3, step=0.25, value=0,
-                                                    marks={0: "0c", 1: "1c", 2: "2c", 3: "3c"}, updatemode="mouseup"),
-              "On top of the fees and spread already inside each edge, for worse fills than expected."),
-        lever("Competition", dcc.Dropdown(id="lab-comp", clearable=False, value="none",
-                                          options=[{"label": "None: edges stay as they are", "value": "none"},
+                                                    marks={0: "0¢", 1: "1¢", 2: "2¢", 3: "3¢"}, **_SLIDER_KW),
+              "On top of the fees and spread already in each edge."),
+        lever("Competition", dcc.Dropdown(id="lab-comp", clearable=False, value="none", searchable=False,
+                                          options=[{"label": "None", "value": "none"},
                                                    {"label": "Edges halve every 12 months", "value": "12"},
                                                    {"label": "Edges halve every 6 months", "value": "6"},
-                                                   {"label": "Edges halve every 3 months", "value": "3"}]),
-              "Other traders find the same gaps over time. Applies to the 12-month view and the time to target."),
-        lever("Profit target", dcc.Input(id="lab-target", type="number", value=10000, min=0, max=10_000_000,
-                                         step="any"),
-              "For the time-to-target estimate."),
-    ], className="lab-levers")
-
-    presets = html.Div([html.Span("Start from", className="lab-lbl", style={"marginRight": "12px"}),
-                        dcc.RadioItems(id="lab-preset", value="book", inline=True, className="lab-presets",
-                                       options=[{"label": "What is booked today", "value": "book"},
-                                                {"label": "Booked plus everything being tested", "value": "tests"},
-                                                {"label": "Booked, edges at the low end", "value": "low"},
-                                                {"label": "Booked, edges at the high end", "value": "high"}])],
-                       className="lab-preset-row")
-
-    rows = []
-    for d in streams:
-        sid = d["id"]
-        rec = (f"Live record: {d['live_n']} settled, {d['live_mean']:+.1f}c average (too few to judge)."
-               if d.get("live_n") and d.get("live_mean") is not None and d["live_n"] < 30 else
-               f"Live record: {d['live_n']} settled, {d['live_mean']:+.1f}c average."
-               if d.get("live_n") and d.get("live_mean") is not None else d["pace"])
-        rows.append(html.Tr([
-            html.Td(dcc.Checklist(id={"type": "lab-on", "s": sid}, options=[{"label": "", "value": "on"}],
-                                  value=["on"] if d["status"] == "Booked" else [], className="lab-check"),
-                    className="pt-td"),
-            html.Td([html.Div([html.Span(d["name"], className="lab-name"), " ",
-                               html.Span(d["status"], className=f"badge {_LAB_CHIP.get(d['status'], 'neut')}")]),
-                     html.Div(d["what"], className="lab-what"),
-                     html.Div(rec, className="lab-what lab-rec")], className="pt-td pt-l"),
-            html.Td([dcc.Input(id={"type": "lab-edge", "s": sid}, type="number", value=d["edge"], step="any"),
-                     html.Div(f"range {d['lo']:+.1f} to {d['hi']:+.1f}", className="lab-what")],
-                    className="pt-td"),
-            html.Td(dcc.Input(id={"type": "lab-trades", "s": sid}, type="number", value=d["trades"], min=0, step=1),
-                    className="pt-td"),
-            html.Td(dcc.Input(id={"type": "lab-stake", "s": sid}, type="number", value=d["stake"], min=0, step="any"),
-                    className="pt-td"),
-            html.Td(html.Div(id={"type": "lab-ct", "s": sid}), className="pt-td pt-r"),
-            html.Td(html.Div(id={"type": "lab-mo", "s": sid}), className="pt-td pt-r")]))
-    head = html.Thead(html.Tr([html.Th("Count it", className="pt-th"), html.Th("Edge", className="pt-th pt-l"),
-                               html.Th("Edge after costs, c a contract", className="pt-th"),
-                               html.Th("Trades a month", className="pt-th"),
-                               html.Th("$ a trade at $1,000", className="pt-th"),
-                               html.Th("Contracts a trade", className="pt-th pt-r"),
-                               html.Th("$ a month", className="pt-th pt-r")]))
-    table_ = html.Div(html.Table([head, html.Tbody(rows)], className="pro-table lab-table"),
-                      className="pt-wrap", style={"maxHeight": "none"})
-
-    calc = card([html.H3("What-if calculator"),
-                 html.Div("Pick which edges to count and how much you believe them. Every number below updates as "
-                          "you change anything. This is a paper model: no real money is involved.", className="sub"),
-                 presets, levers, table_,
-                 html.Div("Edges are per contract after Kalshi's fee and the spread. Contracts per trade grow with "
-                          "the bankroll until a market's order book runs out (its depth cap), then stay flat. "
-                          "Trades are treated as independent, so the spread of a month is if anything a little "
-                          "narrow.", className="sub", style={"marginTop": "10px"})])
-    results = card([html.H3("This scenario"), html.Div(id="lab-stats", className="lab-stats")])
-    bars = card([html.H3("Where the money comes from"),
-                 html.Div("Expected profit a month by edge. The whisker runs from the low to the high end of each "
-                          "edge's backtest range.", className="sub"),
+                                                   {"label": "Edges halve every 3 months", "value": "3"}])),
+        lever("Profit target ($)", dcc.Input(id="lab-target", type="number", value=10000, min=0, step="any"))])
+    bars = card([html.H3("Profit by edge"),
+                 html.Div("Expected $ a month; the whisker spans each edge's backtest range.", className="sub"),
                  dcc.Graph(id="lab-bars", config={"displayModeBar": False})])
     bank = card([html.H3("What more money buys"),
-                 html.Div("Expected profit a month as the bankroll grows. It flattens once every order book is "
-                          "used up; past that point extra money adds nothing.", className="sub"),
+                 html.Div("Profit flattens once every order book is used up.", className="sub"),
                  dcc.Graph(id="lab-bank", config={"displayModeBar": False})])
     fan = card([html.H3("The next 12 months"),
-                html.Div("Paper equity in 2,000 simulated years of these settings: the middle path and the range "
-                         "that 8 in 10 paths stay inside. Profits are reinvested.", className="sub"),
+                html.Div("2,000 simulated paths with profits reinvested: the middle path and the band 8 in 10 "
+                         "paths stay inside.", className="sub"),
                 dcc.Graph(id="lab-fan", config={"displayModeBar": False})])
-    return [html.Div(id="lab-sticky", className="lab-sticky"), calc,
-            html.Div([html.Div(results, className="col-12")], className="grid12"),
+    return [html.Div([html.Div(edges, className="col-8"),
+                      html.Div(html.Div([out, capital], className="lab-side"), className="col-4")],
+                     className="grid12"),
             html.Div([html.Div(bars, className="col-6"), html.Div(bank, className="col-6")], className="grid12"),
             html.Div([html.Div(fan, className="col-12")], className="grid12"),
-            html.Div([html.Div(_lab_test_board(streams), className="col-12")], className="grid12")]
+            html.Div([html.Div(_lab_test_board(buckets), className="col-12")], className="grid12")]
 
 
-def _lab_test_board(streams):
-    by = {d["id"]: d for d in streams}
+def _lab_test_board(buckets):
+    live = _lab_live()
     trs = []
     for name, sid, status, how, confirm in LAB_TESTS:
-        d = by.get(sid) if sid else None
-        if d and d.get("live_n"):
-            prog = (f"{d['live_n']} settled, {d['live_mean']:+.1f}c average" if d.get("live_mean") is not None
-                    else f"{d['live_n']} settled")
-        elif d:
-            prog = d["pace"]
+        lv = live.get(sid) if sid else None
+        if lv and lv[3]:
+            prog = f"{lv[3]} settled" + (f", {lv[4]:+.1f}c average" if lv[4] is not None else "")
+        elif sid:
+            prog = "No settled trades yet."
         else:
             prog = {"Hourly head start, phone": "One lead measured so far: 28 seconds ahead.",
-                    "Snow at month start": "Starts Dec 1.",
-                    "Hourly head start, radio": "Not started."}.get(name, "Logging.")
-        trs.append(html.Tr([html.Td(html.Span(name, className="lab-name"), className="pt-td pt-l"),
+                    "Snow at month start": "Starts Dec 1.", "Hourly head start, radio": "Not started."}.get(name, "Logging.")
+        trs.append(html.Tr([html.Td(html.Span(name, className="lab-bname"), className="pt-td pt-l"),
                             html.Td(html.Span(status, className=f"badge {_LAB_CHIP.get(status, 'neut')}"),
                                     className="pt-td"),
                             html.Td(how, className="pt-td pt-l"), html.Td(confirm, className="pt-td pt-l"),
@@ -5149,28 +5115,197 @@ def _lab_test_board(streams):
     head = html.Thead(html.Tr([html.Th(h, className="pt-th pt-l") for h in
                                ("Edge", "Status", "How it is being tested", "What would confirm it", "So far")]))
     return card([html.H3("Every edge being tested"),
-                 html.Div("Booked edges trade in the $1,000 paper run. Testing means the signal is logged without "
-                          "trading, or the trading test has not started. Nothing moves to real money without "
-                          "passing its pre-registered check.", className="sub"),
-                 html.Div(html.Table([head, html.Tbody(trs)], className="pro-table lab-table"),
-                          className="pt-wrap", style={"maxHeight": "none"})])
+                 html.Div("Nothing moves to real money without passing its pre-registered check.", className="sub"),
+                 html.Div(html.Table([head, html.Tbody(trs)], className="pro-table"), className="pt-wrap",
+                          style={"maxHeight": "none"})])
 
 
-def _lab_stat(label, value, note, cls=""):
-    return html.Div([html.Div(label, className="k"), html.Div(value, className=f"v {cls}".strip()),
-                     html.Div(note, className="n")], className="lab-stat")
+def _lab_js():
+    """The browser-side calculator. The bucket spec + base chart styling are baked in at import."""
+    spec = {"buckets": [{"id": b["id"], "name": b["name"], "kind": b["kind"], "fields": [f[0] for f in b["fields"]],
+                         "defaults": [f[2] for f in b["fields"]],
+                         "k": {**b["k"], "e0": next((f[2] for f in b["fields"] if f[0] == "edge"), 0)}}
+                        for b in LAB_BUCKETS],
+            "base": _dfig([], h=300)["layout"],
+            "colors": {"gain": GREEN, "loss": RED, "pen": INKPEN, "neutral": NEUTRAL, "dim": DIM}}
+    return "function() {\nvar S = " + json.dumps(spec) + ";\n" + _LAB_JS_BODY + "\n}"
 
 
-def _lab_dur(months):
-    if months is None:
-        return "not reached"
-    if months < 1:
-        return "under a month"
-    y, m = int(months // 12), int(round(months - 12 * (months // 12)))
-    if m == 12:
-        y, m = y + 1, 0
-    parts = ([f"{y} year" + ("s" if y != 1 else "")] if y else []) + ([f"{m} month" + ("s" if m != 1 else "")] if m else [])
-    return " ".join(parts) if parts else "under a month"
+_LAB_JS_BODY = r"""
+var a = Array.prototype.slice.call(arguments), i = 0;
+function num(v, d) { var f = parseFloat(v); return isFinite(f) ? f : d; }
+function pos(v) { return Math.max(0, v); }
+var B = S.buckets.map(function (b) {
+  var on = a[i++]; var f = {};
+  b.fields.forEach(function (k, j) { f[k] = num(a[i++], b.defaults[j]); });
+  return {b: b, on: Array.isArray(on) && on.length > 0, f: f};
+});
+var G = {bank: Math.max(1, num(a[i++], 1000)), kelly: Math.min(1, Math.max(0.25, num(a[i++], 0.5))),
+         real: num(a[i++], 0.75), fill: Math.min(1, Math.max(0.05, num(a[i++], 0.8))), extra: pos(num(a[i++], 0)),
+         comp: a[i++], target: pos(num(a[i++], 10000))};
+var half = {"12": 12, "6": 6, "3": 3}[G.comp] || 0;
+function decay(m) { return half ? Math.pow(0.5, m / half) : 1; }
+
+function row(x) {
+  var b = x.b, f = x.f, k = b.k;
+  var r = {name: b.name, price: k.price, depth: k.depth, hold: k.hold, fixed: 0, ctFixed: null, pct: null};
+  if (b.kind === "daily" || b.kind === "seasonal") {
+    r.edge = f.edge; r.stake = pos(f.stake);
+    r.trades = pos(f.cities) * pos(f.tpc) * (b.kind === "seasonal" ? Math.min(12, pos(f.months)) / 12 : 1);
+  } else if (b.kind === "launch") {
+    r.edge = f.edge; r.stake = pos(f.stake); r.trades = pos(f.launches) * pos(f.each);
+  } else if (b.kind === "gt") {
+    r.price = Math.min(0.99, Math.max(0.01, f.price / 100));
+    r.edge = f.chance - f.price - k.fee; r.trades = pos(f.positions); r.pct = pos(f.pct) / 100;
+    r.lo = r.edge - 2; r.hi = r.edge + 1.5;
+  } else if (b.kind === "phone") {
+    r.edge = f.edge; r.trades = pos(f.calls) * 30 * pos(f.rate) / 100; r.ctFixed = pos(f.contracts);
+    r.fixed = pos(f.calls) * 30 * pos(f.cost) / 100;
+  } else if (b.kind === "radio") {
+    r.edge = f.edge; r.trades = pos(f.tpd) * 30; r.ctFixed = pos(f.contracts);
+  }
+  if (r.lo === undefined) {
+    if (k.lo !== undefined && k.lo !== null) { var sh = r.edge - k.e0; r.lo = k.lo + sh; r.hi = k.hi + sh; }
+    else { r.lo = 0; r.hi = 2 * r.edge; }
+  }
+  return r;
+}
+function model(rows, bank, dec) {
+  var want = [], tied = 0;
+  rows.forEach(function (r) {
+    var ct;
+    if (r.ctFixed !== null) ct = r.ctFixed * G.fill;
+    else if (r.pct !== null) ct = Math.min(r.depth, r.pct * bank * (G.kelly / 0.5) / r.price) * G.fill;
+    else ct = Math.min(r.depth, r.stake * (bank / 1000) * (G.kelly / 0.5) / r.price) * G.fill;
+    want.push(ct); tied += r.trades / 30 * r.hold * ct * r.price;
+  });
+  var sc = tied > 0 ? Math.min(1, 0.9 * bank / tied) : 1, mu = 0, v = 0, det = [];
+  rows.forEach(function (r, j) {
+    var ct = want[j] * sc, kk = G.real * dec;
+    var m = (r.edge * kk - G.extra) / 100 * r.trades * ct - r.fixed;
+    det.push({ct: ct, mu: m, lo: (r.lo * kk - G.extra) / 100 * r.trades * ct - r.fixed,
+              hi: (r.hi * kk - G.extra) / 100 * r.trades * ct - r.fixed});
+    mu += m; v += r.trades * Math.pow(ct * Math.sqrt(Math.max(r.price * (1 - r.price), 0.01)), 2);
+  });
+  return {mu: mu, sd: Math.sqrt(v), det: det, tied: Math.min(tied, 0.9 * bank), cash: sc < 0.999};
+}
+function money(v) { v = Math.abs(v) < 0.5 ? 0 : v; var s = "$" + Math.round(Math.abs(v)).toLocaleString("en-US");
+                    return v < 0 ? "−" + s : s; }
+function dur(m) {
+  if (m === null) return "not reached";
+  if (m < 1) return "under a month";
+  var y = Math.floor(m / 12), mo = Math.round(m - 12 * y);
+  if (mo === 12) { y += 1; mo = 0; }
+  var p = [];
+  if (y) p.push(y + (y === 1 ? " year" : " years"));
+  if (mo) p.push(mo + (mo === 1 ? " month" : " months"));
+  return p.length ? p.join(" ") : "under a month";
+}
+function erf(x) { var t = 1 / (1 + 0.3275911 * Math.abs(x)), y = 1 - (((((1.061405429 * t - 1.453152027) * t)
+                  + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+                  return x >= 0 ? y : -y; }
+function lay(h, over) {
+  var L = JSON.parse(JSON.stringify(S.base)); L.height = h;
+  Object.keys(over || {}).forEach(function (k) {
+    if (L[k] && typeof L[k] === "object" && !Array.isArray(L[k])) Object.assign(L[k], over[k]); else L[k] = over[k];
+  });
+  return L;
+}
+
+var rowsAll = B.map(row), onRows = [], onIdx = [];
+B.forEach(function (x, j) { if (x.on) { onRows.push(rowsAll[j]); onIdx.push(j); } });
+var now = model(onRows, G.bank, 1);
+var outs = B.map(function (x, j) {
+  var k = onIdx.indexOf(j);
+  var d = k >= 0 ? now.det[k] : model([rowsAll[j]], G.bank, 1).det[0];
+  var txt = money(d.mu) + " a month, " + Math.round(d.ct) + " contracts a trade";
+  return k >= 0 ? txt : "Not counted. Would add " + money(d.mu) + " a month.";
+});
+
+// bankroll sweep
+var grid = [], sweep = [], mx = 0, bstar = null;
+for (var g = 0; g < 90; g++) { var bk = 100 * Math.pow(20000, g / 89); grid.push(bk);
+  var mm = model(onRows, bk, 1).mu; sweep.push(mm); if (mm > mx) mx = mm; }
+if (mx > 0) { for (var g2 = 0; g2 < grid.length; g2++) { if (sweep[g2] >= 0.99 * mx) { bstar = grid[g2]; break; } } }
+var pl = now.sd > 0 ? 0.5 * (1 + erf((0 - now.mu) / (now.sd * Math.SQRT2))) : (now.mu < 0 ? 1 : 0);
+var lo = 0, hi = 0; now.det.forEach(function (d) { lo += d.lo; hi += d.hi; });
+
+// time to target on the expected path
+var eq = G.bank, months = null;
+for (var m = 0; m < 600; m++) { var gain = model(onRows, eq, decay(m)).mu; if (gain <= 0) break;
+  if (eq + gain >= G.bank + G.target) { months = m + (G.bank + G.target - eq) / gain; break; } eq += gain; }
+
+// 12-month fan (seeded, so the picture is stable between edits)
+var seed = 7;
+function rnd() { seed |= 0; seed = seed + 0x6D2B79F5 | 0; var t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }
+function gauss() { var u = 0, v = 0; while (u === 0) u = rnd(); v = rnd();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+var lg = [], N = 2000, E = [], p10 = [G.bank], p50 = [G.bank], p90 = [G.bank];
+var lo0 = Math.max(50, G.bank * 0.2), hi0 = Math.max(G.bank * 30, 20000);
+for (var q = 0; q < 40; q++) lg.push(lo0 * Math.pow(hi0 / lo0, q / 39));
+for (var p = 0; p < N; p++) E.push(G.bank);
+function interp(x, xs, ys) { if (x <= xs[0]) return ys[0]; if (x >= xs[xs.length - 1]) return ys[ys.length - 1];
+  var lx = Math.log(x), j = 1; while (xs[j] < x) j++;
+  var t = (lx - Math.log(xs[j - 1])) / (Math.log(xs[j]) - Math.log(xs[j - 1])); return ys[j - 1] + t * (ys[j] - ys[j - 1]); }
+for (var mo = 0; mo < 12 && onRows.length; mo++) {
+  var gm = [], gs = []; lg.forEach(function (bk) { var r = model(onRows, bk, decay(mo)); gm.push(r.mu); gs.push(r.sd); });
+  for (var p2 = 0; p2 < N; p2++) { E[p2] = Math.max(0, E[p2] + interp(E[p2], lg, gm) + interp(E[p2], lg, gs) * gauss()); }
+  var srt = E.slice().sort(function (x, y) { return x - y; });
+  p10.push(srt[Math.floor(0.1 * N)]); p50.push(srt[Math.floor(0.5 * N)]); p90.push(srt[Math.floor(0.9 * N)]);
+}
+
+// charts
+var C = S.colors;
+var ord = now.det.map(function (d, j) { return j; }).sort(function (x, y) { return now.det[x].mu - now.det[y].mu; });
+var names = ord.map(function (j) { return onRows[j].name; }), vals = ord.map(function (j) { return now.det[j].mu; });
+var los = ord.map(function (j) { return now.det[j].lo; }), his = ord.map(function (j) { return now.det[j].hi; });
+var bars = {data: [{type: "bar", orientation: "h", y: names, x: vals, width: 0.56,
+                    marker: {color: vals.map(function (v) { return v >= 0 ? C.gain : C.loss; })},
+                    error_x: {type: "data", symmetric: false, color: C.neutral, thickness: 1.2, width: 4,
+                              array: his.map(function (h, j) { return Math.max(0, h - vals[j]); }),
+                              arrayminus: los.map(function (l, j) { return Math.max(0, vals[j] - l); })},
+                    customdata: los.map(function (l, j) { return [money(l), money(his[j]), money(vals[j])]; }),
+                    hovertemplate: "%{y}<br>%{customdata[2]} a month<br>range %{customdata[0]} to %{customdata[1]}<extra></extra>"}],
+            layout: lay(Math.max(180, 64 + 36 * names.length),
+                        {xaxis: {title: {text: "paper profit, $ a month"}, tickprefix: "$", tickformat: ",.0f", zeroline: true},
+                         yaxis: {title: {text: ""}, nticks: 0, automargin: true, gridcolor: "rgba(0,0,0,0)"}})};
+var shapes = [], anns = [];
+if (bstar) { shapes.push({type: "line", xref: "x", yref: "paper", x0: bstar, x1: bstar, y0: 0, y1: 1,
+                          line: {color: C.neutral, width: 1.2, dash: "dot"}});
+             anns.push({x: Math.log10(bstar), y: 0.03, xref: "x", yref: "paper", showarrow: false, xanchor: "left",
+                        yanchor: "bottom", text: " tops out near " + money(mx) + " a month", font: {color: C.dim, size: 11.5}}); }
+var bank = {data: [{type: "scatter", mode: "lines", x: grid, y: sweep, line: {color: C.pen, width: 2.2},
+                    hovertemplate: "bankroll $%{x:,.0f}<br>$%{y:,.0f} a month<extra></extra>"},
+                   {type: "scatter", mode: "markers", x: [G.bank], y: [now.mu],
+                    marker: {size: 11, color: C.pen, line: {width: 2, color: "#ffffff"}},
+                    hovertemplate: "your bankroll $%{x:,.0f}<br>$%{y:,.0f} a month<extra></extra>"}],
+            layout: lay(300, {shapes: shapes, annotations: anns, showlegend: false,
+                              xaxis: {type: "log", title: {text: "bankroll"}, tickvals: [100, 1000, 10000, 100000, 1000000],
+                                      ticktext: ["$100", "$1k", "$10k", "$100k", "$1M"]},
+                              yaxis: {title: {text: "$ a month"}, tickprefix: "$", tickformat: ",.0f", rangemode: "tozero"}})};
+var xs = []; for (var z = 0; z < p50.length; z++) xs.push(z);
+var fan = {data: [{type: "scatter", mode: "lines", x: xs.concat(xs.slice().reverse()), y: p90.concat(p10.slice().reverse()),
+                   fill: "toself", fillcolor: "rgba(91,75,196,.12)", line: {width: 0}, hoverinfo: "skip"},
+                  {type: "scatter", mode: "lines", x: xs, y: p50, line: {color: C.pen, width: 2.2},
+                   customdata: p10.map(function (v, j) { return [money(v), money(p90[j])]; }),
+                   hovertemplate: "month %{x}<br>middle $%{y:,.0f}<br>8 in 10 between %{customdata[0]} and %{customdata[1]}<extra></extra>"}],
+           layout: lay(300, {showlegend: false,
+                             shapes: [{type: "line", xref: "paper", yref: "y", x0: 0, x1: 1, y0: G.bank, y1: G.bank,
+                                       line: {color: C.neutral, width: 1, dash: "dot"}}],
+                             xaxis: {title: {text: "months from now"}, nticks: 13},
+                             yaxis: {title: {text: "paper equity"}, tickprefix: "$", tickformat: ",.0f"}})};
+
+var roi = 100 * now.mu / G.bank;
+var res = [money(now.mu), (roi >= 0 ? "+" : "−") + Math.abs(roi).toFixed(1) + "% a month on " + money(G.bank),
+           money(lo) + " to " + money(hi),
+           bstar ? money(bstar) + " bankroll" : "—",
+           mx > 0 ? money(mx) + " a month" : "—",
+           Math.round(100 * pl) + "%",
+           dur(months),
+           money(now.tied) + (now.cash ? ", cash runs short" : " (" + Math.round(100 * now.tied / G.bank) + "%)")];
+return outs.concat(res).concat([now.mu >= 0 ? "lab-big pos" : "lab-big neg", bars, bank, fan]);
+"""
 
 
 def render_lab():
@@ -6401,174 +6536,19 @@ def _sev_color(sev):
     return {"good": MINT, "warn": AMBER, "bad": RED}[sev]
 
 
-# ---- Lab what-if calculator callbacks (2026-11-26; registered here, after `app` exists) ----
-@app.callback(Output({"type": "lab-on", "s": ALL}, "value"), Output({"type": "lab-edge", "s": ALL}, "value"),
-              Input("lab-preset", "value"), prevent_initial_call=True)
-def _lab_preset(preset):
-    reg = {d["id"]: d for d in _lab_streams()}
-    on_ids = [o["id"]["s"] for o in ctx.outputs_list[0]]
-    edge_ids = [o["id"]["s"] for o in ctx.outputs_list[1]]
-
-    def on(sid):
-        return ["on"] if (preset == "tests" or reg.get(sid, {}).get("status") == "Booked") else []
-
-    def edge(sid):
-        d = reg.get(sid, {})
-        return d.get("lo") if preset == "low" else d.get("hi") if preset == "high" else d.get("edge")
-    return [on(x) for x in on_ids], [edge(x) for x in edge_ids]
-
-
-@app.callback(Output({"type": "lab-ct", "s": ALL}, "children"), Output({"type": "lab-mo", "s": ALL}, "children"),
-              Output("lab-stats", "children"), Output("lab-bars", "figure"), Output("lab-bank", "figure"),
-              Output("lab-fan", "figure"), Output("lab-sticky", "children"),
-              Input({"type": "lab-on", "s": ALL}, "value"), Input({"type": "lab-edge", "s": ALL}, "value"),
-              Input({"type": "lab-trades", "s": ALL}, "value"), Input({"type": "lab-stake", "s": ALL}, "value"),
-              Input("lab-bankroll", "value"), Input("lab-kelly", "value"), Input("lab-real", "value"),
-              Input("lab-fill", "value"), Input("lab-extra", "value"), Input("lab-comp", "value"),
-              Input("lab-target", "value"))
-def _lab_calc(ons, edges, trades, stakes, bankroll, kelly, real, fill, extra, comp, target):
-    import math
-    import numpy as np
-    reg = {d["id"]: d for d in _lab_streams()}
-    sids = [i["id"]["s"] for i in ctx.inputs_list[0]]
-    bankroll = max(100.0, _lab_num(bankroll, 1000.0))
-    kelly = min(1.0, max(0.25, _lab_num(kelly, 0.5)))
-    real = min(1.5, max(0.0, _lab_num(real, 0.75)))
-    fill = min(1.0, max(0.05, _lab_num(fill, 0.8)))
-    extra = max(0.0, _lab_num(extra, 0.0))
-    target = max(0.0, _lab_num(target, 10000.0))
-    half = {"12": 12.0, "6": 6.0, "3": 3.0}.get(str(comp))
-    rows, inc = [], []
-    for k, sid in enumerate(sids):
-        d = dict(reg.get(sid, {}))
-        if not d:
-            continue
-        d["edge"] = _lab_num(edges[k] if k < len(edges) else None, d["edge"])
-        d["trades"] = max(0.0, _lab_num(trades[k] if k < len(trades) else None, d["trades"]))
-        d["stake"] = max(0.0, _lab_num(stakes[k] if k < len(stakes) else None, d["stake"]))
-        shift = d["edge"] - reg[sid]["edge"]            # a typed edge moves its range with it
-        d["lo"], d["hi"] = d["lo"] + shift, d["hi"] + shift
-        rows.append(d)
-        inc.append(bool(ons[k]) if k < len(ons) else False)
-    on_rows = [d for d, i in zip(rows, inc) if i]
-    now = _lab_model(on_rows, bankroll, kelly, real, fill, extra)
-    # per-row outputs: included rows show their share of the scenario; others show what they would add alone
-    by_on = {d["id"]: r for d, r in zip(on_rows, now["rows"])}
-    ct_out, mo_out = [], []
-    for d, i in zip(rows, inc):
-        r = by_on.get(d["id"]) if i else _lab_model([d], bankroll, kelly, real, fill, extra)["rows"][0]
-        ct_out.append(f"{r['ct']:,.0f}")
-        txt = _lab_money(r["mu"]) if i else f"adds {_lab_money(r['mu'])}"
-        mo_out.append(html.Span(txt, className=("pos" if r["mu"] >= 0 else "neg") + ("" if i else " lab-off")))
-    # bankroll sweep -> where more money stops helping
-    grid = np.geomspace(100.0, 2_000_000.0, 90)
-    sweep = np.array([_lab_model(on_rows, b, kelly, real, fill, extra)["mu"] for b in grid])
-    mu_max = float(sweep.max()) if len(sweep) else 0.0
-    b_star = float(grid[int(np.argmax(sweep >= 0.99 * mu_max))]) if mu_max > 0 else None
-    # chance of a losing month (normal approximation)
-    mu, sd = now["mu"], now["sd"]
-    p_loss = 0.5 * (1.0 + math.erf((0.0 - mu) / (sd * math.sqrt(2.0)))) if sd > 0 else (1.0 if mu < 0 else 0.0)
-    lo_tot = sum(r["lo"] for r in now["rows"])
-    hi_tot = sum(r["hi"] for r in now["rows"])
-
-    def decay(m):
-        return 0.5 ** (m / half) if half else 1.0
-    # time to target on the expected path (profits reinvested, competition applied)
-    eq, months = bankroll, None
-    for m in range(600):
-        gain = _lab_model(on_rows, eq, kelly, real, fill, extra, decay(m))["mu"]
-        if gain <= 0:
-            break
-        if eq + gain >= bankroll + target:
-            months = m + (bankroll + target - eq) / gain
-            break
-        eq += gain
-    # 12-month fan: monthly gain ~ Normal(mu(E, m), sd(E, m)) per path, from a bankroll grid per month
-    lg = np.geomspace(max(50.0, bankroll * 0.2), max(bankroll * 30, 20000.0), 40)
-    rng = np.random.default_rng(7)
-    E = np.full(2000, bankroll)
-    p10, p50, p90 = [bankroll], [bankroll], [bankroll]
-    for m in range(12):
-        ms = [_lab_model(on_rows, b, kelly, real, fill, extra, decay(m)) for b in lg]
-        mu_g = np.interp(np.log(np.maximum(E, 1.0)), np.log(lg), [x["mu"] for x in ms])
-        sd_g = np.interp(np.log(np.maximum(E, 1.0)), np.log(lg), [x["sd"] for x in ms])
-        E = np.maximum(E + rng.normal(mu_g, np.maximum(sd_g, 1e-6)), 0.0)
-        a, b_, c = np.percentile(E, [10, 50, 90])
-        p10.append(float(a)); p50.append(float(b_)); p90.append(float(c))
-
-    roi = 100.0 * mu / bankroll
-    stats = [
-        _lab_stat("Expected profit a month", _lab_money(mu), "Paper, at today's bankroll.",
-                  "pos" if mu >= 0 else "neg"),
-        _lab_stat("Likely range", f"{_lab_money(lo_tot)} to {_lab_money(hi_tot)}",
-                  "Every counted edge at the low end, then the high end, of its range."),
-        _lab_stat("Return on bankroll", f"{roi:+.1f}% a month", f"On ${bankroll:,.0f}.",
-                  "pos" if roi >= 0 else "neg"),
-        _lab_stat("More money stops helping at", f"${b_star:,.0f}" if b_star else "—",
-                  f"Profit tops out near {_lab_money(mu_max)} a month there." if b_star else "No positive edge counted."),
-        _lab_stat("Chance of a losing month", f"{100 * p_loss:.0f}%",
-                  f"A typical month lands within ${sd:,.0f} of the expected profit."),
-        _lab_stat(f"Time to make ${target:,.0f}", _lab_dur(months),
-                  "On the expected path, reinvesting profit" + (", with competition." if half else ".")),
-        _lab_stat("Money tied up on a typical day", f"${now['tied']:,.0f}",
-                  ("Cash runs short: stakes are cut to fit the bankroll." if now["cash_limited"] else
-                   f"{100 * now['tied'] / bankroll:.0f}% of the bankroll; the rest sits in cash."),
-                  "neg" if now["cash_limited"] else ""),
-    ]
-
-    # chart 1: profit by edge with range whiskers
-    order = sorted(range(len(on_rows)), key=lambda i: now["rows"][i]["mu"])
-    names = [on_rows[i]["name"] for i in order]
-    vals = [now["rows"][i]["mu"] for i in order]
-    lo_v = [now["rows"][i]["lo"] for i in order]
-    hi_v = [now["rows"][i]["hi"] for i in order]
-    bars = _dfig([{"type": "bar", "orientation": "h", "y": names, "x": vals,
-                   "marker": {"color": [GREEN if v >= 0 else RED for v in vals]}, "width": 0.56,
-                   "error_x": {"type": "data", "symmetric": False, "array": [max(0, h - v) for h, v in zip(hi_v, vals)],
-                               "arrayminus": [max(0, v - l) for l, v in zip(lo_v, vals)], "color": NEUTRAL,
-                               "thickness": 1.2, "width": 4},
-                   "customdata": list(zip(lo_v, hi_v)),
-                   "hovertemplate": "%{y}<br>$%{x:,.0f} a month<br>range $%{customdata[0]:,.0f} to "
-                                    "$%{customdata[1]:,.0f}<extra></extra>"}],
-                 h=max(180, 64 + 36 * len(names)), legend=False,
-                 xaxis={"title": "paper profit, $ a month", "tickprefix": "$", "tickformat": ",.0f",
-                        "zeroline": True},
-                 yaxis={"title": None, "automargin": True, "nticks": 0, "gridcolor": "rgba(0,0,0,0)"})
-    # chart 2: profit vs bankroll
-    shapes, anns = [], []
-    if b_star:
-        shapes.append(_vline(b_star, NEUTRAL, 1.2, "dot"))
-        anns.append(_ann(b_star, 0.03, f" tops out near {_lab_money(mu_max)} a month", DIM, 11.5, xref="x",
-                         yref="paper", xanchor="left", yanchor="bottom"))
-    bank = _dfig([{"type": "scatter", "x": list(grid), "y": list(sweep), "mode": "lines", "name": "expected",
-                   "line": {"color": INKPEN, "width": 2.2},
-                   "hovertemplate": "bankroll $%{x:,.0f}<br>$%{y:,.0f} a month<extra></extra>"},
-                  {"type": "scatter", "x": [bankroll], "y": [mu], "mode": "markers", "name": "you are here",
-                   "marker": {"size": 11, "color": INKPEN, "line": {"width": 2, "color": "#ffffff"}},
-                   "hovertemplate": "your bankroll $%{x:,.0f}<br>$%{y:,.0f} a month<extra></extra>"}],
-                 h=300, legend=False, shapes=shapes or None, annotations=anns or None,
-                 xaxis={"type": "log", "title": "bankroll", "tickvals": [100, 1000, 10000, 100000, 1000000],
-                        "ticktext": ["$100", "$1k", "$10k", "$100k", "$1M"]},
-                 yaxis={"title": "$ a month", "tickprefix": "$", "tickformat": ",.0f", "rangemode": "tozero"})
-    # chart 3: 12-month fan
-    xs = list(range(13))
-    fan = _dfig([{"type": "scatter", "x": xs + xs[::-1], "y": p90 + p10[::-1], "fill": "toself",
-                  "fillcolor": "rgba(91,75,196,.12)", "line": {"width": 0}, "mode": "lines", "name": "8 in 10 paths",
-                  "hoverinfo": "skip"},
-                 {"type": "scatter", "x": xs, "y": p50, "mode": "lines", "name": "middle path",
-                  "line": {"color": INKPEN, "width": 2.2},
-                  "customdata": list(zip(p10, p90)),
-                  "hovertemplate": "month %{x}<br>middle $%{y:,.0f}<br>8 in 10 between $%{customdata[0]:,.0f} and "
-                                   "$%{customdata[1]:,.0f}<extra></extra>"}],
-                h=300, legend=False, shapes=[_hline(bankroll, NEUTRAL, 1, "dot")],
-                xaxis={"title": "months from now", "nticks": 13},
-                yaxis={"title": "paper equity", "tickprefix": "$", "tickformat": ",.0f"})
-    sticky = [html.Span([html.B(_lab_money(mu), className="pos" if mu >= 0 else "neg"), " a month"]),
-              html.Span([html.B(f"{roi:+.1f}%"), " on the bankroll"]),
-              html.Span(["tops out at ", html.B(_lab_money(b_star) if b_star else "—"), " bankroll"]),
-              html.Span([html.B(f"{100 * p_loss:.0f}%"), " chance of a losing month"]),
-              html.Span(f"{sum(inc)} of {len(inc)} edges counted", className="lab-sticky-n")]
-    return ct_out, mo_out, stats, bars, bank, fan, sticky
+# ---- Lab what-if calculator (2026-11-26 v2): browser-side, so every change is instant ----
+_LAB_INPUTS = []
+for _b in LAB_BUCKETS:
+    _LAB_INPUTS.append(Input(f"lab-{_b['id']}-on", "value"))
+    _LAB_INPUTS += [Input(f"lab-{_b['id']}-{_f[0]}", "value") for _f in _b["fields"]]
+_LAB_INPUTS += [Input(_g, "value") for _g in _LAB_GLOBALS]
+app.clientside_callback(
+    _lab_js(),
+    [Output(f"lab-{_b['id']}-out", "children") for _b in LAB_BUCKETS]
+    + [Output(_r, "children") for _r in _LAB_RESULTS]
+    + [Output("lab-r-profit", "className"), Output("lab-bars", "figure"), Output("lab-bank", "figure"),
+       Output("lab-fan", "figure")],
+    _LAB_INPUTS)
 
 
 if __name__ == "__main__":
