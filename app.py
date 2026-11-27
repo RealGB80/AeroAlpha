@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -40,21 +41,22 @@ from components import (icon as svg_icon, info as info_tooltip, scope_bar,   # W
 # neutral series = light slate / white. No cyan/violet/amber in charts. The old CYAN/VIOLET/AMBER chart
 # constants are REPURPOSED to neutral/green/red so existing call sites keep working without a rename.
 # AMBER survives ONLY as a UI badge/pill accent (warn) in the CSS, never as a chart trace color.
-BG, PANEL, INK, DIM = "#070809", "rgba(20,24,28,0.90)", "#eef2f3", "#8a949b"
-GREEN, RED = "#00e08a", "#ff4d5e"         # brighter, sharper financial green / red
-GREEN_DK, RED_DK = "#0bbf78", "#e23b4c"   # muted variants for fills / secondary
-NEUTRAL = "#aeb8c0"                        # light slate = neutral data series (replaces blue/violet)
-NEUTRAL_DK = "#5b6770"                     # darker slate
+BG, PANEL, INK, DIM = "#edf1f4", "#ffffff", "#1d2b38", "#52606e"   # 2026-11-26 light redesign
+GREEN, RED = "#21907c", "#d65a33"         # gain teal / loss rust (CVD-safe pair, protan dE 10.6)
+GREEN_DK, RED_DK = "#17705f", "#b4441f"   # text-safe darker variants
+NEUTRAL = "#6b7c8d"                        # slate = neutral data series
+NEUTRAL_DK = "#4a5a6a"                     # darker slate
 MINT = GREEN                              # alias: "MINT" historically == the primary accent (now green)
 # REPURPOSED so charts are green/red/neutral ONLY:
 CYAN = NEUTRAL                            # was blue -> now neutral slate
-VIOLET = "#7f8a93"                        # was violet -> now darker neutral slate
-AMBER = "#d9a23a"                        # UI-only (pills/badges); NOT used as a chart trace
+VIOLET = "#8796a5"                        # light slate (secondary neutral)
+AMBER = "#a86f00"                        # UI-only (pills/badges); NOT used as a chart trace
 ACCENT = GREEN
+INKPEN = "#5b4bc4"                         # recorder violet: the overview equity trace
 # colorway: green primary, neutral slate secondary, darker neutral tertiary, red last (loss).
-PALETTE = [GREEN, NEUTRAL, VIOLET, GREEN_DK, "#8a949b", RED]
-GRIDCOL = "rgba(138,150,158,0.13)"        # gridlines: neutral slate
-AXISCOL = "rgba(138,150,158,0.28)"        # axis lines / ticks: neutral slate
+PALETTE = [GREEN, NEUTRAL, VIOLET, GREEN_DK, "#52606e", RED]
+GRIDCOL = "rgba(82,96,110,0.16)"          # gridlines: ruled slate
+AXISCOL = "rgba(82,96,110,0.38)"          # axis lines / ticks
 STALE_AFTER_MIN = 150                      # global staleness threshold: the pipeline runs hourly 07-21 ET but
                                            # only every 2h overnight (23/01/03/05), and a run takes ~15-30 min,
                                            # so 90 flagged 'stale' every night by design (2026-11-22)
@@ -62,11 +64,11 @@ STALE_AFTER_MIN = 150                      # global staleness threshold: the pip
 # WP-02: 8-page IA with real URL routes. ROUTES = [(path, render-key, icon-glyph, nav-label)]; SVG icons
 # arrive in WP-03 (glyphs kept meanwhile). LEGACY_ROUTES redirect old deep links to their new parent.
 ROUTES = [("/", "overview", "◉", "Overview"),
-          ("/run", "bankroll", "$", "$1,000 Run"),
+          ("/run", "bankroll", "$", "$1,000 run"),
           ("/markets", "markets", "❖", "Markets"),
-          ("/model", "model", "◎", "Model & Accuracy"),
-          ("/edges", "edges", "↑", "Edges & Validation"),
-          ("/capacity", "capacity", "⤢", "Capacity & Risk"),
+          ("/model", "model", "◎", "Model & accuracy"),
+          ("/edges", "edges", "↑", "Edges & validation"),
+          ("/capacity", "capacity", "⤢", "Capacity & risk"),
           ("/lab", "lab", "⚙", "Lab"),
           ("/methodology", "methodology", "≡", "Methodology")]
 PATH_TO_KEY = {p: k for p, k, _, _ in ROUTES}
@@ -83,15 +85,15 @@ def _tpl(fig, h=300, legend=None):
     Pass legend=True/False to force; default (None) auto-shows only for multi-trace figures."""
     if legend is None:
         legend = sum(1 for t in fig.data if getattr(t, "showlegend", None) is not False) > 1
-    fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                      font=dict(color=INK, family="Inter, system-ui", size=12.5), colorway=PALETTE,
+    fig.update_layout(template="plotly_white", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      font=dict(color=INK, family="Public Sans, system-ui, sans-serif", size=12.5), colorway=PALETTE,
                       margin=dict(l=58, r=20, t=18, b=44), height=h,
                       title=None, showlegend=legend,
                       legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=11, color=DIM), orientation="h",
                                   yanchor="bottom", y=1.02, xanchor="left", x=0, title_text="",
                                   itemsizing="constant"),
                       hoverlabel=dict(bgcolor=PANEL, bordercolor=GRIDCOL,
-                                      font=dict(family="Inter, system-ui", size=12.5, color=INK),
+                                      font=dict(family="Public Sans, system-ui, sans-serif", size=12.5, color=INK),
                                       align="left"),
                       bargap=0.42, bargroupgap=0.16, uniformtext=dict(mode="hide", minsize=9))
     fig.update_xaxes(gridcolor="rgba(0,0,0,0)", zerolinecolor=AXISCOL, nticks=7,
@@ -104,7 +106,7 @@ def _tpl(fig, h=300, legend=None):
                      title_font=dict(size=11.5, color=DIM), automargin=True)
     fig.update_traces(selector=dict(type="bar"),
                       marker=dict(cornerradius=6, line=dict(width=0)),
-                      textfont=dict(family="JetBrains Mono, monospace", size=11.5))
+                      textfont=dict(family="Public Sans, system-ui, sans-serif", size=11.5))
     return fig
 
 
@@ -147,9 +149,127 @@ def _dictify_figures(node):
     return node
 
 
+_CAPS_KEEP = {"NY", "NYC", "LA", "LAX", "CHI", "MIA", "AUS", "DEN", "PHX", "PHIL", "SFO", "ATL", "NOLA", "MIN", "LV",
+              "SEA", "DC", "OKC", "HOU", "SATX", "BOS", "SDF", "ET", "UTC", "LST", "CLV", "EMOS", "NBM", "GFS", "HRRR",
+              "ECMWF", "AIFS", "ICON", "GEFS", "ENS", "ACIS", "NWS", "NOAA", "NASA", "GISS", "PIT", "KS", "RMSE",
+              "MAE", "CI", "EV", "OOS", "WF", "ASOS", "METAR", "TWC", "MOS", "ROI", "MTM", "USD", "API", "PM", "AM",
+              "S1", "S2", "S2X", "S3", "WN2", "WN3", "UNC", "GT", "OK", "PNL"}
+
+
+def _sentence_caps(text):
+    """'WALK-FORWARD' -> 'Walk-forward', 'NY HIGH' -> 'NY high'; tickers/acronyms/numbers untouched."""
+    if not isinstance(text, str) or text != text.upper() or not re.search(r"[A-Z]{4,}", text):
+        return text
+    def fix(m):
+        w = m.group(0)
+        return w if (w in _CAPS_KEEP or w.startswith("KX") or any(ch.isdigit() for ch in w)) else w.lower()
+    out = re.sub(r"[A-Za-z0-9#&]+", fix, text)
+    i = next((k for k, ch in enumerate(out) if ch.isalpha()), None)
+    return out if i is None else out[:i] + out[i].upper() + out[i + 1:]
+
+
+_CAPS_KEEP |= {"CRPS", "JSON", "CSV", "NGR", "OLS", "MLE", "SQL", "HTTP", "UNC_NEWCITY", "KELLY"}
+_PROPER = {"Kalshi", "Polymarket", "Brier", "Murphy", "Kelly", "Monte-Carlo", "Monte", "Carlo", "Bayes", "Bayesian",
+           "Gaussian", "Open-Meteo", "Synoptic", "Wethr", "New", "York", "Chicago", "Miami", "Austin", "Denver",
+           "Philadelphia", "Phoenix", "Los", "Angeles", "Seattle", "Boston", "Atlanta", "Houston", "Dallas", "Las",
+           "Vegas", "Minneapolis", "Orleans", "San", "Antonio", "Francisco", "Oklahoma", "Washington", "Islip",
+           "Central", "Park", "January", "February", "March", "April", "May", "June", "July", "August", "September",
+           "October", "November", "December", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+           "Sunday", "Weather", "Company", "I"}
+
+
+def _sentence_title(text):
+    """'Per-City Edge Detail' -> 'Per-city edge detail' (acronyms, proper nouns and 'Edge #1' kept)."""
+    if not isinstance(text, str) or not text:
+        return text
+    toks = re.split(r"(\s+)", text)
+    out, seen_word = [], False
+    for k, w in enumerate(toks):
+        if not w.strip():
+            out.append(w)
+            continue
+        nxt = next((t for t in toks[k + 1:] if t.strip()), "")
+        core = w.strip("()[],.:;'\"")
+        keep = (core in _PROPER or core.upper() == core or any(ch.isdigit() for ch in core)
+                or (core == "Edge" and nxt.startswith("#")) or core.startswith("$") or "_" in core)
+        if not keep and core[:1].isupper() and "-" in core or (not keep and core[:1].isupper() and seen_word):
+            parts = core.split("-")
+            parts = [pt if (pt in _PROPER or pt.upper() == pt or (i == 0 and not seen_word)) else pt.lower()
+                     for i, pt in enumerate(parts)]
+            w = w.replace(core, "-".join(parts))
+        out.append(w)
+        seen_word = True
+    return "".join(out)
+
+
+_SHOUT = re.compile(r"(?<![A-Za-z0-9_#])([A-Z][A-Z\-]{3,})(?![A-Za-z0-9_])")
+
+
+def _soften_caps(text):
+    """Shouted words inside sentences ('moves ONLY as PAPER signals') -> lower case; acronyms, tickers (KX...),
+    4-letter ICAO station ids (KNYC) and anything with a digit are kept. Whole-caps strings -> sentence case."""
+    if not isinstance(text, str) or not re.search(r"[A-Z]{4,}", text):
+        return text
+    if text == text.upper():
+        return _sentence_caps(text)
+    def fix(m):
+        w = m.group(1)
+        bare = w.strip("-")
+        if (bare in _CAPS_KEEP or bare.startswith("KX") or (len(bare) == 4 and bare.startswith("K"))
+                or any(part in _CAPS_KEEP for part in bare.split("-"))):
+            return w
+        return w.lower()
+    return _SHOUT.sub(fix, text)
+
+
+def _split_title(text):
+    """'Per-City Edge Detail — Base-5 Pool Backtest' -> ['Per-city edge detail', <quiet sub-line>]."""
+    if isinstance(text, str) and " — " in text:
+        head, tail = text.split(" — ", 1)
+        return [_sentence_title(_soften_caps(head)), html.Span(_sentence_title(_soften_caps(tail)), className="h3-sub")]
+    if isinstance(text, str):
+        return [_sentence_title(_soften_caps(text))]
+    return None
+
+
+def _humanize(node):
+    """2026-11-26 redesign copy pass over a built page (titles + status chips), in place. The spaced em-dash
+    title and the ALL-CAPS label were the two loudest 'generated page' tells on the old site."""
+    if not isinstance(node, Component):
+        return
+    cls = str(getattr(node, "className", "") or "")
+    ch = getattr(node, "children", None)
+    is_title = (isinstance(node, (html.H1, html.H3)) or "page-title" in cls or "p2-title" in cls) and "disc-head" not in cls
+    if is_title:
+        if isinstance(ch, str):
+            sp = _split_title(ch)
+            if sp:
+                node.children = sp
+        elif isinstance(ch, list) and ch and isinstance(ch[0], str):
+            sp = _split_title(ch[0])
+            if sp:
+                node.children = sp + list(ch[1:])
+    elif isinstance(ch, str) and ("badge" in cls or "pill" in cls or "u-label" in cls or cls == "label"):
+        node.children = _sentence_caps(ch)
+    elif isinstance(ch, str):
+        node.children = _soften_caps(ch)
+    elif isinstance(ch, list):
+        node.children = [_soften_caps(c) if isinstance(c, str) else c for c in ch]
+    kids = getattr(node, "children", None)
+    if isinstance(kids, Component):
+        _humanize(kids)
+    elif isinstance(kids, (list, tuple)):
+        for c in kids:
+            _humanize(c)
+
+
 def _render_page(key):
     """Build a page fresh, convert its figures to dicts, and store it in the cache. Returns the tree."""
     tree = RENDER.get(key, render_overview)()
+    try:
+        _humanize(tree)
+    except Exception:
+        pass                    # a copy pass must never take a page down
     _dictify_figures(tree)
     _PAGE_CACHE[key] = (time.time(), tree)
     return tree
@@ -222,14 +342,14 @@ def _dfig(data, h=300, legend=False, xaxis=None, yaxis=None, shapes=None, annota
     """Return a PLAIN-DICT Plotly figure styled exactly like _tpl() (template, margins, legend, axes), but
     WITHOUT constructing a go.Figure (the validation/deepcopy that makes the sandbox slow). xaxis/yaxis are
     style-override dicts merged onto the shared axis styling; shapes/annotations/extra go straight to layout."""
-    lay = {"template": "plotly_dark", "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)",
-           "font": {"color": INK, "family": "Inter, system-ui", "size": 12.5}, "colorway": PALETTE,
+    lay = {"template": "plotly_white", "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)",
+           "font": {"color": INK, "family": "Public Sans, system-ui, sans-serif", "size": 12.5}, "colorway": PALETTE,
            "margin": {"l": 58, "r": 20, "t": 18, "b": 44}, "height": h, "title": None, "showlegend": legend,
            "legend": {"bgcolor": "rgba(0,0,0,0)", "font": {"size": 11, "color": DIM}, "orientation": "h",
                       "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0, "title_text": "",
                       "itemsizing": "constant"},
            "hoverlabel": {"bgcolor": PANEL, "bordercolor": GRIDCOL,
-                          "font": {"family": "Inter, system-ui", "size": 12.5, "color": INK}, "align": "left"},
+                          "font": {"family": "Public Sans, system-ui, sans-serif", "size": 12.5, "color": INK}, "align": "left"},
            "bargap": 0.42, "bargroupgap": 0.16, "uniformtext": {"mode": "hide", "minsize": 9},
            "xaxis": {**_X_STYLE, **(xaxis or {})}, "yaxis": {**_Y_STYLE, **(yaxis or {})}}
     if shapes:
@@ -325,10 +445,10 @@ def panel_divergence():
     # edge-zone ribbons: above the diagonal (model > market -> buy-YES edge) and below (sell)
     xs = [0, 1]
     fig.add_scatter(x=xs + xs[::-1], y=[0.05, 1.05, 1.0, 0.0], fill="toself",
-                    fillcolor="rgba(22,199,132,.07)", line=dict(width=0), mode="lines",
+                    fillcolor="rgba(33,144,124,.07)", line=dict(width=0), mode="lines",
                     name="model > market", hoverinfo="skip", showlegend=False)
     fig.add_scatter(x=xs + xs[::-1], y=[-0.05, 0.95, 1.0, 0.0], fill="toself",
-                    fillcolor="rgba(234,57,67,.06)", line=dict(width=0), mode="lines",
+                    fillcolor="rgba(214,90,51,.06)", line=dict(width=0), mode="lines",
                     name="model < market", hoverinfo="skip", showlegend=False)
     fig.add_scatter(x=[0, 1], y=[0, 1], mode="lines", name="agreement",
                     line=dict(color=DIM, width=1.4, dash="dash"), hoverinfo="skip")
@@ -340,14 +460,14 @@ def panel_divergence():
     if "strategy" not in d.columns:
         d["strategy"] = "—"
     d["strategy"] = d["strategy"].fillna("—")
-    for key, label, color in (("won", "WON", GREEN), ("lost", "LOST", RED),
-                              ("pending", "PENDING (unsettled)", NEUTRAL)):
+    for key, label, color in (("won", "won", GREEN), ("lost", "lost", RED),
+                              ("pending", "pending (unsettled)", NEUTRAL)):
         sub = d[d["_oc"] == key]
         if sub.empty:
             continue
         fig.add_scatter(x=sub["market_mid"], y=sub["model_p"], mode="markers", name=label,
                         marker=dict(size=9, color=color, opacity=.82 if key != "pending" else .5,
-                                    line=dict(width=1, color="rgba(255,255,255,.2)")),
+                                    line=dict(width=1, color="rgba(29,43,56,.2)")),
                         customdata=sub[["ticker", "strategy", "edge"]].values,
                         hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]} · " + label +
                                       "<br>market mid %{x:.2f} · model %{y:.2f}"
@@ -392,7 +512,7 @@ def panel_edge_success():
             continue
         fig.add_scatter(x=sub["abs_edge"], y=sub["realized_net"], mode="markers", name=label,
                         marker=dict(size=9, color=color, opacity=.8,
-                                    line=dict(width=1, color="rgba(255,255,255,.2)")),
+                                    line=dict(width=1, color="rgba(29,43,56,.2)")),
                         customdata=sub[["ticker", "strategy"]].values,
                         hovertemplate="<b>%{customdata[0]}</b><br>%{customdata[1]} · " + label +
                                       "<br>|edge| %{x:.2f} · paper net $%{y:+.2f}/ct<extra></extra>")
@@ -469,13 +589,13 @@ def _conf_chip(direction, s_star):
     if not _isnull(s_star) and 0.90 <= float(s_star) <= 1.10:
         d = "calibrated"
     if "over" in d or "narrow" in d:
-        col, bg, txt = RED, "rgba(255,77,94,.10)", f"{s}overconfident (too narrow)"
+        col, bg, txt = RED, "rgba(214,90,51,.10)", f"{s}overconfident (too narrow)"
     elif "under" in d or "wide" in d:
-        col, bg, txt = AMBER, "rgba(217,162,58,.12)", f"{s}underconfident (too wide)"
+        col, bg, txt = AMBER, "rgba(168,111,0,.12)", f"{s}underconfident (too wide)"
     else:  # WELL_CALIBRATED / calibrated
-        col, bg, txt = GREEN, "rgba(0,224,138,.10)", f"{s}well calibrated"
+        col, bg, txt = GREEN, "rgba(33,144,124,.10)", f"{s}well calibrated"
     return html.Span(txt, style={"display": "inline-block", "padding": "3px 9px", "borderRadius": "5px",
-                                 "fontSize": "11.5px", "fontFamily": "JetBrains Mono, monospace",
+                                 "fontSize": "11.5px", "fontFamily": "Public Sans, system-ui, sans-serif",
                                  "color": col, "background": bg, "border": f"1px solid {col}55"})
 
 
@@ -563,7 +683,7 @@ def panel_calibration_streams():
     for _, r in d.iterrows():
         chips.append(html.Div([
             html.Span(_stream_label(r["stream"]), style={"color": "var(--ink)", "fontSize": "12px",
-                                                          "fontFamily": "JetBrains Mono, monospace",
+                                                          "fontFamily": "Public Sans, system-ui, sans-serif",
                                                           "marginRight": "8px", "minWidth": "78px",
                                                           "display": "inline-block"}),
             _conf_chip(r.get("direction"), r.get("s_star"))],
@@ -634,7 +754,7 @@ def panel_brier_decomp():
     # net Brier marker = reliability - resolution + uncertainty
     fig.add_scatter(x=d["who"], y=d["brier"], mode="markers+text", name="Brier (net)",
                     marker=dict(size=12, color=INK, symbol="diamond",
-                                line=dict(width=1.4, color="rgba(255,255,255,.4)")),
+                                line=dict(width=1.4, color="rgba(29,43,56,.4)")),
                     text=[f"{b:.4f}" for b in d["brier"]], textposition="top center",
                     textfont=dict(color=INK, size=11),
                     hovertemplate="<b>%{x}</b><br>Brier %{y:.4f}<extra></extra>")
@@ -707,16 +827,16 @@ def panel_fan():
         return card([html.H3("Forecast Fan Chart"), empty_state("Fills from the replay dataset.")])
     fig = go.Figure()
     fig.add_scatter(x=list(d["date"]) + list(d["date"])[::-1], y=list(d["hi2"]) + list(d["lo2"])[::-1],
-                    fill="toself", fillcolor="rgba(174,184,192,.10)", line=dict(width=0), mode="lines",
+                    fill="toself", fillcolor="rgba(107,124,141,.10)", line=dict(width=0), mode="lines",
                     name="±2σ", hoverinfo="skip")
     fig.add_scatter(x=list(d["date"]) + list(d["date"])[::-1], y=list(d["hi1"]) + list(d["lo1"])[::-1],
-                    fill="toself", fillcolor="rgba(174,184,192,.18)", line=dict(width=0), mode="lines",
+                    fill="toself", fillcolor="rgba(107,124,141,.18)", line=dict(width=0), mode="lines",
                     name="±1σ", hoverinfo="skip")
     fig.add_scatter(x=d["date"], y=d["forecast_f"], mode="lines", name="forecast",
                     line=dict(color=CYAN, width=2, shape="spline", smoothing=0.4),
                     hovertemplate="%{x}<br>forecast %{y:.1f}°F<extra></extra>")
     fig.add_scatter(x=d["date"], y=d["observed_f"], mode="markers", name="observed high",
-                    marker=dict(size=6, color=MINT, line=dict(width=1, color="rgba(255,255,255,.25)")),
+                    marker=dict(size=6, color=MINT, line=dict(width=1, color="rgba(29,43,56,.25)")),
                     hovertemplate="%{x}<br>observed %{y:.1f}°F<extra></extra>")
     fig.update_layout(title=None)
     fig.update_yaxes(title="daily high (°F)", ticksuffix="°F")
@@ -773,11 +893,11 @@ def panel_surprise():
     def _f(stop_f):                                       # °F breakpoint -> 0..1 position on the scale
         return min(1.0, max(0.0, stop_f / zmax))
     seg = sorted({0.0: GREEN,                              # 0°F  -> bright green (nailed it)
-                  _f(0.75): "#3fd29a",                     # 0.75°F -> teal-green
-                  _f(1.5): "#9ad04a",                      # 1.5°F  -> yellow-green
-                  _f(2.25): "#d9c23a",                     # 2.25°F -> yellow
-                  _f(3.0): "#e0902e",                      # 3°F    -> amber (boundary close/far)
-                  _f(5.0): "#e8562f",                      # 5°F    -> orange-red
+                  _f(0.75): "#21907c",                     # 0.75°F -> teal-green
+                  _f(1.5): "#e87ba4",                      # 1.5°F  -> yellow-green
+                  _f(2.25): "#c9a227",                     # 2.25°F -> yellow
+                  _f(3.0): "#d9822b",                      # 3°F    -> amber (boundary close/far)
+                  _f(5.0): "#d65a33",                      # 5°F    -> orange-red
                   1.0: RED}.items())                       # zmax   -> red (big surprise)
     # collapse duplicate positions (when zmax is small the high stops can coincide at 1.0)
     seen = {}
@@ -996,7 +1116,7 @@ def _spark(values, color=None, height=34, fill=True, width=90):
 
 
 def _rgb(hex_or_name):
-    h = {"#00e08a": "0,224,138", "#ff4d5e": "255,77,94", "#aeb8c0": "174,184,192"}.get(hex_or_name)
+    h = {"#21907c": "0,224,138", "#d65a33": "255,77,94", "#6b7c8d": "174,184,192"}.get(hex_or_name)
     if h:
         return h
     hx = hex_or_name.lstrip("#")
@@ -1187,20 +1307,20 @@ def panel_city_network():
             if r["city"] == "NY":
                 continue
             fig.add_scattergeo(lat=[nlat, r["lat"]], lon=[nlon, r["lon"]], mode="lines",
-                               line=dict(width=0.7, color="rgba(0,224,138,.18)"), hoverinfo="skip",
+                               line=dict(width=0.7, color="rgba(33,144,124,.18)"), hoverinfo="skip",
                                showlegend=False)
     fig.add_scattergeo(
         lat=d["lat"], lon=d["lon"], mode="markers+text",
         text=[f"{c}" for c in d["city"]], textposition="top center",
         textfont=dict(size=10, color=INK),
-        marker=dict(size=sizes, color=colors, opacity=0.92, line=dict(width=1.2, color="rgba(255,255,255,.4)")),
+        marker=dict(size=sizes, color=colors, opacity=0.92, line=dict(width=1.2, color="rgba(29,43,56,.4)")),
         customdata=d[["name", "station", "forecast_f", "edge_c", "status"]].values,
         hovertemplate="<b>%{customdata[0]}</b> (%{customdata[1]})<br>forecast %{customdata[2]:.1f}°F"
                       "<br>paper edge %{customdata[3]:+.2f}c · %{customdata[4]}<extra></extra>",
         showlegend=False)
-    fig.update_geos(scope="usa", bgcolor="rgba(0,0,0,0)", landcolor="rgba(40,46,52,.55)",
-                    lakecolor="rgba(0,0,0,0)", subunitcolor="rgba(138,150,158,.18)",
-                    countrycolor="rgba(138,150,158,.25)", coastlinecolor="rgba(138,150,158,.22)",
+    fig.update_geos(scope="usa", bgcolor="rgba(0,0,0,0)", landcolor="rgba(237,241,244,.9)",
+                    lakecolor="rgba(0,0,0,0)", subunitcolor="rgba(82,96,110,.18)",
+                    countrycolor="rgba(82,96,110,.25)", coastlinecolor="rgba(82,96,110,.22)",
                     showlakes=False, framecolor="rgba(0,0,0,0)")
     fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=340, paper_bgcolor="rgba(0,0,0,0)",
                       geo=dict(bgcolor="rgba(0,0,0,0)"))
@@ -1385,7 +1505,7 @@ def panel_equity_curve():
     # range selector buttons on the time axis (designed time-series UX)
     fig.update_xaxes(title="", nticks=8, rangeslider=dict(visible=False),
                      rangeselector=dict(
-                         bgcolor="rgba(0,0,0,0)", activecolor="rgba(0,224,138,.18)",
+                         bgcolor="rgba(0,0,0,0)", activecolor="rgba(33,144,124,.18)",
                          bordercolor=GRIDCOL, borderwidth=1, x=0, y=1.08,
                          font=dict(size=10, color=DIM),
                          buttons=[dict(count=1, label="1M", step="month", stepmode="backward"),
@@ -1421,7 +1541,7 @@ def panel_drawdown():
     fig = go.Figure()
     fig.add_scatter(x=d["date"], y=dd, mode="lines", name="drawdown",
                     line=dict(color=RED, width=1.2), fill="tozeroy",
-                    fillcolor="rgba(255,77,94,.16)",
+                    fillcolor="rgba(214,90,51,.16)",
                     hovertemplate="%{x}<br>underwater %{y:+.0f} c/ct<extra></extra>")
     fig.update_layout(title=None)
     fig.update_yaxes(title="underwater (c / contract)", ticksuffix="c", tickformat="+,.0f")
@@ -1883,8 +2003,8 @@ def _equity_points():
 
 # Kelly what-if overlay (toggle on the $1k equity chart): counterfactual sizings + a forward projection.
 _EQ_KELLY_FRACS = [0.25, 0.30, 0.40, 0.50, 0.75, 1.00]
-_EQ_KELLY_COLORS = {0.25: "#5AC8FA", 0.30: "#2DD4BF", 0.40: "#9CCC65",
-                    0.50: GREEN, 0.75: "#FFB020", 1.00: "#FF5C5C"}
+_EQ_KELLY_COLORS = {0.25: "#86b6ef", 0.30: "#5598e7", 0.40: "#3987e5",
+                    0.50: GREEN, 0.75: "#1c5cab", 1.00: "#0d366b"}
 
 
 def _add_prior_runs(fig, lo, hi):
@@ -2134,7 +2254,7 @@ def panel_equity_composition():
         labels=["Cash", "In positions"], values=[max(cash, 0.0), max(positions, 0.0)],
         hole=0.64, sort=False, direction="clockwise",
         marker=dict(colors=[GREEN_DK, NEUTRAL], line=dict(color=PANEL, width=2)),
-        textinfo="percent", textfont=dict(size=12, color="#0b0f12"),
+        textinfo="percent", textfont=dict(size=12, color="#ffffff"),
         hovertemplate="%{label}<br>$%{value:,.2f} · %{percent}<extra></extra>"))
     fig.add_annotation(text=f"<b>${eq:,.0f}</b><br><span style='font-size:10px'>net equity</span>",
                        showarrow=False, font=dict(size=17, color=INK))
@@ -2274,12 +2394,12 @@ def _resolution_day_figure(resolution_date):
     green_y = [v if v >= p else p for v, p in zip(value, paid)]
     fig.add_scatter(x=xs, y=green_y, mode="lines", line=dict(width=0), showlegend=False,
                     hoverinfo="skip", fill="tonexty",
-                    fillcolor="rgba(0,224,138,0.18)")
+                    fillcolor="rgba(33,144,124,0.18)")
     # red fill where value < paid (re-draw paid as the base, then value clipped to the under-water region)
     fig.add_scatter(x=xs, y=paid, mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip")
     red_y = [v if v < p else p for v, p in zip(value, paid)]
     fig.add_scatter(x=xs, y=red_y, mode="lines", line=dict(width=0), showlegend=False,
-                    hoverinfo="skip", fill="tonexty", fillcolor="rgba(255,77,94,0.18)")
+                    hoverinfo="skip", fill="tonexty", fillcolor="rgba(214,90,51,0.18)")
     # the prominent VALUE line on top, color = green if currently above paid else red
     up = value[-1] >= paid[-1]
     cd = [[f"${p:,.2f}", f"${v:,.2f}", f"{'+' if (v - p) >= 0 else '−'}${abs(v - p):,.2f}", n]
@@ -2514,7 +2634,7 @@ def _panel_run_projection_realized(d):
     bt_mo = float(d["mc_median_mo"].iloc[0])
     start = float(d["real_start"].iloc[0])
     fig = go.Figure()
-    fig.add_scatter(x=months + months[::-1], y=rp95 + rp5[::-1], fill="toself", fillcolor="rgba(24,201,138,.12)",
+    fig.add_scatter(x=months + months[::-1], y=rp95 + rp5[::-1], fill="toself", fillcolor="rgba(33,144,124,.12)",
                     line=dict(width=0), mode="lines", hoverinfo="skip", showlegend=False)
     fig.add_scatter(x=months, y=rp95, mode="lines", name="P95 (settled-paper pace)",
                     line=dict(color=GREEN_DK, width=1.4, dash="dot"),
@@ -2571,7 +2691,7 @@ def panel_run_projection():
     fig = go.Figure()
     # shaded NEUTRAL band between P5 and P95
     fig.add_scatter(x=months + months[::-1], y=p95 + p5[::-1], fill="toself",
-                    fillcolor="rgba(174,184,192,.12)", line=dict(width=0), mode="lines",
+                    fillcolor="rgba(107,124,141,.12)", line=dict(width=0), mode="lines",
                     name="P5–P95 band", hoverinfo="skip", showlegend=False)
     # P95 run (green-ish)
     fig.add_scatter(x=months, y=p95, mode="lines", name="P95 path",
@@ -2849,7 +2969,7 @@ def panel_open_positions():
                 continue
             fig.add_scatter(x=sub["_dt"], y=sub["edge_c"], mode="markers", name=f"{mkt} book",
                             marker=dict(size=11, color=color, opacity=.82,
-                                        line=dict(width=1, color="rgba(255,255,255,.25)"),
+                                        line=dict(width=1, color="rgba(29,43,56,.25)"),
                                         symbol=["circle" if s == "YES" else "diamond" for s in sub["side"]]),
                             customdata=sub[["city", "stream", "side", "ticker"]].values,
                             hovertemplate="<b>%{customdata[0]} %{customdata[1]}</b> %{customdata[2]}"
@@ -3101,7 +3221,7 @@ def badge(text, kind="neut"):
 
 
 def section(title):
-    return html.Div(title, className="page-title")
+    return html.H1(title, className="page-title")
 
 
 def empty_state(msg, icon=None):
@@ -3367,10 +3487,10 @@ def _data_age_min():
 def staleness_chip():
     age = _data_age_min()
     if age is None:
-        return html.Span("DATA AGE UNKNOWN", className="stale-chip stale", id="stale-chip")
+        return html.Span("Data age unknown", className="stale-chip stale", id="stale-chip")
     if age >= STALE_AFTER_MIN:
-        return html.Span(f"DATA {age:.0f} MIN OLD", className="stale-chip stale", id="stale-chip")
-    return html.Span(f"DATA {age:.0f} MIN OLD", className="stale-chip fresh", id="stale-chip")
+        return html.Span(f"Data is {age:.0f} min old", className="stale-chip stale", id="stale-chip")
+    return html.Span(f"Data is {age:.0f} min old", className="stale-chip fresh", id="stale-chip")
 
 
 # ============================================================================================
@@ -3394,9 +3514,9 @@ _EDGE_CI_TEXT = {"AUS_low_S1": "+8.38c CI[+2.50,+14.81] (warm-robust, excl 0)",
                  "MIA_low_S1": "+4.37c CI[-0.69,+8.98] (WATCH — CI touches 0)",
                  "LAX_low_S1": "+3.69c (snapshot; no-tradable-path per Crucible within-cold decay)"}
 # Per-stream distinct color for the headroom chart (item 1) -- each stream gets ONE hue, no repeats.
-_STREAM_COLOR = {"NY_high_S1": "#00e08a", "LAX_high_S1": "#36c5f0", "CHI_high_S1": "#d9a23a",
-                 "MIA_high_S1": "#5fd0c0", "AUS_low_S1": "#b07ff0", "LAX_low_S1": "#ff8a5b",
-                 "DEN_low_S1": "#7fd6a0", "MIA_low_S1": "#e85f8a"}
+_STREAM_COLOR = {"NY_high_S1": "#21907c", "LAX_high_S1": "#eb6834", "CHI_high_S1": "#a86f00",
+                 "MIA_high_S1": "#eda100", "AUS_low_S1": "#008300", "LAX_low_S1": "#6250d6",
+                 "DEN_low_S1": "#e34948", "MIA_low_S1": "#8796a5"}
 
 
 def _scal_stream_label(stream_id):
@@ -3637,7 +3757,7 @@ def panel_scalability_headroom():
             binds = list(d["depth_binds"])
             fig = go.Figure()
             fig.add_bar(x=xs, y=want, name="bankroll wants",
-                        marker=dict(color="rgba(174,184,192,0.22)", line=dict(width=0)),
+                        marker=dict(color="rgba(107,124,141,0.22)", line=dict(width=0)),
                         hovertemplate="%{x}<br>bankroll wants %{y:,.0f} ct/market<extra></extra>")
             fig.add_bar(x=xs, y=got, name="depth-capped (fillable)",
                         marker=dict(color=clr, line=dict(width=0)),
@@ -3694,88 +3814,175 @@ def panel_scalability_headroom():
 
 
 # ============================== PAGES ==============================
+_STREAM_NAMES = {"UNC_NEWCITY_high": "Edge #1, 5 pm entry", "UNC_NEWCITY_3PM_high": "Edge #1, 3 pm entry",
+                 "UNC_LAUNCH_high": "Edge #1, new-city launches", "NEWCITY_LOWS_low": "Newer-city lows",
+                 "LOWS_LAUNCH_low": "Low-temperature launches", "RAIN_MONTHEND_NO": "Month-end rain",
+                 "GLOBAL_TEMP_INFO": "Global temperature", "REV_NEWCITY_high": "Summer revision (from May 2027)"}
+_POS_NAMES = {"EDGE#1": "Edge #1", "EDGE#1 3PM": "Edge #1 (3 pm)", "LOWS": "newer-city lows", "RAIN": "month-end rain",
+              "GLOBAL TEMP": "global temperature", "LAUNCH": "launch cities", "LOWS LAUNCH": "low launches"}
+
+
+def _fmt_day(iso):
+    try:
+        d = pd.Timestamp(str(iso)[:10])
+        return f"{d.strftime('%B')} {d.day}"
+    except Exception:
+        return str(iso)
+
+
+def _book_positions():
+    """Open paper positions in the $1k book (cloud-marked public quotes; prices in cents)."""
+    op = table("open_positions")
+    if op.empty or "stream" not in op.columns:
+        return None
+    o = op.copy()
+    if "in_1k_book" in o.columns:
+        o = o[o["in_1k_book"].astype(str).str.lower().isin(["true", "1"])]
+    if o.empty:
+        return {"n": 0}
+    ct = pd.to_numeric(o.get("contracts"), errors="coerce").fillna(0.0)
+    ep = pd.to_numeric(o.get("entry_price"), errors="coerce").fillna(0.0)
+    md = pd.to_numeric(o.get("mark_delta"), errors="coerce").fillna(0.0)
+    o = o.assign(_cost=ct * ep / 100.0, _unreal=ct * md / 100.0)
+    by = o.groupby("stream").size().sort_values(ascending=False)
+    return {"n": int(len(o)), "cost": float(o["_cost"].sum()), "unreal": float(o["_unreal"].sum()), "by": by}
+
+
+def _equity_trace_figure():
+    """The overview's one bold element: the paper book drawn like a thermograph trace (violet pen on chart paper),
+    current run only, on real time, 3-hour steps."""
+    tl = table("bankroll_equity_timeline")
+    if tl.empty or "equity" not in tl.columns or "ts" not in tl.columns:
+        return None
+    t = tl[["ts", "equity"]].copy()
+    t["ts"] = pd.to_datetime(t["ts"], utc=True, format="ISO8601", errors="coerce")
+    t["equity"] = pd.to_numeric(t["equity"], errors="coerce")
+    t = t.dropna().sort_values("ts")
+    reset = _run_meta("reset_date", None)
+    if reset:
+        try:
+            t = t[t["ts"] >= pd.Timestamp(str(reset)[:10], tz="UTC")]
+        except Exception:
+            pass
+    if len(t) < 2:
+        return None
+    r = t.set_index("ts")["equity"].resample("3h").last()
+    r = r.loc[r.first_valid_index():r.last_valid_index()]
+    x = [_to_et_naive(v) for v in r.index]
+    y = [None if v != v else round(float(v), 2) for v in r.values]       # None = no marks in that window
+    yv = [v for v in y if v is not None]
+    fig = go.Figure()
+    fig.add_scatter(x=x, y=y, mode="lines", name="paper equity", line=dict(color=INKPEN, width=2, shape="linear"), connectgaps=False,
+                    hovertemplate="%{x|%b %d, %I %p} ET<br>$%{y:,.2f} (paper)<extra></extra>")
+    fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1, dash="dot"))
+    fig.add_annotation(x=x[-1], y=yv[-1], text=f"${yv[-1]:,.0f}", showarrow=False, xanchor="left", xshift=6,
+                       font=dict(color=INKPEN, size=13))
+    lo, hi = min(min(yv), 1000), max(max(yv), 1000)
+    pad = (hi - lo) * 0.18 or 10
+    fig.update_yaxes(tickprefix="$", tickformat=",.0f", range=[lo - pad, hi + pad], title=None)
+    fig.update_xaxes(title=None, tickformat="%b %d")
+    _tpl(fig, h=260, legend=False)
+    fig.update_yaxes(gridcolor="rgba(0,0,0,0)")
+    fig.update_layout(margin=dict(l=56, r=64, t=10, b=34))
+    return fig
+
+
+def _book_table():
+    """The streams that trade in the paper book now, with their backtest and live record in plain words."""
+    g = table("run_gates")
+    if g.empty or "paper_state" not in g.columns:
+        return empty_state("The stream list fills when the paper harness publishes its gate table.")
+    a = g[g["paper_state"].astype(str).str.upper().isin(["ACTIVE", "SCHEDULED"])].copy()
+    if a.empty:
+        return empty_state("No stream is trading in the paper book right now.")
+
+    def num(v):
+        try:
+            f = float(v)
+            return None if f != f else f
+        except (TypeError, ValueError):
+            return None
+
+    rows = []
+    for _, r in a.iterrows():
+        sid = str(r.get("stream"))
+        bt, lo_, hi_ = num(r.get("edge_c")), num(r.get("ci_lo")), num(r.get("ci_hi"))
+        n = int(num(r.get("n_settled")) or 0)
+        fm = num(r.get("fwd_mean_c"))
+        stake = num(r.get("active_stake"))
+        state = str(r.get("paper_state", "")).upper()
+        bt_txt = "not tested this way" if bt is None else (
+            f"{bt:+.2f}c" + (f" ({lo_:+.1f} to {hi_:+.1f})" if lo_ is not None and hi_ is not None else ""))
+        live_txt = ("starts with the first settlement" if n == 0 or fm is None else
+                    f"{n} settled, {fm:+.1f}c average" + (" (too few to judge)" if n < 30 else ""))
+        size_txt = "from May 2027" if state == "SCHEDULED" else ("—" if stake is None else f"${stake:,.0f} a trade")
+        rows.append(html.Tr([html.Td(_STREAM_NAMES.get(sid, sid), className="pt-td pt-l"),
+                             html.Td(bt_txt, className="pt-td pt-r"),
+                             html.Td(live_txt, className="pt-td pt-l"),
+                             html.Td(size_txt, className="pt-td pt-r")]))
+    head = html.Thead(html.Tr([html.Th("Stream", className="pt-th pt-l"),
+                               html.Th("Backtest, per contract after costs", className="pt-th pt-r"),
+                               html.Th("Live paper record", className="pt-th pt-l"),
+                               html.Th("Size now", className="pt-th pt-r")]))
+    return html.Div(html.Table([head, html.Tbody(rows)], className="pro-table"), className="pt-wrap")
+
+
 def render_overview():
-    kpi = table("kpi"); br = table("bankroll_run"); cs1 = table("city_s1")
-    kpi_strip = kpi_spark_row()
-    # bankroll
-    if br.empty:
-        # $1k DOLLAR curve stays OFF until separate approval. Fill this prime real estate with the REAL
-        # forward-evidence graphics. WP-01: reuse the canonical panel_funnel() (was a duplicated inline
-        # go.Funnel build with an off-palette pink marker); it guards its own empty case.
-        bank = panel_funnel()
-    else:
-        # $1,000 staged run is now surfaced (its own page). Overview shows the HONEST paper equity curve
-        # (LIVE allocation $0; it moves only as activated PAPER signals settle) + a pointer to the gate tracker.
-        y = [float(v) for v in br["bankroll"]]
-        x = list(range(len(y)))
-        if len(x) == 1:
-            x = [0, 1]; y = [y[0], y[0]]
-        # headline = latest rebased timeline equity (realized + unrealized MTM); step-curve below = realized only
-        cur_val = _latest_equity()
-        line_col = GREEN if cur_val >= 1000 else RED
-        fig = go.Figure()
-        fig.add_scatter(x=x, y=y, name="paper equity", mode="lines+markers",
-                        line=dict(color=line_col, width=2.4), marker=dict(size=6, color=line_col),
-                        customdata=[str(v) for v in br["date"]] if len(br) == len(y) else None,
-                        hovertemplate="%{customdata}<br>$%{y:,.2f} (paper)<extra></extra>")
-        fig.add_hline(y=1000, line=dict(color=NEUTRAL, width=1.2, dash="dot"),
-                      annotation_text="$1,000 baseline", annotation_position="bottom right",
-                      annotation_font=dict(color=NEUTRAL, size=10))
-        span = (max(y) - min(y)) or 1.0
-        fig.update_yaxes(title="paper equity ($)", tickprefix="$", tickformat=",.2f",
-                         range=[min(min(y), 1000) - span * 0.6, max(max(y), 1000) + span * 0.6])
-        fig.update_xaxes(title="settlement step", showticklabels=False)
-        _si, _nr, _inc = _since_inception(_latest_equity())
-        _hist = (f" This is the current run (since {_run_meta('reset_date', '—')}); with the {_nr - 1} earlier "
-                 f"runs chained the result since {_inc} is {_si:+.1f}% — see the $1,000 Run page."
-                 if (_si is not None and _nr > 1) else "")
-        bank = card([html.H3(f"$1,000 Paper Run — ${cur_val:,.2f}"),
-                     _cap("LIVE allocation $0 — every edge is STAGED until its forward gate PASSES. The paper "
-                          "equity moves only as activated PAPER signals settle (no real money)." + _hist +
-                          " Paper only, never realized P&L."),
-                     graph(_tpl(fig, h=240, legend=False)),
-                     _cap("X-axis = settlement step — each point is one paper signal SETTLING and booking its "
-                          "P&L; the curve advances one step per settled contract, NOT by calendar time. Smooth "
-                          "because settlements are evenly spaced here. (The $1,000 Run page plots the same "
-                          "equity against real datetime, including the unrealized mark of open positions.)")])
-    # confirmed-cities mini panel. WP-01: key on DEPLOY STATUS (tradable), not `revived` -- statistical
-    # revival != deployed, exactly the conflation the Multi-City page warns about.
-    if not cs1.empty:
-        _cs = cs1.copy()
-        _cs["status"] = _city_status(_cs)
-        trad = _cs[_cs["status"] == "tradable"]
-    else:
-        trad = cs1.iloc[0:0]
-    # 2026-11-22: these chips said "Confirmed multi-city S1 edges: NY +4.0c CHI +5.4c LAX +5.2c" -- June BACKTEST
-    # numbers, while 0 of 10 forward gates have passed. Now: each deployed stream's FORWARD record since the
-    # 07-13 reset (strategy_perf), with its n; blank edge = too few settled to rate.
-    sp = table("strategy_perf")
-    chips = []
-    if not sp.empty and "n" in sp.columns:
-        for _, r in sp.iterrows():
-            if str(r.get("status", "")).lower() == "retired":
-                continue
-            name = str(r["strategy"]).replace("S1 day-ahead ", "").replace("Daily-low S1 ", "").strip("()")
-            n = 0 if _isnull(r.get("n")) else int(r["n"])
-            if _isnull(r.get("edge_c")):
-                chips.append(badge(f"{name}  n={n} (too few)", "neut"))
-            else:
-                chips.append(badge(f"{name}  {r['edge_c']:+.2f}c · n={n}", "good" if r["edge_c"] > 0 else "bad"))
-    if not chips:
-        chips = [badge(f"{r['city']}  +{r['s1_net_c']:.1f}c backtest", "neut") for _, r in trad.iterrows()]
-    status_card = card([html.H3("System status"),
-                        html.Div([html.Span(html.Span(className="dot")), "Pipeline LIVE · paper-only · ",
-                                  html.Span(id="ov-updated", className="mono")], className="sub"),
-                        html.Div([html.Div(f"Deployed streams — FORWARD record since the 07-13 reset ({_run_meta('n_gates_pass', '0')} of "
-                                           f"{_run_meta('n_gates', '—')} gates passed):", className="sub", style={"margin": "10px 0 6px"}),
-                                  html.Div(chips, style={"display": "flex", "gap": "8px", "flexWrap": "wrap"})])])
-    return html.Div([section("Command Center"),
-                     kpi_strip,
-                     html.Div([html.Div(bank, style={"flex": "2", "minWidth": "420px"}),
-                               html.Div(status_card, style={"flex": "1", "minWidth": "260px"})],
-                              className="grid"),
-                     html.Div([html.Div(panel_city_network(), className="col-7"),
-                               html.Div(panel_alerts(), className="col-5")], className="grid12"),
+    eq = _latest_equity()
+    reset = _run_meta("reset_date", None)
+    chg = 100.0 * (eq / 1000.0 - 1.0)
+    si, nr, inc = _since_inception(eq)
+    now_et = pd.Timestamp.now(tz="America/New_York")
+    head = (f"The paper book is {'up' if chg >= 0 else 'down'} {abs(chg):.1f}% since "
+            f"{_fmt_day(reset) if reset else 'its last reset'}")
+    p1 = [f"The $1,000 paper run is marked at ${eq:,.2f} on public quotes, ",
+          html.Span(f"{chg:+.1f}%", className="up" if chg >= 0 else "down"),
+          f" since the {_fmt_day(reset)} reset." if reset else "."]
+    if si is not None and nr > 1:
+        p1.append(f" Chained through all {nr} runs since {_fmt_day(inc)}, it is {si:+.1f}%.")
+    bp = _book_positions()
+    p2 = None
+    if bp and bp.get("n"):
+        parts = [f"{int(k)} {_POS_NAMES.get(str(s_), str(s_).lower())}" for s_, k in bp["by"].items()]
+        u = bp["unreal"]
+        p2 = (f"{bp['n']} positions are open, ${bp['cost']:,.0f} at cost and "
+              f"{'up' if u >= 0 else 'down'} ${abs(u):,.0f} on current quotes: " + ", ".join(parts) + ".")
+    elif bp is not None:
+        p2 = "No positions are open right now; new ones are placed in the evening for the next day's markets."
+    g = table("run_gates")
+    p3 = None
+    if not g.empty and "stream" in g.columns:
+        e1 = g[g["stream"] == "UNC_NEWCITY_high"]
+        if not e1.empty:
+            n1 = int(pd.to_numeric(e1["n_settled"], errors="coerce").fillna(0).iloc[0])
+            m1 = pd.to_numeric(e1["fwd_mean_c"], errors="coerce").iloc[0]
+            p3 = ("Edge #1, the main stream, " + (f"has settled {n1} paper trades since November 23, averaging "
+                  f"{m1:+.1f}c a contract. " if n1 and m1 == m1 else "has no settled paper trades yet. ")
+                  + "That is far too few to judge. Its size stays small until 50 closing-line readings "
+                    "average at or above zero.")
+    disc = html.Div([html.Div(f"{now_et.strftime('%A')}, {now_et.strftime('%B')} {now_et.day}", className="disc-date"),
+                     html.H1(head, className="disc-head"),
+                     html.P(p1)] + ([html.P(p2)] if p2 else []) + ([html.P(p3)] if p3 else []) +
+                    [html.P(["The NY, LA and Chicago highs and the original daily lows left the book on November "
+                             "23 to 26, because the market now forecasts them as well as our model does. Their "
+                             "history stays on the Edges page. Last ",
+                             html.Span(id="ov-updated", className="mono"), "."], className="quiet")],
+                    className="disc-text")
+    fig = _equity_trace_figure()
+    trace = html.Figure([graph(fig) if fig is not None else empty_state("The equity line fills once the marks job runs."),
+                         html.Figcaption("Paper equity since the last reset, marked to public quotes every few "
+                                         "minutes including open positions. The dotted line is the $1,000 start; gaps are hours with no "
+                                         "marks recorded.")],
+                        className="disc-trace trace-sheet")
+    disc = html.Div([disc, trace], className="disc")
+    book = card([html.H3("What is trading in the paper book"),
+                 html.Div("Backtest ranges are 95% intervals. A stream only earns real money consideration after "
+                          "its live record passes a pre-registered test.", className="sub"),
+                 _book_table()])
+    return html.Div([disc,
+                     html.Div([html.Div(book, className="col-12")], className="grid12"),
+                     html.Div([html.Div(panel_alerts(), className="col-5"),
+                               html.Div(panel_city_network(), className="col-7")], className="grid12"),
                      html.Div([html.Div(panel_strategy_perf(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_brier_gauges(), className="col-12")], className="grid12"),
                      html.Div([html.Div(panel_blotter(), className="col-12")], className="grid12")])
@@ -3784,7 +3991,7 @@ def render_overview():
 def render_markets():
     # WP-02: de-duplicated. city_network + alerts are canonical on Overview; open_positions is canonical on
     # the $1,000 Run page. Markets keeps the live quote surfaces + source health/drift.
-    return html.Div([section("Markets / Live — Public Quote Scans (Paper)"),
+    return html.Div([section("Markets — The live public quotes the research watches (paper scans only)"),
                      html.Div("Live public market context the bot watches. PAPER scans of public Kalshi "
                               "quotes and public weather feeds — no orders, no account, no real money.",
                               className="sub", style={"marginBottom": "10px"}),
@@ -3814,13 +4021,13 @@ def panel_city_source_attribution():
     def src_chip(src, role):
         active = role == "active"
         style = {"display": "inline-block", "padding": "3px 8px", "margin": "3px 4px 0 0",
-                 "borderRadius": "5px", "fontSize": "11px", "fontFamily": "JetBrains Mono, monospace",
+                 "borderRadius": "5px", "fontSize": "11px", "fontFamily": "Public Sans, system-ui, sans-serif",
                  "border": "1px solid"}
         if active:
-            style.update({"color": GREEN, "borderColor": "rgba(0,224,138,.45)",
-                          "background": "rgba(0,224,138,.08)"})
+            style.update({"color": GREEN, "borderColor": "rgba(33,144,124,.45)",
+                          "background": "rgba(33,144,124,.08)"})
         else:
-            style.update({"color": DIM, "borderColor": GRIDCOL, "background": "rgba(138,150,158,.06)"})
+            style.update({"color": DIM, "borderColor": GRIDCOL, "background": "rgba(82,96,110,.06)"})
         return html.Span(_titlecase(src), style=style)
 
     # city display order + market label
@@ -3879,7 +4086,7 @@ def _content_forecasts():
                         name="core 5 members" if base else "expanded pool",
                         marker=dict(size=9, opacity=.8,
                                     color=MINT if base else CYAN,
-                                    line=dict(width=1, color="rgba(255,255,255,.25)")))
+                                    line=dict(width=1, color="rgba(29,43,56,.25)")))
     if not ens.empty:
         fig.add_scatter(x=ens["city"], y=ens["forecast_f"], mode="markers", name="ENSEMBLE mean",
                         marker=dict(symbol="diamond", size=15, color=AMBER,
@@ -4261,22 +4468,24 @@ def _content_sandbox():
                else None)
     _sb_med_str = f"~+{100 * _sb_med:.2f}%/m" if _sb_med is not None else "the live Kelly-MC median"
     edge_inputs = card([html.H3("Edges & Flow"),
-        html.Div(["Defaults = what is PROVEN today. Only ", html.B("Edge #1"), " (uncertainty mispricing in the "
-                  "15 newer high-temperature cities) is validated out of sample: +2.73c/contract NET after costs, "
-                  "~187 trades/month, booked in the $1,000 paper run at $10/trade. Every other bucket defaults to $0 "
-                  "because it has no proven forward edge: NY/LAX/CHI-high are in the book but their forward record "
-                  "is ~0; the daily lows were DROPPED and PHIL/PHX UN-STAGED on 2026-11-23. Type an edge or city "
-                  "count into any bucket to test a what-if — every field moves the result."],
+        html.Div(["The defaults are the best-supported edge we have today, and it is not yet confirmed. Only ",
+                  html.B("Edge #1"), " (uncertainty mispricing in the 15 newer high-temperature cities) has a "
+                  "leak-free backtest edge: +2.20c a contract after costs, with a 95% range of -0.38c to +4.72c, "
+                  "about 187 trades a month, booked in the $1,000 paper run at $10 to $27 a trade under the "
+                  "closing-line sizing rule. Every other bucket starts at $0 because it has no forward edge: the NY, "
+                  "LA and Chicago highs left the book on 2026-11-26 and the daily lows on 2026-11-23, because the "
+                  "market now forecasts them as well as our model does. Type an edge or a city count into any bucket "
+                  "to try a what-if; every field moves the result."],
                  className="sub", style={"margin": "0 0 10px", "fontSize": "11px"}),
         html.Div([
-            bucket("EDGE #1 · uncertainty (newer cities)", GREEN,
-                   "PROVEN out of sample: net +2.73c/ct (CI +0.11..+5.41, p=0.021) · gross 4.7c − 2c fill cost · "
-                   "15 cities × ~12.5 trades/mo · booked $10/trade",
+            bucket("Edge #1: uncertainty (newer cities)", GREEN,
+                   "Leak-free backtest, not yet confirmed: net +2.20c/ct (95% range -0.38 to +4.72c, p=0.045). "
+                   "Gross 4.2c minus 2c fill cost, 15 cities, about 12.5 trades a month each, booked at $10-27 a trade.",
                    cf("sb-s1edge-cold", "Edge ¢/ct", S1_HIGH_COLD_EDGE_DEFAULT, 0.1, 0, 20),
                    cf("sb-cities-cold", "Cities", UNC_CITIES_DEFAULT, 1, 0, 15),
                    cf("sb-s1trades-cold", "Trades/mo·city", UNC_TRADES_PER_CITY_DEFAULT, 0.5, 0, 400)),
-            bucket("HIGH · NY/LAX/CHI (unproven)", MINT,
-                   "In the $1k book, but no proven forward edge (NY forward ≈ 0) → $0 by default",
+            bucket("NY, LA and Chicago highs (dropped)", MINT,
+                   "Left the $1k book on 2026-11-26: the market now beats our model on these, so $0 by default",
                    cf("sb-s1edge", "Edge ¢/ct", S1_HIGH_EDGE_DEFAULT, 0.1, 0, 20),
                    cf("sb-cities", "Cities", 3, 1, 0, 7),
                    cf("sb-s1trades", "Trades/mo·city", 84, 1, 0, 400)),
@@ -4454,15 +4663,15 @@ def _content_sandbox():
     _si, _nr, _inc = _since_inception(_latest_equity())
     reality = html.Div([
         html.B("Reality check: "),
-        "the defaults below are the only edge PROVEN out of sample today (Edge #1, newer-city uncertainty "
-        "mispricing, booked 2026-11-23 — its live paper record starts now). The actual $1,000 paper run has settled at "
+        "the defaults below use the best-supported edge we have (Edge #1, newer-city uncertainty mispricing, "
+        "booked since 2026-11-23; its live record is still small). The actual $1,000 paper run has settled at "
         f"{_pace}%/mo since {_run_meta('reset_date', '—')}"
-        + (f" and {_si:+.1f}% since inception ({_inc}, {_nr} runs chained)" if _si is not None else "")
+        + (f" and {_si:+.1f}% since inception ({_inc}, {_nr} runs chained, marked to market)" if _si is not None else "")
         + f", and {_run_meta('n_gates_pass', '0')} of {_run_meta('n_gates', '—')} older forward gates have passed. "
-          "A projection is a what-if, not a forecast: expect less than the default once the winner's-curse "
-          "discount (+1.5..2.5c instead of +2.73c) and partial fills (~77% at 20 contracts) are applied."],
+          "A projection is a what-if, not a forecast: expect less than the default once partial fills (about 77% "
+          "at 20 contracts) are applied, and remember the backtest range runs from -0.38c to +4.72c a contract."],
         className="sub", style={"marginBottom": "10px", "padding": "8px 12px", "borderLeft": f"3px solid {AMBER}",
-                                "background": "rgba(217,162,58,.08)", "color": "var(--ink)"})
+                                "background": "rgba(168,111,0,.08)", "color": "var(--ink)"})
     return [
         reality,
         html.Div("Tune the edges, capital, and risk profile. Every output is a transparent paper model "
@@ -4516,7 +4725,11 @@ def _content_risk():
 def render_model():
     """Model & Accuracy = the old Forecasts + Forecast-Accuracy pages, one canonical home for every
     forecast/calibration panel (calibration deck, PIT, fan, surprise, EMOS skill, model compare)."""
-    return html.Div([section("Model & Accuracy — Forecast Skill & Calibration")]
+    return html.Div([section("Model and accuracy — How good the forecasts are, and how well calibrated"),
+                     html.Div("The original NYC model at a glance (backtest and walk-forward figures). NY highs "
+                              "left the paper book on 2026-11-26; these stay as the model's track record.",
+                              className="sub", style={"margin": "-8px 0 12px"}),
+                     kpi_spark_row()]
                     + _content_forecasts()
                     + _content_accuracy()
                     + [html.Div([html.Div(panel_model_compare(), className="col-12")], className="grid12")])
@@ -4545,10 +4758,10 @@ def render_capacity():
 # WP-06: per-stream forward-net visualization off the WP-05 equity_curve_stream / monthly_returns_stream
 # tables, driven by the multi-city scope bar. Stream hues mirror the tokens.css --stream-* set.
 _STREAM_HUES = {
-    "NY_high": "#00e08a", "LAX_high": "#36c5f0", "CHI_high": "#d9a23a", "MIA_high": "#5fd0c0",
-    "LV_high": "#b0e057", "MIN_high": "#57b0e0",
-    "NY_low": "#9ad04a", "AUS_low": "#b07ff0", "LAX_low": "#ff8a5b", "DEN_low": "#7fd6a0",
-    "MIA_low": "#e85f8a", "CHI_low": "#e0c04a", "PHIL_low": "#8a9ff0", "PHX_low": "#f0a04a",
+    "NY_high": "#21907c", "LAX_high": "#eb6834", "CHI_high": "#a86f00", "MIA_high": "#eda100",
+    "LV_high": "#1baf7a", "MIN_high": "#2a78d6",
+    "NY_low": "#e87ba4", "AUS_low": "#008300", "LAX_low": "#6250d6", "DEN_low": "#e34948",
+    "MIA_low": "#8796a5", "CHI_low": "#1baf7a", "PHIL_low": "#2a78d6", "PHX_low": "#eb6834",
 }
 # the deployed $1k book order (high cities, then low), so the scope bar reads deployed-first
 _STREAM_ORDER = ["NY_high", "LAX_high", "CHI_high", "NY_low", "AUS_low", "LAX_low", "DEN_low", "MIA_low"]
@@ -4668,10 +4881,68 @@ def render_lab():
 
 
 def render_methodology():
-    m = table("methodology")
-    # WP-02: the per-stream calibration deck is canonical on Model & Accuracy now (dropped here).
-    return html.Div([section("Methodology & Provenance"),
-                     card(dt(m, page_size=20) if not m.empty else html.Div("—", className="sub"))])
+    """Written methodology (2026-11-26): what the research is, what trades in the paper book, how a trade is
+    booked and sized, where truth and forecasts come from, and the limits. Replaces a five-row table that still
+    described only the original NYC model and named ACIS as settlement truth."""
+    def sec(title, *body):
+        return [html.H2(title)] + list(body)
+    body = (
+        sec("What this is",
+            html.P("A research log for Kalshi's daily weather markets: high and low temperature in US cities, "
+                   "month-end rain, and monthly and yearly global temperature. Every number comes from public data. "
+                   "There is no Kalshi account, no orders and no real money. The $1,000 run is a paper simulation "
+                   "that books trades at the prices that were really on offer at the time.")) +
+        sec("What trades in the paper book",
+            html.Ul([
+                html.Li([html.B("Edge #1 (newer cities). "), "In the 15 newer high-temperature cities the market's "
+                         "price ladder is often too narrow or too wide for how uncertain tomorrow really is. We price "
+                         "each bracket from our own forecast spread and trade where the gap beats costs. Leak-free "
+                         "backtest: +2.20c a contract after costs, 95% range -0.38 to +4.72c, so not yet confirmed. "
+                         "Booked at a 5 pm and a 3 pm entry, and from day one in newly launched cities."]),
+                html.Li([html.B("Newer-city lows. "), "The same idea on overnight lows, using the spread of the "
+                         "31-member GEFS ensemble. Backtest +3.68c, 95% range +0.55 to +6.64c."]),
+                html.Li([html.B("Month-end rain. "), "With a few days left in the month, selling 'yes' on monthly "
+                         "rain brackets that would need unusually heavy rain to still come true, when the price still "
+                         "carries hope. Backtest about +9c a contract over 40 trades; at most one trade per city-month."]),
+                html.Li([html.B("Global temperature. "), "NOAA and NASA publish monthly global temperatures weeks "
+                         "after the month ends. Reanalysis data (ERA5) is available sooner, so we can price those "
+                         "markets before publication. Walk-forward test: 95.5% of outcomes inside the predicted range."]),
+            ]),
+            html.P("The original NYC, LA and Chicago high models and the daily-low models left the book on November "
+                   "23 to 26, 2026: on their own trades the market now forecasts as well as they do.",
+                   className="quiet")) +
+        sec("How a paper trade is booked",
+            html.P("Signals are frozen at the moment they fire, with the order book that was visible then. A trade "
+                   "fills only against the quoted size at that moment, pays Kalshi's fee formula, and settles on "
+                   "Kalshi's own published result. Nothing is re-priced after the fact.")) +
+        sec("How size is set",
+            html.P("Each stream bets a fraction of current paper equity (half the Kelly amount) under a fixed cap. "
+                   "A new stream stays small until 50 live closing-line readings, which measure whether the market "
+                   "moved toward our price after we traded, average at or above zero. A stream whose closing-line "
+                   "record turns clearly negative is stopped. Global-temperature positions are capped at 20% of "
+                   "equity each and 40% in total.")) +
+        sec("Truth and forecasts",
+            html.Ul([
+                html.Li("Settlement: Kalshi's own expiration value. Since August 14, 2026 the temperature markets "
+                        "settle on The Weather Company's figures; NOAA's ACIS archive is a cross-check."),
+                html.Li("Forecasts: Open-Meteo's archived previous runs (only what was published before the trade), "
+                        "a blend of global forecast models, and ECMWF and GEFS ensemble spreads from dynamical.org."),
+                html.Li("Clocks: every daily market is scored on the local standard-time climate day the station "
+                        "reports, never on midnight-to-midnight in daylight time."),
+            ])) +
+        sec("How a result earns trust",
+            html.P("Every test is written down before it is run, uses only data that existed at the time, and gets "
+                   "one look. Backtests report the range, not just the average. Live paper records are judged "
+                   "against pre-registered gates, and the gate is never moved to let a result through.")) +
+        sec("Limits",
+            html.Ul([
+                html.Li("Paper fills assume we could take the quoted size; a real queue could fill less."),
+                html.Li("Live samples are small. Most streams have weeks of history, not years."),
+                html.Li("Backtest averages carry a winner's curse: the best-looking result of many tests is usually "
+                        "a little lucky. We shrink estimates for this where we can, and say so where we can't."),
+            ]))
+    )
+    return html.Div([section("Methodology"), html.Div(body, className="card method")])
 
 
 RENDER = {"overview": render_overview, "bankroll": render_bankroll, "markets": render_markets,
@@ -4696,10 +4967,11 @@ dash_auth.BasicAuth(app, _users)
 
 def topbar():
     return html.Div(className="topbar", children=[
-        html.Div([html.Span("Aero", className="a1"), html.Span("Alpha")], className="brand"),
-        html.Span([html.Span(className="dot"), "LIVE DATA"], className="pill live",
+        html.Div([html.Span("Aero", className="a1"), html.Span("Alpha"),
+                  html.Span("Weather-market research log", className="tag")], className="brand"),
+        html.Span([html.Span(className="dot"), "Live data"], className="pill live",
                   title="Public-data pipeline is live. This is NOT live trading."),
-        html.Span("PAPER ONLY — no orders, no real money", className="pill paper"),
+        html.Span("Paper only: no orders, no real money", className="pill paper"),
         html.Div(style={"flex": "1"}),
         html.Div(id="tb-tickers", style={"display": "flex", "gap": "20px"}),
         html.Span(id="tb-stale", children=staleness_chip()),
@@ -4715,29 +4987,28 @@ def _system_status():
     a = table("alerts")
     sev = set(str(s).upper() for s in a["severity"]) if (not a.empty and "severity" in a) else set()
     if "CRITICAL" in sev:
-        return html.Span("DEGRADED — see Alerts · paper / backtest / forward, never realized P&L",
+        return html.Span("Something is broken: see the alerts on the Overview page.",
                          className="sb-item sb-bad")
     if "HIGH" in sev:
-        return html.Span("ATTENTION — see Alerts · paper / backtest / forward, never realized P&L",
+        return html.Span("One check needs attention: see the alerts on the Overview page.",
                          className="sb-item sb-warn")
-    return html.Span("ALL SYSTEMS NOMINAL — paper / backtest / forward, never realized P&L",
-                     className="sb-item sb-ok")
+    return html.Span("All checks passing.", className="sb-item sb-ok")
 
 
 def paper_banner():
     """WP-03: one persistent honesty banner under the topbar. Because it's always on screen, the repeated
     'never realized P&L' tail can come off individual one-line captions (full caveats stay in each card)."""
-    return html.Div([html.Span("PAPER RESEARCH", className="pb-tag"),
-                     html.Span(" — simulated results on public data. No orders, no account, no real money, "
-                               "never realized P&L.", className="pb-text")],
+    return html.Div([html.Span("Paper trading only.", className="pb-tag"),
+                     html.Span("Every result here is simulated on public data. There is no account, no orders "
+                               "and no real money, so nothing on this site is realized profit.", className="pb-text")],
                     className="paper-banner")
 
 
 def statusbar():
     return html.Div(className="statusbar", children=[
-        html.Span([html.Span(className="dot"), "DATA STREAM"], className="sb-item"),
+        html.Span([html.Span(className="dot"), "Public data"], className="sb-item"),
         html.Span(id="status-updated", className="sb-item mono"),
-        html.Span("MODE: PAPER", className="sb-item sb-paper"),
+        html.Span("Paper trading", className="sb-item sb-paper"),
         html.Div(style={"flex": "1"}),
         html.Span(_system_status(), id="status-verdict")])
 
@@ -4752,8 +5023,8 @@ def sidebar():
     items = [dcc.Link([html.Span(svg_icon(_NAV_ICON.get(k, "chevron"), size=17), className="ic"),
                        html.Span(lbl)], href=KEY_TO_PATH[k],
                       className="nav-item", id={"type": "nav", "key": k}) for k, ic, lbl in NAV]
-    items.append(html.Div([html.Div("BOT ENGINE", className="lbl"),
-                           html.Div([html.Span(className="dot"), html.Span("RUNNING", className="st")]),
+    items.append(html.Div([html.Div("Research pipeline", className="lbl"),
+                           html.Div([html.Span(className="dot"), html.Span("running", className="st")]),
                            html.Div(id="sb-uptime", className="lbl", style={"marginTop": "6px"})],
                           className="engine"))
     return html.Div(items, className="sidebar")
@@ -4762,7 +5033,7 @@ def sidebar():
 app.layout = html.Div([
     html.A("Skip to content", href="#main", className="skip-link"),   # WP-07: keyboard skip link
     dcc.Location(id="url", refresh=False),
-    dcc.Store(id="theme-store", storage_type="local", data="dark"),
+    dcc.Store(id="theme-store", storage_type="local", data="light"),
     dcc.Interval(id="tick", interval=60_000, n_intervals=0),
     topbar(),
     paper_banner(),
@@ -4777,10 +5048,10 @@ app.layout = html.Div([
 app.clientside_callback(
     """
     function(nclicks, ntick, current) {
-        var theme = current || 'dark';
+        var theme = 'light';
         var trig = (dash_clientside.callback_context.triggered || []).map(function(t){return t.prop_id;});
         if (trig.some(function(p){return p.indexOf('theme-toggle') === 0;})) {
-            theme = (theme === 'light') ? 'dark' : 'light';
+            theme = 'light';
         }
         document.documentElement.setAttribute('data-theme', theme);
         return [theme, theme === 'light' ? 'Light' : 'Dark'];
@@ -4900,20 +5171,19 @@ def _live(_n):
     # HONEST market-style ticker strip: per-city day-ahead forecast high + the validated paper edge as the
     # green/red "delta". Real public signals (forecast + our paper edge) -- NOT invented SPX/VIX, NOT P&L.
     if not cn.empty:
+        tk.append(html.Div(html.Span("Forecast highs", className="k"), className="ticker"))
         # WP-01: show ALL wired cities (was head(6) -> silently dropped the 7th+ city from the strip).
         for _, r in cn.iterrows():
-            fc = "—" if _isnull(r["forecast_f"]) else f"{r['forecast_f']:.0f}°F"
+            fc = "—" if _isnull(r["forecast_f"]) else f"{r['forecast_f']:.0f}°"
             # 2026-11-22: the green '+4.0c'-style delta next to each city was the June BACKTEST edge styled like
             # a live price change; the strip now shows only the day-ahead forecast high, labelled as such.
             tk.append(html.Div([html.Span(f"{r['city']} ", className="k"),
-                                html.Span(fc, className="v"),
-                                html.Span(" fcst", className="v", style={"opacity": ".55", "fontSize": "10px"})],
+                                html.Span(fc, className="v")],
                                className="ticker", title="day-ahead forecast high (deployed model)"))
-    tk.append(html.Div([html.Span("INTEGRITY ", className="k"),
-                        html.Span(meta_value("integrity_verdict"), className="v")], className="ticker"))
     # WP-01: topbar clock in ET (the market's clock; site-wide standard), not UTC.
-    et_clock = _to_et_naive(now).strftime("%H:%M:%S ET")
-    return et_clock, tk, f"data · {_utc_to_et_str(meta_value('generated_at_utc'), '%m-%d %H:%M ET')}"
+    _et = _to_et_naive(now)
+    et_clock = f"{_et.hour % 12 or 12}:{_et.minute:02d} {'am' if _et.hour < 12 else 'pm'} ET"
+    return et_clock, tk, f"data from {_utc_to_et_str(meta_value('generated_at_utc'), '%m-%d %H:%M ET')}"
 
 
 @app.callback(Output("ov-updated", "children"), Input("tick", "n_intervals"))
@@ -4963,7 +5233,7 @@ DEPTH_CAP = 250        # contracts fillable within slippage (measured median; fl
 # (LV/MIN, never validated forward) is now the EDGE #1 bucket (same per-stream math, no season factor). NY/LAX/CHI-high
 # stay in the book but have NO proven forward edge (NY fwd -0.65c n299) -> default 0; lows DROPPED 11-23 -> 0 cities.
 S1_HIGH_EDGE_DEFAULT = 0.0          # gross c/ct per-city, NY/LAX/CHI-high: unproven forward -> 0 (type a value to test)
-S1_HIGH_COLD_EDGE_DEFAULT = 4.7     # EDGE #1 GROSS c/ct = validated NET +2.73c + the 2.0c base fill cost below
+S1_HIGH_COLD_EDGE_DEFAULT = 4.2     # EDGE #1 GROSS c/ct = leak-free NET +2.20c (11-24 fix; was +2.73c) + 2.0c fill cost
 UNC_CITIES_DEFAULT, UNC_TRADES_PER_CITY_DEFAULT = 15, 12.5   # EDGE #1: 15 cities x 12.5 = ~187 trades/mo
 # 2026-07-20: LOW all-season default -> ~0. The daily-low streams are NOT producing realized edge right now
 # (NY-low realized negative/underpowered; the warm AUS/LAX/DEN/MIA lows are dormant/marginal). So the honest
@@ -5338,7 +5608,7 @@ def _time_to_target(base, unc_rate, sigma_m, cap_ceiling, target_profit):
     xs = list(range(len(p50l)))
     fig = _dfig(
         [{"type": "scatter", "x": xs + xs[::-1], "y": p95l + p5l[::-1], "fill": "toself",
-          "fillcolor": "rgba(22,199,132,.10)", "line": {"width": 0}, "mode": "lines", "name": "p5–p95",
+          "fillcolor": "rgba(33,144,124,.10)", "line": {"width": 0}, "mode": "lines", "name": "p5–p95",
           "hoverinfo": "skip"},
          {"type": "scatter", "x": xs, "y": p50l, "mode": "lines", "name": "median equity",
           "line": {"color": MINT, "width": 2.4},   # linear (no spline) so the star sits exactly on the line
@@ -5567,7 +5837,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     _mo = list(months)
     fan = _dfig(
         [{"type": "scatter", "x": _mo + _mo[::-1], "y": list(p95_path) + list(p5_path)[::-1],
-          "fill": "toself", "fillcolor": "rgba(22,199,132,.10)", "line": {"width": 0}, "mode": "lines",
+          "fill": "toself", "fillcolor": "rgba(33,144,124,.10)", "line": {"width": 0}, "mode": "lines",
           "name": "p5–p95", "hoverinfo": "skip"},
          {"type": "scatter", "x": _mo, "y": list(med_path), "mode": "lines", "name": "median",
           "line": {"color": MINT, "width": 2.4, "shape": "spline", "smoothing": 0.4},
@@ -5589,10 +5859,10 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
     _vmax = max(list(vals) + [1.0]); _vmin = min(list(vals) + [0.0])
     fig = _dfig(
         [{"type": "bar", "x": labels, "y": vals,
-          "marker": {"color": [MINT, "#3aa6c2", "#7fb0a0", "#4f8fa6", CYAN, AMBER],
+          "marker": {"color": [MINT, "#2a78d6", "#5598e7", "#1c5cab", CYAN, AMBER],
                      "cornerradius": 6, "line": {"width": 0}}, "width": 0.62,
           "text": [f"${v:,.0f}" for v in vals], "textposition": "outside", "cliponaxis": False,
-          "textfont": {"family": "JetBrains Mono, monospace", "size": 11.5},
+          "textfont": {"family": "Public Sans, system-ui, sans-serif", "size": 11.5},
           "hovertemplate": "%{x}<br>%{y:$,.0f} / month<extra></extra>"}],
         h=300, legend=False, xaxis={"title": ""},
         yaxis={"title": "paper profit ($ / month)", "tickprefix": "$", "tickformat": ",.0f",
@@ -5646,7 +5916,7 @@ def _sandbox(s1_c, cities, s1tr, s1c_cold, cities_cold, s1tr_cold,
              "hovertemplate": "bankroll $%{x:,.0f}<br>uncapped $%{y:,.0f}/mo<extra></extra>"},
             {"type": "scatter", "x": list(bxs), "y": list(prof_capped), "mode": "lines",
              "name": "depth-capped (your actual)", "line": {"color": GREEN, "width": 2.8},
-             "fill": "tozeroy", "fillcolor": "rgba(0,224,138,.08)",
+             "fill": "tozeroy", "fillcolor": "rgba(33,144,124,.08)",
              "hovertemplate": "bankroll $%{x:,.0f}<br>capped $%{y:,.0f}/mo<extra></extra>"},
             {"type": "scatter", "x": [bnow], "y": [max(pnow, 0.0)], "mode": "markers", "name": "your bankroll",
              "marker": {"size": 15, "color": AMBER, "symbol": "star", "line": {"width": 1.4, "color": "#fff"}},
@@ -5752,7 +6022,7 @@ def _sandbox_risk(kelly):
           "textfont": {"size": 10, "color": DIM},
           "line": {"color": CYAN, "width": 2, "shape": "spline", "smoothing": 0.3},
           "marker": {"size": 9, "color": [MINT if f <= KELLY_CEILING else RED for f in fr],
-                     "line": {"width": 1, "color": "rgba(255,255,255,.25)"}},
+                     "line": {"width": 1, "color": "rgba(29,43,56,.25)"}},
           "hovertemplate": "%{text}<br>median %{y:+.1f}%/m<br>p95 maxDD %{x:.1f}%<extra></extra>"},
          {"type": "scatter", "x": [k["dd"]], "y": [k["med"]], "mode": "markers", "name": "your pick",
           "marker": {"size": 16, "color": AMBER, "symbol": "star", "line": {"width": 1.4, "color": "#fff"}},
@@ -5774,9 +6044,9 @@ def _sandbox_risk(kelly):
          "gauge": {"axis": {"range": [0, 40], "tickwidth": 1, "tickcolor": AXISCOL,
                             "tickfont": {"size": 9, "color": DIM}},
                    "bar": {"color": _dsev, "thickness": 0.72}, "bgcolor": "rgba(0,0,0,0)", "borderwidth": 0,
-                   "steps": [{"range": [0, 12], "color": "rgba(22,199,132,.12)"},
-                             {"range": [12, 20], "color": "rgba(217,162,58,.12)"},
-                             {"range": [20, 40], "color": "rgba(234,57,67,.12)"}],
+                   "steps": [{"range": [0, 12], "color": "rgba(33,144,124,.12)"},
+                             {"range": [12, 20], "color": "rgba(168,111,0,.12)"},
+                             {"range": [20, 40], "color": "rgba(214,90,51,.12)"}],
                    "threshold": {"line": {"color": AMBER, "width": 2}, "thickness": 0.85, "value": 18}},
          "domain": {"x": [0.0, 0.42], "y": [0.0, 1.0]}},
         {"type": "bar", "x": ["p5", "median", "p95"], "y": spread_x, "marker": {"color": [RED, MINT, CYAN]},
@@ -5784,8 +6054,8 @@ def _sandbox_risk(kelly):
          "cliponaxis": False, "xaxis": "x2", "yaxis": "y2",
          "hovertemplate": "%{x}: %{y:+.1f}%/m<extra></extra>"}],
         "layout": {
-            "title": None, "template": "plotly_dark", "paper_bgcolor": "rgba(0,0,0,0)",
-            "plot_bgcolor": "rgba(0,0,0,0)", "font": {"color": INK, "family": "Inter, system-ui", "size": 12},
+            "title": None, "template": "plotly_white", "paper_bgcolor": "rgba(0,0,0,0)",
+            "plot_bgcolor": "rgba(0,0,0,0)", "font": {"color": INK, "family": "Public Sans, system-ui, sans-serif", "size": 12},
             "height": 300, "showlegend": False, "margin": {"l": 10, "r": 20, "t": 20, "b": 40},
             "xaxis2": {"domain": [0.56, 1.0], "anchor": "y2", "tickfont": {"size": 11, "color": DIM},
                        "showgrid": False, "linecolor": GRIDCOL},
@@ -5810,7 +6080,7 @@ def _sandbox_risk(kelly):
         h=300, legend=True,
         xaxis={"title": "Kelly fraction", "dtick": 0.25},
         yaxis={"title": "probability (%)", "ticksuffix": "%", "rangemode": "tozero"},
-        shapes=[_vrect(0.50, 0.75, "rgba(217,162,58,.08)"), _vrect(0.75, 1.00, "rgba(234,57,67,.08)"),
+        shapes=[_vrect(0.50, 0.75, "rgba(168,111,0,.08)"), _vrect(0.75, 1.00, "rgba(214,90,51,.08)"),
                 _vline(kelly, GREEN, 1.6, "dash"), _vline(0.50, NEUTRAL, 1.2, "dot")],
         annotations=[_ann(kelly, 1.0, f"your pick {kelly:.2f}x", GREEN, 10),
                      _ann(0.50, 0.0, "0.50x ceiling", DIM, 9, xanchor="right")])

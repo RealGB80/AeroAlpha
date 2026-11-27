@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 from dash import html
 
-DIM = "#8a949b"
+DIM = "#52606e"
 
 # stroke-based 24x24 paths (lucide-style, hand-trimmed). name -> list of path d= strings.
 _ICON_PATHS = {

@@ -13,8 +13,8 @@
   --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
 
   /* type ramp v2 (11px floor — no UI text below --fs-xs2) */
-  --fs-xs2: 11px;      /* micro-labels, chips (floor) */
-  --fs-s2:  12.5px;    /* body / captions */
+  --fs-xs2: 12px;      /* micro-labels, chips (floor; 2026-11-26 raised from 11px) */
+  --fs-s2:  13.5px;    /* body / captions */
   --fs-m2:  13.5px;    /* card titles, table cells */
   --fs-l2:  18px;      /* section heads */
   --fs-xl2: 26px;      /* KPI values */
@@ -30,15 +30,15 @@
 
   /* per-stream distinct hues (sanctioned exception to green/red/neutral —
      used ONLY where streams must be told apart on one chart) */
-  --stream-ny-high:  #00e08a;
-  --stream-lax-high: #36c5f0;
-  --stream-chi-high: #d9a23a;
-  --stream-mia-high: #5fd0c0;
-  --stream-ny-low:   #9ad04a;
-  --stream-aus-low:  #b07ff0;
-  --stream-lax-low:  #ff8a5b;
-  --stream-den-low:  #7fd6a0;
-  --stream-mia-low:  #e85f8a;
+  --stream-ny-high:  #2a78d6;
+  --stream-lax-high: #eb6834;
+  --stream-chi-high: #1baf7a;
+  --stream-mia-high: #eda100;
+  --stream-ny-low:   #e87ba4;
+  --stream-aus-low:  #008300;
+  --stream-lax-low:  #6250d6;
+  --stream-den-low:  #e34948;
+  --stream-mia-low:  #8796a5;
 }
 
 /* ---- utilities (inert until classes are applied by WP-03) -------------- */
@@ -59,8 +59,8 @@
 .panel2 .p2-cap { color: var(--dim); font-size: var(--fs-s2); line-height: 1.45;
   margin: 0 0 var(--sp-2); }
 .panel2 details.drawer { margin-top: var(--sp-2); }
-.panel2 details.drawer > summary { cursor: pointer; color: var(--dim); font-size: var(--fs-xs2);
-  text-transform: uppercase; letter-spacing: var(--track); user-select: none; list-style: none; }
+.panel2 details.drawer > summary { cursor: pointer; color: var(--accent); font-size: var(--fs-xs2);
+  font-weight: 600; user-select: none; list-style: none; }
 .panel2 details.drawer > summary::before { content: "▸ "; }
 .panel2 details.drawer[open] > summary::before { content: "▾ "; }
 .panel2 details.drawer > div { color: var(--dim); font-size: var(--fs-s2); line-height: 1.5;
@@ -83,10 +83,10 @@
 /* scope bar (components.scope_bar) — the multi-city selector chips */
 .scope-bar { position: sticky; top: 52px; z-index: var(--z-scope); display: flex; gap: var(--sp-2);
   flex-wrap: wrap; padding: var(--sp-2) 0; margin-bottom: var(--sp-3);
-  background: linear-gradient(180deg, var(--bg), transparent); }
+  background: var(--bg); }
 .scope-chip { padding: 7px 13px; min-height: 32px; border-radius: 999px; border: 1px solid var(--border);
   background: var(--panel-2); color: var(--dim); font-size: var(--fs-xs2); font-weight: 700;
-  letter-spacing: .3px; cursor: pointer; user-select: none;
+  cursor: pointer; user-select: none;
   transition: color var(--t-hover) ease, border-color var(--t-hover) ease; }
 .scope-chip:hover { color: var(--ink); border-color: var(--border-hi); }
 .scope-chip.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent);
@@ -96,10 +96,4 @@
 .mini-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: var(--gutter); }
 
-/* ---- ACTIVE RULE: light-theme chart inset (fixes illegible light mode) --
-   Figures are styled server-side for dark; in light mode they render on a
-   dark instrument surface ("instruments stay dark"), keeping them legible. */
-[data-theme="light"] .js-plotly-plot {
-  background: #0c0f11; border-radius: var(--r-m);
-  border: 1px solid rgba(40, 50, 60, 0.18);
-}
+/* (2026-11-26) the light-theme dark chart inset is retired: charts now render light-native. */
