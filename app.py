@@ -5063,9 +5063,9 @@ def _content_lab_calc():
         lever("Bet size", dcc.Slider(id="lab-kelly", min=0.25, max=1.0, step=0.05, value=0.5,
                                      marks={0.25: "¼", 0.5: "½ (now)", 0.75: "¾", 1.0: "full"}, **_SLIDER_KW),
               "Half the Kelly stake is what the run uses. Bigger bets scale profit and swings together."),
-        lever("Edge you expect to keep", dcc.Slider(id="lab-real", min=0.25, max=1.5, step=0.05, value=0.75,
+        lever("Edge you expect to keep", dcc.Slider(id="lab-real", min=0.25, max=1.5, step=0.05, value=1.0,
                                                     marks={0.25: "25%", 0.75: "75%", 1.0: "100%", 1.5: "150%"}, **_SLIDER_KW),
-              "Backtests usually look a bit better than real life."),
+              "100% uses each edge as measured. Lower it to see a haircut."),
         lever("Share of each order that fills", dcc.Slider(id="lab-fill", min=0.4, max=1.0, step=0.05, value=0.8,
                                                            marks={0.4: "40%", 0.8: "80%", 1.0: "all"}, **_SLIDER_KW)),
         lever("Extra cost per contract", dcc.Slider(id="lab-extra", min=0, max=3, step=0.25, value=0,
@@ -5141,7 +5141,7 @@ var B = S.buckets.map(function (b) {
   return {b: b, on: Array.isArray(on) && on.length > 0, f: f};
 });
 var G = {bank: Math.max(1, num(a[i++], 1000)), kelly: Math.min(1, Math.max(0.25, num(a[i++], 0.5))),
-         real: num(a[i++], 0.75), fill: Math.min(1, Math.max(0.05, num(a[i++], 0.8))), extra: pos(num(a[i++], 0)),
+         real: num(a[i++], 1.0), fill: Math.min(1, Math.max(0.05, num(a[i++], 0.8))), extra: pos(num(a[i++], 0)),
          comp: a[i++], target: pos(num(a[i++], 10000))};
 var half = {"12": 12, "6": 6, "3": 3}[G.comp] || 0;
 function decay(m) { return half ? Math.pow(0.5, m / half) : 1; }
